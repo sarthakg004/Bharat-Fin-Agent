@@ -17,5 +17,16 @@ python-dotenv
 requests>=2.31.0
 tqdm>=4.66.0
 pandas>=2.0.0
+
+# Indian-market discovery libraries (optional — only needed for from_bse/from_nse)
 nse>=1.0.4
 bse>=2.0.1
+
+# US market — SEC EDGAR
+sec-edgar-downloader>=5.0.0
+
+# Vector store + chunking
+langchain-chroma>=0.1.4
+langchain-text-splitters>=0.3.0
+langchain-huggingface>=0.1.0
+langchain-openai>=0.2.0
