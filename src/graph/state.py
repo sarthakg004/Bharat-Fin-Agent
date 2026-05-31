@@ -48,6 +48,13 @@ class AgentState(TypedDict, total=False):
     # one entry per numeric sub-query.
     query_routes: list[str]            # one of "narrative" | "numeric" | "external" per sub-query
 
+    # --- v4 additions: i18n, web search, numeric verification, refusal ----- #
+    language: str                      # ISO code of the user's question ("en", "hi", ...)
+    query_original: str                # the question as the user typed it (pre-translation)
+    web_results: list[Any]             # already declared above; filled by web_search_node
+    numeric_verification: dict         # {"claims": [...], "unverified": [...], "score": 0..1}
+    refused: bool                      # set when the agent explicitly declines to answer
+
 
 # --------------------------------------------------------------------------- #
 # Structured-output schemas (used with llm.with_structured_output(...))
@@ -154,3 +161,28 @@ class PandasCode(BaseModel):
 
     code: str = Field(description="Python code; assigns the final answer to `result`.")
     explanation: str = Field(description="One sentence explaining what the code does.")
+
+
+# --------------------------------------------------------------------------- #
+# v4 schemas (translation, numeric verification)
+# --------------------------------------------------------------------------- #
+
+class Translation(BaseModel):
+    """LLM-translation output."""
+
+    text: str = Field(description="The translated text, with no commentary or prefacing.")
+
+
+class NumericClaim(BaseModel):
+    """One numeric claim extracted from the draft answer."""
+
+    claim: str = Field(description="The full claim, including the figure and what it refers to.")
+    number: str = Field(description="The numeric value as written (e.g. '₹9,14,472 crore', '23.4%').")
+    matched: bool = Field(description="True if the figure appears verbatim or as a close paraphrase in the supplied evidence.")
+    evidence: str = Field(description="Short quote from the evidence that supports the figure, or '' if matched is False.")
+
+
+class NumericVerification(BaseModel):
+    """Verifier output for all numeric claims in the draft answer."""
+
+    claims: list[NumericClaim] = Field(description="One entry per distinct numeric claim.")
