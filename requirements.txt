@@ -28,7 +28,8 @@ langchain-chroma>=0.1.4
 langchain-huggingface>=0.1.0
 langchain-groq>=0.2.0            # Groq LLM (free tier)
 langchain-google-genai>=2.0.0    # Gemini LLM (free tier — 5 req/day)
-# langchain-openai>=0.2.0        # Uncomment if you switch to OpenAI
+langchain-openai>=0.2.0          # OpenAI LLM (needs OPENAI_API_KEY)
+langchain-anthropic>=0.3.0       # Anthropic Claude (needs ANTHROPIC_API_KEY)
 
 # ── Vector store ──────────────────────────────────────────────────────────────
 chromadb>=0.5.0

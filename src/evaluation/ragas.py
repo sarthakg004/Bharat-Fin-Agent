@@ -53,14 +53,23 @@ if _VERTEXAI_MOD not in sys.modules:
     sys.modules[_VERTEXAI_MOD] = _shim
 
 import json
-import os
 import time
+import warnings
 from pathlib import Path
 from typing import Optional, Union
+
+# ragas 0.4.3 still works with the Langchain* wrappers but emits a deprecation
+# notice steering toward its instructor/litellm `llm_factory`. We intentionally
+# keep the langchain wrappers so the judge can be any of our four providers via
+# one code path, so silence that specific (cosmetic) notice.
+warnings.filterwarnings("ignore", message=r".*LangchainLLMWrapper is deprecated.*")
+warnings.filterwarnings("ignore", message=r".*LangchainEmbeddingsWrapper is deprecated.*")
 
 import pandas as pd
 from dotenv import load_dotenv
 from tqdm import tqdm
+
+from src.llm import build_llm, resolve_api_key
 
 load_dotenv()
 
@@ -75,26 +84,26 @@ class RAGASEvaluator:
     Parameters
     ----------
     judge_provider : str
-        "groq" (default) or "gemini". The judge makes several calls per
-        question per metric, so Gemini's ~5-requests/day free tier is only
-        viable for a 1-2 question smoke test — use Groq for real runs.
+        "groq" (default), "gemini", "openai", or "anthropic". The judge makes
+        several calls per question per metric, so Gemini's ~5-requests/day free
+        tier is only viable for a 1-2 question smoke test — use Groq/OpenAI/
+        Anthropic for real runs.
     judge_model : str
         Judge LLM model. Should be DIFFERENT and STRONGER than the generator
-        to avoid self-evaluation bias. If None, defaults per provider
-        (Groq: llama-3.3-70b-versatile; Gemini: gemini-2.5-flash).
+        to avoid self-evaluation bias. If None, defaults per provider. Pass any
+        model your key has access to (this is how you pick a different judge).
     embedding_model : str
         Used by the ResponseRelevancy metric. Match your ingestion model.
     api_key : str
-        Falls back to the provider's env var (GROQ_API_KEY / GEMINI_API_KEY).
+        Falls back to the provider's env var (GROQ_API_KEY / GEMINI_API_KEY /
+        OPENAI_API_KEY / ANTHROPIC_API_KEY).
     """
 
     DEFAULT_MODELS = {
         "groq": "llama-3.3-70b-versatile",
         "gemini": "gemini-2.5-flash",
-    }
-    API_KEY_ENV = {
-        "groq": "GROQ_API_KEY",
-        "gemini": "GEMINI_API_KEY",
+        "openai": "gpt-4o",
+        "anthropic": "claude-sonnet-4-6",
     }
 
     def __init__(
@@ -103,6 +112,8 @@ class RAGASEvaluator:
         judge_model: Optional[str] = None,
         embedding_model: str = "BAAI/bge-small-en-v1.5",
         api_key: Optional[str] = None,
+        timeout: int = 300,
+        max_workers: int = 4,
     ):
         self.judge_provider = judge_provider.lower()
         if self.judge_provider not in self.DEFAULT_MODELS:
@@ -112,11 +123,15 @@ class RAGASEvaluator:
             )
         self.judge_model = judge_model or self.DEFAULT_MODELS[self.judge_provider]
         self.embedding_model = embedding_model
-
-        env_var = self.API_KEY_ENV[self.judge_provider]
-        self.api_key = api_key or os.getenv(env_var)
-        if not self.api_key:
-            raise ValueError(f"{env_var} not found. Set it in your .env file.")
+        # Keep api_key as None when not user-supplied so build_llm can collect
+        # every {ENV}, {ENV}2, ... key from .env and rotate across them.
+        resolve_api_key(self.judge_provider, api_key)
+        self.api_key = api_key
+        # Free-tier judges (Groq/Gemini) rate-limit; the RAGAS default of 16
+        # parallel workers triggers TimeoutErrors. Fewer workers + a longer
+        # per-job timeout keeps the run stable.
+        self.timeout = timeout
+        self.max_workers = max_workers
 
     # ------------------------------------------------------------------ #
     # Public API
@@ -228,22 +243,13 @@ class RAGASEvaluator:
         from ragas.embeddings import LangchainEmbeddingsWrapper
         from ragas.llms import LangchainLLMWrapper
 
-        if self.judge_provider == "gemini":
-            from langchain_google_genai import ChatGoogleGenerativeAI
-            llm = ChatGoogleGenerativeAI(
-                model=self.judge_model,
-                google_api_key=self.api_key,
-                temperature=0.0,
-                max_retries=3,
-            )
-        else:
-            from langchain_groq import ChatGroq
-            llm = ChatGroq(
-                model=self.judge_model,
-                api_key=self.api_key,
-                temperature=0.0,
-                max_retries=3,
-            )
+        # Rotation IS enabled here. `RotatingChatModel` IS a `BaseChatModel`,
+        # so ragas' `LangchainLLMWrapper` accepts it, and its `_generate` /
+        # `_agenerate` rotate across every {ENV}, {ENV}2, ... key on rate-limit
+        # errors. If your keys are from separate orgs each has its own TPD
+        # bucket, which is what unblocks high-volume judge runs.
+        llm = build_llm(self.judge_provider, self.judge_model, self.api_key,
+                        temperature=0.0)
         embeddings = HuggingFaceEmbeddings(
             model_name=self.embedding_model,
             encode_kwargs={"normalize_embeddings": True},
@@ -266,6 +272,7 @@ class RAGASEvaluator:
             LLMContextRecall,
             ResponseRelevancy,
         )
+        from ragas.run_config import RunConfig
 
         samples = []
         for row in batch:
@@ -292,12 +299,17 @@ class RAGASEvaluator:
             dataset=dataset,
             metrics=[
                 Faithfulness(),
-                ResponseRelevancy(),
+                # strictness=1: most chat providers (Groq/Gemini) return a single
+                # generation per call, so the default strictness=3 just logs
+                # "LLM returned 1 generations instead of requested 3". One
+                # generation is fine here and removes the warning.
+                ResponseRelevancy(strictness=1),
                 LLMContextPrecisionWithReference(),
                 LLMContextRecall(),
             ],
             llm=ragas_llm,
             embeddings=ragas_embeddings,
+            run_config=RunConfig(timeout=self.timeout, max_workers=self.max_workers),
             raise_exceptions=False,   # keep going if one metric fails
         )
 
@@ -397,7 +409,7 @@ def main():
     )
     parser.add_argument(
         "--judge-provider",
-        choices=["groq", "gemini"],
+        choices=["groq", "gemini", "openai", "anthropic"],
         default="groq",
         help="LLM provider for the RAGAS judge (gemini free tier is tiny)",
     )

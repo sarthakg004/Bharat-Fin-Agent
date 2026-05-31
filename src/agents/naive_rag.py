@@ -42,7 +42,6 @@ CLI:
 from __future__ import annotations
 
 import json
-import os
 import time
 from pathlib import Path
 from typing import Optional, Union
@@ -50,7 +49,9 @@ from typing import Optional, Union
 from dotenv import load_dotenv
 from tqdm import tqdm
 
-load_dotenv()  # picks up GROQ_API_KEY from a .env file if present
+from src.llm import build_llm, resolve_api_key
+
+load_dotenv()  # picks up provider API keys from a .env file if present
 
 # --------------------------------------------------------------------------- #
 # Prompt template
@@ -90,27 +91,24 @@ class NaiveRAG:
     embedding_model : str
         MUST match the model used at ingestion. Defaults to bge-small.
     llm_provider : str
-        "groq" (default, generous free tier) or "gemini" (Google free tier —
-        only ~5 requests/day, so use it for tiny smoke tests, not full runs).
+        "groq" (default), "gemini", "openai", or "anthropic". Gemini's free
+        tier is ~5 requests/day — fine for smoke tests, not full runs.
     generator_model : str
         Model for answer generation. If None, a sensible default is chosen
-        per provider (Groq: llama-3.1-8b-instant; Gemini: gemini-2.5-flash).
+        per provider. Pass any model your key has access to.
     top_k : int
         Number of chunks to retrieve per question.
     api_key : str
-        If None, reads from the provider's env var (GROQ_API_KEY for Groq,
-        GEMINI_API_KEY for Gemini).
+        If None, reads from the provider's env var (GROQ_API_KEY, GEMINI_API_KEY,
+        OPENAI_API_KEY, or ANTHROPIC_API_KEY).
     """
 
-    # Default generator model per provider.
+    # Default generator model per provider (override via generator_model=).
     DEFAULT_MODELS = {
         "groq": "llama-3.1-8b-instant",
         "gemini": "gemini-2.5-flash",
-    }
-    # Env var holding each provider's API key.
-    API_KEY_ENV = {
-        "groq": "GROQ_API_KEY",
-        "gemini": "GEMINI_API_KEY",
+        "openai": "gpt-4o-mini",
+        "anthropic": "claude-haiku-4-5",
     }
 
     def __init__(
@@ -135,14 +133,11 @@ class NaiveRAG:
                 f"Choose one of {list(self.DEFAULT_MODELS)}."
             )
         self.generator_model = generator_model or self.DEFAULT_MODELS[self.llm_provider]
-
-        env_var = self.API_KEY_ENV[self.llm_provider]
-        self.api_key = api_key or os.getenv(env_var)
-        if not self.api_key:
-            raise ValueError(
-                f"{env_var} not found. Set it in your .env file or "
-                f"pass api_key= to NaiveRAG()."
-            )
+        # When api_key is None, build_llm collects every {ENV}, {ENV}2, ... from
+        # the environment and rotates across them on rate-limit errors.
+        # Validate that at least one key exists; raise a clean error if not.
+        resolve_api_key(self.llm_provider, api_key)
+        self.api_key = api_key
 
         # Initialised lazily so the class is fast to import.
         self._retriever = None
@@ -316,22 +311,10 @@ class NaiveRAG:
     def _get_llm(self):
         """Lazily initialise the generator LLM for the chosen provider."""
         if self._llm is None:
-            if self.llm_provider == "gemini":
-                from langchain_google_genai import ChatGoogleGenerativeAI
-                self._llm = ChatGoogleGenerativeAI(
-                    model=self.generator_model,
-                    google_api_key=self.api_key,
-                    temperature=0.0,      # deterministic for reproducibility
-                    max_retries=3,
-                )
-            else:
-                from langchain_groq import ChatGroq
-                self._llm = ChatGroq(
-                    model=self.generator_model,
-                    api_key=self.api_key,
-                    temperature=0.0,
-                    max_retries=3,
-                )
+            self._llm = build_llm(
+                self.llm_provider, self.generator_model, self.api_key,
+                temperature=0.0,  # deterministic for reproducibility
+            )
         return self._llm
 
     def _extract_usage(self, response, prompt: str, answer_text: str) -> tuple[int, int]:
@@ -377,7 +360,11 @@ def main():
     parser = argparse.ArgumentParser(description="Run a single question through NaiveRAG")
     parser.add_argument("--collection", default="us_filings")
     parser.add_argument("--chroma-dir", default="data/chroma")
-    parser.add_argument("--provider", choices=["groq", "gemini"], default="groq")
+    parser.add_argument(
+        "--provider",
+        choices=["groq", "gemini", "openai", "anthropic"],
+        default="groq",
+    )
     parser.add_argument(
         "--model",
         default=None,
