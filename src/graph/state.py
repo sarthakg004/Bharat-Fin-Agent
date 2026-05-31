@@ -43,6 +43,11 @@ class AgentState(TypedDict, total=False):
     critic_iterations: int             # critic-retry counter (cap = max_critic_retries)
     low_confidence: bool               # synth flag when grader stayed below threshold
 
+    # --- Table-agent additions (v3) ---------------------------------------- #
+    # `table_results` is already declared above; the v3 graph fills it with
+    # one entry per numeric sub-query.
+    query_routes: list[str]            # one of "narrative" | "numeric" | "external" per sub-query
+
 
 # --------------------------------------------------------------------------- #
 # Structured-output schemas (used with llm.with_structured_output(...))
@@ -108,3 +113,44 @@ class RewrittenQuery(BaseModel):
             "shareholders' instead of 'earnings')."
         )
     )
+
+
+# --------------------------------------------------------------------------- #
+# Router schemas (table-augmented RAG)
+# --------------------------------------------------------------------------- #
+
+from typing import Literal
+
+
+class QueryRoute(BaseModel):
+    """Per-sub-query routing verdict."""
+
+    sub_query: str = Field(description="The sub-query being classified, copied verbatim.")
+    route: Literal["narrative", "numeric", "external"] = Field(
+        description=(
+            "narrative = text retrieval over filings (default for prose-y questions); "
+            "numeric = table agent (specific figures, ratios, growth %, "
+            "currency amounts, multi-year comparisons); "
+            "external = web search (current events, prices) — not yet implemented."
+        )
+    )
+    reason: str = Field(description="One-line justification.")
+
+
+class RouterReport(BaseModel):
+    """Router output: one verdict per sub-query, in the same order."""
+
+    routes: list[QueryRoute] = Field(description="One per sub-query, in input order.")
+
+
+class TableTitle(BaseModel):
+    """LLM-extracted title for a single table."""
+
+    title: str = Field(description="Concise table title (≤ 120 chars).")
+
+
+class PandasCode(BaseModel):
+    """Pandas code emitted by the table agent to compute an answer."""
+
+    code: str = Field(description="Python code; assigns the final answer to `result`.")
+    explanation: str = Field(description="One sentence explaining what the code does.")
