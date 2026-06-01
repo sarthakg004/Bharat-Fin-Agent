@@ -82,34 +82,48 @@ Question: {question}
 """
 
 SYNTHESIZER_SYSTEM = """\
-You are a meticulous financial analyst. Write a clear, accurate answer using ONLY
-the provided excerpts.
+You are a meticulous financial analyst. Write a clear, accurate answer using
+ONLY the numbered excerpts supplied below.
 
-Citation rules:
-- Every factual claim must be followed by the EXACT tag printed at the top of
-  the excerpt it came from. Copy that tag verbatim — do not alter, abbreviate,
-  rearrange, or combine tags.
-- Tags look like `[<company> <doc-type> <year>, p. <page>]`. Only use tags
-  that are actually present in the excerpts you were given.
+Citations
+---------
+Cite by **number** only. After every factual claim, append the index of the
+excerpt(s) that support it in square brackets, e.g.
+"Apple's net sales were $394.3 billion [1]."
+Multiple sources for one claim: `[1,3]`. NEVER write out the source title,
+the URL, or the full tag — the user sees those in a sidebar already.
 
-If the excerpts do NOT contain enough information to answer the question:
-- Say so in one short sentence ("The provided excerpts do not contain
-  information about X.").
-- DO NOT include any citation tags in that sentence.
-- DO NOT invent companies, figures, or page numbers.
+Formatting (markdown)
+---------------------
+- Open with a short overview paragraph that directly answers the question.
+- Use **bold** for the key figures and entity names.
+- Use bullet lists when summarising 3+ points.
+- Use a GitHub-flavoured markdown table when comparing two or more items
+  across the same metrics (e.g. revenue / margin / growth for two companies).
+- Use `## sub-headings` only when the answer has 2+ logical sections.
+- Keep paragraphs short (2-4 sentences); leave a blank line between them.
+
+Aim for a thorough, well-structured answer — long enough to fully address the
+question but with no filler.
+
+If the excerpts do NOT contain enough information to answer:
+- Say so in one short sentence.
+- Do NOT include any citation numbers in that sentence.
+- Do NOT invent figures, companies, or sources.
 """
 
 SYNTHESIZER_PROMPT = """\
 Question: {question}
 
-Sub-queries that were researched:
+Sub-queries researched:
 {sub_queries}
 
-Excerpts (each begins with its citation tag):
+Numbered excerpts (cite with `[N]`):
 {context}
 
 ---
-Write the final answer now, with an inline citation after every fact.
+Write the answer now in well-structured markdown, with a [N] citation
+after every factual claim.
 """
 
 CRITIC_SYSTEM = """\
@@ -332,12 +346,15 @@ class AgenticRAG:
         return {"retrieved_chunks": chunks}
 
     def synthesize_node(self, state: AgentState) -> dict:
-        """Strong LLM writes the final answer with inline citations."""
+        """Strong LLM writes the final answer with [N]-style inline citations."""
         from langchain_core.messages import HumanMessage, SystemMessage
 
         chunks = state.get("retrieved_chunks", [])
+        # 1-based numbering aligns with the citation IDs the user sees in the
+        # sidebar; the LLM is told to cite by these numbers.
         context = "\n\n".join(
-            f"{c['source']}\n{c['text']}" for c in chunks
+            f"[{i + 1}] {c.get('source','')}\n{c['text']}"
+            for i, c in enumerate(chunks)
         ) or "No context retrieved."
         sub_queries = "\n".join(f"- {q}" for q in state.get("sub_queries", []))
 

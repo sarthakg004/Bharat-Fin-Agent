@@ -236,18 +236,53 @@ class AgenticRAGv4(AgenticRAGv3):
         return super().critic_node(proxy)
 
     def synthesize_node(self, state: AgentState) -> dict:
-        """v3 synthesizer + web results merged into the context."""
+        """v3 synth + web results, presented as one unified numbered evidence list.
+
+        Numbering order matches what the frontend sees (text → web → table),
+        so a `[3]` in the answer points at the third card in the sidebar.
+        """
         from langchain_core.messages import HumanMessage, SystemMessage
 
-        chunks = state.get("retrieved_chunks", [])
-        table_res = state.get("table_results", [])
-        web_res = state.get("web_results", [])
+        chunks = state.get("retrieved_chunks", []) or []
+        web_res = state.get("web_results", []) or []
+        table_res = state.get("table_results", []) or []
 
-        text_context = (
-            "\n\n".join(f"{c['source']}\n{c['text']}" for c in chunks) or "(none)"
+        evidence_items: list[str] = []
+        idx = 1
+
+        # 1. Text excerpts
+        for c in chunks:
+            tag = c.get("source", "")
+            text = c.get("text", "")
+            evidence_items.append(f"[{idx}] FILING EXCERPT — {tag}\n{text[:1500]}")
+            idx += 1
+
+        # 2. Web hits (trusted first thanks to WebSearcher's two-pass)
+        for h in web_res:
+            tier = "TRUSTED PRESS" if h.get("tier") == "trusted" else "WEB"
+            evidence_items.append(
+                f"[{idx}] {tier} — {h.get('title','')[:120]} "
+                f"({h.get('url','')})\n{(h.get('content') or '')[:1000]}"
+            )
+            idx += 1
+
+        # 3. Table computations
+        for t in table_res:
+            if t.get("error") and not t.get("answer"):
+                continue
+            used = (t.get("tables_used") or [])[:1]
+            first = used[0] if used else {}
+            evidence_items.append(
+                f"[{idx}] TABLE COMPUTATION — {first.get('title','?')} "
+                f"({first.get('company','?')} {first.get('year','?')}, "
+                f"p. {first.get('page','?')})\n"
+                f"Computed: {t.get('answer','')[:600]}"
+            )
+            idx += 1
+
+        evidence_block = (
+            "\n\n".join(evidence_items) if evidence_items else "(no evidence retrieved)"
         )
-        table_context = self._format_table_results(table_res) or "(none)"
-        web_context = self._format_web_results(web_res) or "(none)"
         sub_queries = "\n".join(f"- {q}" for q in state.get("sub_queries", []))
 
         prompt = f"""Question: {state['question']}
@@ -255,36 +290,23 @@ class AgenticRAGv4(AgenticRAGv3):
 Sub-queries researched:
 {sub_queries}
 
-Text excerpts (each begins with its citation tag, may be empty):
-{text_context}
-
-Numeric / table-derived results (may be empty):
-{table_context}
-
-Web / news results — each prefixed with `[Trusted]` (financial press,
-exchanges, regulator sites) or `[Web]` (general). When both kinds of evidence
-are available, prefer trusted ones for figures.
-{web_context}
+Numbered evidence (cite with `[N]`):
+{evidence_block}
 
 ---
-Write the final answer now, with an inline citation after every fact.
-Tags must be copied verbatim from the evidence header; do not invent any.
-
-When the corpus excerpts above are empty/sparse but web results ARE present,
-answer using the web results — they ARE the evidence for this question.
-Only fall back to "the provided evidence does not contain information about X"
-if NONE of the three evidence buckets contains anything useful."""
+Write your answer now in well-structured markdown with [N] citations after
+every factual claim. If the evidence above does contain usable material —
+including web / news items — USE IT; don't fall back to "no information"
+unless every single item is irrelevant."""
 
         llm = self._get_llm("synth")
         response = llm.invoke([
-            SystemMessage(content=SYNTH_V3_SYSTEM
-                          + "\nWeb/news citations use the form <News: title — source>."),
+            SystemMessage(content=SYNTH_V3_SYSTEM),
             HumanMessage(content=prompt),
         ])
         answer = response.content
-        citations = sorted(set(
-            re.findall(r"\[[^\]]+\]|\(Table:[^)]+\)|<News:[^>]+>", answer)
-        ))
+        # Citation extraction: only `[N]` / `[N, M]` markers, no verbose tags.
+        citations = sorted(set(re.findall(r"\[\d+(?:\s*,\s*\d+)*\]", answer)))
         low_conf = (
             state.get("avg_grade", 0.0) < self.grade_threshold
             and state.get("iteration_count", 0) >= self.max_rewrites

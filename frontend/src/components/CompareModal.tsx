@@ -4,7 +4,7 @@ import { X, Send, Loader2 } from "lucide-react";
 
 import { streamQuery, type SSEEvent, type Chunk, type QueryMetadata, type ConfigId } from "@/lib/api";
 import { useConfigStore } from "@/store/configStore";
-import { parseAnswerCitations } from "@/lib/utils";
+import { MarkdownAnswer } from "@/lib/markdown";
 
 interface Props {
   open: boolean;
@@ -138,7 +138,6 @@ export function CompareModal({ open, onClose }: Props) {
 }
 
 function Column({ title, state }: { title: string; state: RaceState }) {
-  const segments = parseAnswerCitations(state.answer);
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex items-center justify-between border-b border-border-subtle px-4 py-2">
@@ -162,12 +161,8 @@ function Column({ title, state }: { title: string; state: RaceState }) {
             {state.status}
           </div>
         )}
-        <p className="whitespace-pre-wrap font-ui text-[13px] leading-relaxed text-text-primary">
-          {segments.map((s, i) =>
-            s.kind === "text" ? <span key={i}>{s.text}</span> : <span key={i} className="citation-mark">[{s.ids.join(",")}]</span>,
-          )}
-          {!state.done && state.answer && <span className="streaming-cursor">▌</span>}
-        </p>
+        <MarkdownAnswer text={state.answer} />
+        {!state.done && state.answer && <span className="streaming-cursor">▌</span>}
       </div>
       <div className="border-t border-border-subtle px-4 py-2 font-mono text-[10px] text-text-muted">
         {state.chunks.length > 0 && <span>{state.chunks.length} chunks · </span>}

@@ -58,22 +58,34 @@ load_dotenv()  # picks up provider API keys from a .env file if present
 # --------------------------------------------------------------------------- #
 
 SYSTEM_PROMPT = """\
-You are a financial analyst assistant with access to excerpts from SEC 10-K \
-annual reports and Indian company annual reports. Answer the user's question \
-using ONLY the information provided in the context below. \
-If the context does not contain enough information to answer confidently, \
-say "I don't have enough information in the provided context to answer this." \
-Do not fabricate numbers or facts not present in the context.\
+You are a financial analyst assistant with access to numbered excerpts from
+SEC 10-K filings and Indian annual reports. Answer the user's question using
+ONLY the supplied excerpts.
+
+Citations: cite by number only — after every factual claim, append the index
+of the excerpt(s) that support it in square brackets, e.g. \"net sales were \
+$394.3 billion [1]\". Multiple sources for one claim: `[1,3]`. Do NOT write \
+out source titles, URLs, or full tags in the prose.
+
+Formatting: write the answer in clean markdown. Use **bold** for key figures \
+and entity names, bullet lists for 3+ points, a GitHub-flavoured markdown \
+table when comparing two or more items on the same metrics, and `## \
+sub-headings` only when the answer has 2+ logical sections. Keep paragraphs \
+short and leave a blank line between them.
+
+Aim for a thorough, well-structured answer; no filler. If the excerpts don't \
+contain enough information, say so in one short sentence WITHOUT any citation \
+numbers — and do not invent figures.
 """
 
 RAG_PROMPT = """\
-Context from financial filings:
+Numbered excerpts (cite with `[N]`):
 {context}
 
 ---
 Question: {question}
 
-Provide a concise, accurate answer citing the relevant figures directly from the context.
+Answer in well-structured markdown with [N] citations after every factual claim.
 """
 
 
@@ -170,15 +182,16 @@ class NaiveRAG:
         # 1. Retrieve
         docs = self._get_retriever().similarity_search(question, k=self.top_k)
 
-        # 2. Build context string
+        # 2. Build context string — 1-based numbering so the model can cite
+        # by these indices and the frontend can scroll to the matching card.
         context_parts = []
         for i, doc in enumerate(docs, 1):
             meta = doc.metadata
             source = (
-                f"[{meta.get('company') or meta.get('ticker', '?')}, "
-                f"FY{meta.get('year', '?')}, page {meta.get('page', '?')}]"
+                f"{meta.get('company') or meta.get('ticker', '?')}, "
+                f"FY{meta.get('year', '?')}, page {meta.get('page', '?')}"
             )
-            context_parts.append(f"--- Excerpt {i} {source} ---\n{doc.page_content}")
+            context_parts.append(f"[{i}] ({source})\n{doc.page_content}")
         context = "\n\n".join(context_parts)
 
         # 3. Build prompt
