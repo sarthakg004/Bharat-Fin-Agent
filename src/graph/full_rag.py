@@ -359,13 +359,22 @@ class AgenticRAGv3(AgenticRAGv2):
     # ------------------------------------------------------------------ #
 
     def _grade_router(self, state: AgentState) -> str:
-        """Route to `table_agent` when text retrieval is good enough (or no
-        narrative sub-queries exist) — otherwise rewrite and retry."""
+        """Route to `table_agent` when text retrieval is good enough (or there
+        is no narrative sub-query, or rewriting clearly won't help) — otherwise
+        rewrite and retry."""
         routes = state.get("query_routes") or []
         has_narrative = any(r != "numeric" for r in routes)
+        avg = state.get("avg_grade", 0.0)
+        kept = state.get("retrieved_chunks") or []
+
         if not has_narrative:
             return "table_agent"
-        if state.get("avg_grade", 0.0) >= self.grade_threshold:
+        # Grader filtered every chunk away AND the average was very low →
+        # the entity isn't in the corpus; rewriting won't fix that. Skip ahead
+        # to table/web so any out-of-corpus evidence can still answer.
+        if not kept and avg < self.very_poor_grade:
+            return "table_agent"
+        if avg >= self.grade_threshold:
             return "table_agent"
         if state.get("iteration_count", 0) >= self.max_rewrites:
             return "table_agent"

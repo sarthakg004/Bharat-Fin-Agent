@@ -70,11 +70,19 @@ GRADER_PROMPT = """\
 Question: {question}
 
 For each excerpt below, give a relevance score:
-  1 = irrelevant
-  2 = tangentially related
+  1 = irrelevant — wrong company / wrong topic
+  2 = tangentially related — same broad topic but different ENTITY than the
+      question asks about (e.g. question is about ServiceNow, excerpt is a
+      Lockheed Martin 10-K discussing "U.S. DoD revenue")
   3 = related but does not directly answer
   4 = partially answers
   5 = directly answers the question
+
+Be strict about ENTITY match. If the question asks about Company X but the
+excerpt is a filing from Company Y, score it 1 or 2 even when both companies
+operate in the same industry or discuss the same topic (defense contracts,
+cloud revenue, etc.). Score 4 or 5 only when the excerpt is from / about the
+same entity AND addresses the specific question.
 
 Return one score per excerpt, in the same order.
 
@@ -250,6 +258,8 @@ class AgenticRAGv2(AgenticRAG):
         final_top_k: int = 5,
         grader_model: Optional[str] = None,
         grade_threshold: float = 3.0,
+        min_keep_grade: int = 4,
+        very_poor_grade: float = 2.5,
         max_rewrites: int = 3,
         max_critic_retries: int = 2,
         **kwargs,
@@ -262,6 +272,15 @@ class AgenticRAGv2(AgenticRAG):
         # Grader is fast & cheap — default to the planner-tier model.
         self.grader_model = grader_model or self.planner_model
         self.grade_threshold = grade_threshold
+        # Chunks whose per-chunk grade falls below `min_keep_grade` are dropped
+        # before synthesis. Default 4 means we keep only "partially answers" (4)
+        # or "directly answers" (5) — this is what prevents off-entity noise
+        # from polluting the synth (e.g. LMT/BA chunks on a ServiceNow query).
+        self.min_keep_grade = min_keep_grade
+        # If the AVERAGE chunk grade is below this AND the post-filter list is
+        # empty, rewriting won't help (the corpus genuinely lacks the entity)
+        # — short-circuit straight to the next stage.
+        self.very_poor_grade = very_poor_grade
         self.max_rewrites = max_rewrites
         self.max_critic_retries = max_critic_retries
         self._hybrid: Optional[HybridRetriever] = None
@@ -317,10 +336,19 @@ class AgenticRAGv2(AgenticRAG):
         return {"retrieved_chunks": chunks}
 
     def grader_node(self, state: AgentState) -> dict:
-        """Score each chunk's relevance (1-5) with a fast LLM (structured output)."""
+        """Score each chunk's relevance (1-5) AND drop the low-graded ones.
+
+        Off-entity noise is the main failure mode for questions about
+        companies not in the corpus (the retriever happily returns
+        topically-similar chunks from a different company). The filter step
+        below removes them before the synthesizer ever sees them.
+
+        The `avg_grade` is computed on the FULL set so the rewrite-loop
+        router still gets a faithful "how good was retrieval overall?" signal.
+        """
         chunks = state.get("retrieved_chunks", [])
         if not chunks:
-            return {"grades": [], "avg_grade": 0.0}
+            return {"grades": [], "avg_grade": 0.0, "retrieved_chunks": []}
 
         # Truncate excerpts to keep the grader prompt small.
         excerpts = "\n\n".join(
@@ -333,15 +361,34 @@ class AgenticRAGv2(AgenticRAG):
                 GRADER_PROMPT.format(question=state["question"], excerpts=excerpts)
             )
             scores = [s.score for s in report.scores][: len(chunks)]
-            # Pad/truncate to exactly len(chunks) so the lists line up.
             while len(scores) < len(chunks):
                 scores.append(3)
         except Exception as e:
             self._log(state, f"grader failed ({e}); assuming neutral score 3")
             scores = [3] * len(chunks)
 
-        avg = sum(scores) / len(scores) if scores else 0.0
-        return {"grades": scores, "avg_grade": round(avg, 2)}
+        avg = round(sum(scores) / len(scores), 2) if scores else 0.0
+
+        kept_chunks: list[dict] = []
+        kept_grades: list[int] = []
+        dropped = 0
+        for chunk, score in zip(chunks, scores):
+            if score >= self.min_keep_grade:
+                kept_chunks.append(chunk)
+                kept_grades.append(score)
+            else:
+                dropped += 1
+        if dropped:
+            self._log(
+                state,
+                f"grader dropped {dropped}/{len(chunks)} chunks below "
+                f"grade {self.min_keep_grade}",
+            )
+        return {
+            "grades": kept_grades,
+            "avg_grade": avg,
+            "retrieved_chunks": kept_chunks,
+        }
 
     def rewrite_node(self, state: AgentState) -> dict:
         """Reformulate the question to improve retrieval. Caps via iteration_count."""
@@ -439,6 +486,12 @@ class AgenticRAGv2(AgenticRAG):
 
     def _grade_router(self, state: AgentState) -> str:
         avg = state.get("avg_grade", 0.0)
+        kept = state.get("retrieved_chunks") or []
+        # All chunks filtered out AND average grade is very low → rewriting
+        # over the same corpus won't surface anything (the entity isn't
+        # there). Skip straight to the next stage (web/table/synth).
+        if not kept and avg < self.very_poor_grade:
+            return "synthesize"
         if avg >= self.grade_threshold:
             return "synthesize"
         if state.get("iteration_count", 0) >= self.max_rewrites:
