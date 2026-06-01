@@ -32,8 +32,10 @@ from backend import history, rag_service
 from backend.models import (
     ConfigInfo,
     ConfigsResponse,
+    DeleteResponse,
     HealthResponse,
     HistoryItem,
+    HistoryItemFull,
     HistoryResponse,
     QueryRequest,
 )
@@ -96,6 +98,28 @@ def list_history(limit: int = 50):
         latency=r["latency"] or 0.0, created_at=r["created_at"],
     ) for r in rows]
     return HistoryResponse(items=items)
+
+
+@app.get("/api/history/{item_id}", response_model=HistoryItemFull)
+def get_history_item(item_id: int):
+    row = history.get_one(item_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"History item {item_id} not found.")
+    return HistoryItemFull(**row)
+
+
+@app.delete("/api/history/{item_id}", response_model=DeleteResponse)
+def delete_history_item(item_id: int):
+    ok = history.delete_one(item_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"History item {item_id} not found.")
+    return DeleteResponse(deleted=1)
+
+
+@app.delete("/api/history", response_model=DeleteResponse)
+def delete_all_history():
+    n = history.delete_all()
+    return DeleteResponse(deleted=n)
 
 
 # --------------------------------------------------------------------------- #
@@ -181,6 +205,9 @@ async def _stream_answer(request: QueryRequest) -> AsyncGenerator[str, None]:
         history.log_query(
             question=request.question, config=request.config,
             market=request.market, answer=answer, latency=latency,
+            # Persist chunks + metadata so the UI can re-open the full
+            # conversation later without burning another Groq call.
+            chunks=chunks, metadata=meta,
         )
     except Exception:
         pass

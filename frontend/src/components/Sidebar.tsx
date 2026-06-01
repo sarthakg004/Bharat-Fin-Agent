@@ -1,6 +1,8 @@
+import { useRef } from "react";
 import { motion } from "framer-motion";
-import { useQuery } from "@tanstack/react-query";
-import { Clock, Info } from "lucide-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Clock, Info, Trash2 } from "lucide-react";
+import toast from "react-hot-toast";
 
 import { api } from "@/lib/api";
 import { useConfigStore } from "@/store/configStore";
@@ -13,7 +15,13 @@ const CONFIG_DESCRIPTIONS: Record<string, string> = {
   agentic: "Plan → hybrid retrieve → grade → rewrite → synthesize → critic.",
 };
 
-export function Sidebar({ onAsk }: { onAsk: (q: string) => void }) {
+interface Props {
+  // Reserved for future "rerun this question as a fresh query" affordance;
+  // history clicks currently load the stored chat instead.
+  onAsk?: (q: string) => void;
+}
+
+export function Sidebar({ onAsk: _onAsk }: Props) {
   const { config, setConfig } = useConfigStore();
   const history = useQuery({
     queryKey: ["history"],
@@ -74,49 +82,138 @@ export function Sidebar({ onAsk }: { onAsk: (q: string) => void }) {
       </section>
 
       {/* History */}
-      <section className="flex-1 overflow-y-auto p-4">
+      <HistorySection
+        items={history.data?.items ?? []}
+        isLoading={history.isLoading}
+      />
+
+      <ClearConversationButton />
+    </motion.aside>
+  );
+}
+
+function HistorySection({
+  items,
+  isLoading,
+}: {
+  items: { id: number; question: string; config: string; market: string; created_at: string }[];
+  isLoading: boolean;
+}) {
+  const queryClient = useQueryClient();
+  const loadHistoryItem = useChatStore((s) => s.loadHistoryItem);
+  // If the user rapidly clicks several history items, only the most recent
+  // request should win. We ignore any in-flight load whose token has been
+  // superseded by a newer click.
+  const loadTokenRef = useRef(0);
+
+  async function handleLoad(id: number) {
+    const token = ++loadTokenRef.current;
+    try {
+      const item = await api.historyItem(id);
+      if (loadTokenRef.current !== token) return;
+      loadHistoryItem(item);
+    } catch (e) {
+      if (loadTokenRef.current !== token) return;
+      toast.error(`Couldn't load: ${(e as Error).message}`);
+    }
+  }
+
+  async function handleDelete(id: number, e: React.MouseEvent) {
+    e.stopPropagation();
+    try {
+      await api.deleteHistoryItem(id);
+      toast.success("Deleted.");
+      queryClient.invalidateQueries({ queryKey: ["history"] });
+    } catch (err) {
+      toast.error(`Delete failed: ${(err as Error).message}`);
+    }
+  }
+
+  async function handleClearAll() {
+    if (items.length === 0) return;
+    if (!window.confirm(`Delete all ${items.length} history items?`)) return;
+    try {
+      const res = await api.clearHistory();
+      toast.success(`Cleared ${res.deleted} item(s).`);
+      queryClient.invalidateQueries({ queryKey: ["history"] });
+    } catch (err) {
+      toast.error(`Clear failed: ${(err as Error).message}`);
+    }
+  }
+
+  return (
+    <section className="flex flex-1 flex-col overflow-hidden">
+      <div className="flex items-center justify-between border-b border-border-subtle px-4 py-2">
         <SectionLabel>
           <span className="inline-flex items-center gap-1.5">
             <Clock size={11} /> History
           </span>
         </SectionLabel>
-        <div className="mt-2 flex flex-col gap-px">
-          {history.isLoading && (
+        {items.length > 0 && (
+          <button
+            onClick={handleClearAll}
+            className="font-mono text-[10px] uppercase tracking-wider text-text-muted hover:text-err"
+            title="Delete every history item"
+          >
+            clear all
+          </button>
+        )}
+      </div>
+
+      <div className="flex-1 overflow-y-auto p-4">
+        <div className="flex flex-col gap-px">
+          {isLoading && (
             <>
               <div className="h-[28px] skeleton" />
               <div className="h-[28px] skeleton" />
             </>
           )}
-          {history.data?.items.length === 0 && (
+          {!isLoading && items.length === 0 && (
             <span className="font-mono text-[10px] text-text-muted">
               No queries yet.
             </span>
           )}
-          {history.data?.items.map((h) => (
-            <button
+          {items.map((h) => (
+            <div
               key={h.id}
-              onClick={() => onAsk(h.question)}
-              className="group flex flex-col gap-px border-b border-border-subtle px-2 py-2 text-left transition-colors hover:bg-bg-hover"
-              title={h.question}
+              role="button"
+              tabIndex={0}
+              onClick={() => handleLoad(h.id)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  handleLoad(h.id);
+                }
+              }}
+              className="group flex cursor-pointer flex-col gap-px border-b border-border-subtle px-2 py-2 text-left transition-colors hover:bg-bg-hover"
+              title={`Load: ${h.question}`}
             >
-              <span className="line-clamp-1 font-ui text-[12px] text-text-primary">
-                {h.question}
-              </span>
+              <div className="flex items-start gap-2">
+                <span className="line-clamp-1 flex-1 font-ui text-[12px] text-text-primary">
+                  {h.question}
+                </span>
+                <button
+                  onClick={(e) => handleDelete(h.id, e)}
+                  className="shrink-0 text-text-muted opacity-0 transition-opacity hover:text-err group-hover:opacity-100"
+                  title="Delete this history item"
+                  aria-label="Delete"
+                >
+                  <Trash2 size={11} />
+                </button>
+              </div>
               <span className="flex items-center justify-between font-mono text-[9px] uppercase tracking-wider text-text-muted">
                 <span>{h.config} · {h.market}</span>
                 <span>{timeAgo(h.created_at)}</span>
               </span>
-            </button>
+            </div>
           ))}
         </div>
-      </section>
-
-      <ClearButton />
-    </motion.aside>
+      </div>
+    </section>
   );
 }
 
-function ClearButton() {
+function ClearConversationButton() {
   const clear = useChatStore((s) => s.clear);
   return (
     <button

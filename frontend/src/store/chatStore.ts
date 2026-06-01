@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { Chunk, ConfigId, Market, QueryMetadata } from "@/lib/api";
+import type { Chunk, ConfigId, HistoryItemFull, Market, QueryMetadata } from "@/lib/api";
 
 export type MessageRole = "user" | "assistant";
 
@@ -36,6 +36,7 @@ interface ChatState {
   clear: () => void;
   setHighlight: (id: number | null) => void;
   setStreaming: (id: string | null) => void;
+  loadHistoryItem: (item: HistoryItemFull) => void;
 }
 
 function uid(): string {
@@ -67,6 +68,37 @@ export const useChatStore = create<ChatState>((set) => ({
   clear: () => set({ messages: [], highlightedChunkId: null, streamingId: null }),
   setHighlight: (id) => set({ highlightedChunkId: id }),
   setStreaming: (id) => set({ streamingId: id }),
+  loadHistoryItem: (item) => {
+    // Replace the entire view with the historical question + stored answer.
+    // Streaming is force-cleared so any in-flight query is visually abandoned;
+    // the underlying SSE call is aborted by the hook layer (App.tsx).
+    const now = Date.now();
+    set({
+      highlightedChunkId: null,
+      streamingId: null,
+      messages: [
+        {
+          id: uid(),
+          role: "user",
+          content: item.question,
+          market: item.market as Market,
+          config: item.config as ConfigId,
+          createdAt: now,
+        },
+        {
+          id: uid(),
+          role: "assistant",
+          content: item.answer,
+          chunks: item.chunks,
+          metadata: item.metadata,
+          market: item.market as Market,
+          config: item.config as ConfigId,
+          streaming: false,
+          createdAt: now + 1,
+        },
+      ],
+    });
+  },
 }));
 
 /**

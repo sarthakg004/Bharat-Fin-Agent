@@ -46,5 +46,16 @@ class HistoryItem(BaseModel):
     created_at: str
 
 
+class HistoryItemFull(HistoryItem):
+    """Single-item endpoint adds the chunks + run metadata so the UI can
+    rehydrate a past chat without re-running the LLM."""
+    chunks: list[dict] = []
+    metadata: dict = {}
+
+
 class HistoryResponse(BaseModel):
     items: list[HistoryItem]
+
+
+class DeleteResponse(BaseModel):
+    deleted: int

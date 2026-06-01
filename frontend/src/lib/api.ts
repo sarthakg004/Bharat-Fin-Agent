@@ -65,6 +65,11 @@ export interface HistoryItem {
   created_at: string;
 }
 
+export interface HistoryItemFull extends HistoryItem {
+  chunks: Chunk[];
+  metadata: QueryMetadata;
+}
+
 // --------------------------------------------------------------------------- //
 // JSON endpoints
 // --------------------------------------------------------------------------- //
@@ -75,10 +80,20 @@ async function getJson<T>(path: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+async function send<T>(path: string, method: "DELETE" | "POST"): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, { method });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json() as Promise<T>;
+}
+
 export const api = {
   health: () => getJson<HealthResponse>("/api/health"),
   configs: () => getJson<{ configs: ConfigInfo[] }>("/api/configs"),
   history: (limit = 50) => getJson<{ items: HistoryItem[] }>(`/api/history?limit=${limit}`),
+  historyItem: (id: number) => getJson<HistoryItemFull>(`/api/history/${id}`),
+  deleteHistoryItem: (id: number) =>
+    send<{ deleted: number }>(`/api/history/${id}`, "DELETE"),
+  clearHistory: () => send<{ deleted: number }>(`/api/history`, "DELETE"),
 };
 
 // --------------------------------------------------------------------------- //
