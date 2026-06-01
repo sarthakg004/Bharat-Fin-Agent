@@ -16,6 +16,7 @@ export function useRAGQuery(market: Market, config: ConfigId, companyFilter: str
     appendMessage,
     patchMessage,
     appendChunkToMessage,
+    appendChartToMessage,
     setStreaming,
     startNewChat,
   } = useChatStore();
@@ -60,6 +61,9 @@ export function useRAGQuery(market: Market, config: ConfigId, companyFilter: str
                   chunks: e.chunks,
                   metadata: { ...(e.metadata || {}) },
                 });
+                break;
+              case "chart":
+                appendChartToMessage(assistantId, e.chart);
                 break;
               case "chunk":
                 appendChunkToMessage(assistantId, e.content);

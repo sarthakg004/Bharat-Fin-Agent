@@ -172,11 +172,17 @@ class AgenticRAG:
         OPENAI_API_KEY / ANTHROPIC_API_KEY).
     """
 
+    # Groq tier picks:
+    #   planner / grader / router (fast, structured output)  → llama-3.1-8b-instant
+    #   synth + critic  (long-form writing, reasoning)        → openai/gpt-oss-120b
+    # 120B has its own TPD bucket on Groq so it relieves the 70B-versatile
+    # quota that was getting hammered, and produces noticeably better
+    # multi-section / markdown / citation output.
     DEFAULTS = {
         "groq": {
             "planner": "llama-3.1-8b-instant",
-            "synth": "llama-3.3-70b-versatile",
-            "critic": "llama-3.3-70b-versatile",
+            "synth":   "openai/gpt-oss-120b",
+            "critic":  "openai/gpt-oss-120b",
         },
         "gemini": {
             "planner": "gemini-2.5-flash",

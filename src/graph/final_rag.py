@@ -46,7 +46,8 @@ from src.graph.full_rag import (
     SYNTH_V3_SYSTEM,
     append_comparison_row,  # noqa: F401  re-export
 )
-from src.graph.state import AgentState, NumericVerification
+from src.graph.market_tools import call_tool as call_market_tool
+from src.graph.state import AgentState, MarketIntent, NumericVerification
 from src.graph.translate import detect_language, language_name, translate_text
 from src.graph.web_search import WebSearcher
 
@@ -54,6 +55,38 @@ from src.graph.web_search import WebSearcher
 # --------------------------------------------------------------------------- #
 # Prompts
 # --------------------------------------------------------------------------- #
+
+MARKET_PLANNER_SYSTEM = """\
+You are a market-data planner. Given a question routed to the `market` lane,
+decide which yfinance-backed tools to invoke and with what arguments.
+
+Available tools:
+  - get_quote(symbol)                — latest price, day range, 52-week.
+  - get_history(symbol, period, interval) — OHLCV + a candlestick chart.
+  - get_company_info(symbol)         — sector, industry, summary.
+  - get_news(symbol, limit)          — recent ticker-specific headlines.
+  - compare(symbols)                 — quote snapshot for 2-6 tickers.
+
+Use Yahoo ticker format: AAPL, MSFT (US listings have no suffix); for India use
+.NS (NSE) like RELIANCE.NS or TCS.NS. Common aliases (TCS, INFY, RELIANCE,
+HDFC, etc.) are auto-normalised — pass either form.
+
+Pick the minimum set of calls that fully answers the question. If the user
+asks for a chart, history, "show me", "1-year", "5-year", "ytd", etc. → use
+get_history. For "what is X trading at" → get_quote. For "compare X and Y" →
+compare. Use multiple calls when one isn't enough (e.g. quote + history).
+Return an empty list if the question genuinely isn't about market data.
+"""
+
+MARKET_PLANNER_PROMPT = """\
+Question: {question}
+
+Sub-queries routed to `market`:
+{market_subs}
+
+Return a list of MarketToolCall objects.
+"""
+
 
 NUM_VERIFY_SYSTEM = """\
 You verify numeric claims in a draft financial answer. Given the draft answer
@@ -167,6 +200,82 @@ class AgenticRAGv4(AgenticRAGv3):
         )
         return {"question": translated}
 
+    def _get_market_planner_llm(self):
+        """Same LLM as the router/planner tier — structured output, fast."""
+        if "market_planner" not in self._llms:
+            from src.llm import build_llm
+
+            self._llms["market_planner"] = build_llm(
+                self.provider, self.planner_model, self.api_key, temperature=0.0,
+            )
+        return self._llms["market_planner"]
+
+    def market_data_node(self, state: AgentState) -> dict:
+        """Call yfinance tools for sub-queries routed to `market`.
+
+        Strategy:
+          1. Take the market sub-queries (those classified as `market` by the router).
+          2. Ask the planner LLM for a MarketIntent (list of tool calls).
+          3. Dispatch each call to `market_tools.call_tool` and collect:
+                - `market_data`: structured numeric facts the synthesizer cites
+                - `charts`     : lightweight-charts JSON payloads the frontend renders
+          4. Synth treats market_data as additional numbered evidence; charts ride
+             on a separate `state.charts` channel so the UI can attach them to
+             the assistant message.
+        """
+        from langchain_core.messages import HumanMessage, SystemMessage
+
+        sub_queries = state.get("sub_queries") or [state["question"]]
+        routes = state.get("query_routes") or ["narrative"] * len(sub_queries)
+        market_subs = [s for s, r in zip(sub_queries, routes) if r == "market"]
+        if not market_subs:
+            return {"market_data": [], "charts": []}
+
+        market_q = " | ".join(market_subs) if len(market_subs) > 1 else market_subs[0]
+        planner = self._get_market_planner_llm().with_structured_output(MarketIntent)
+        try:
+            intent: MarketIntent = planner.invoke([
+                SystemMessage(content=MARKET_PLANNER_SYSTEM),
+                HumanMessage(content=MARKET_PLANNER_PROMPT.format(
+                    question=state["question"],
+                    market_subs="\n".join(f"- {s}" for s in market_subs),
+                )),
+            ])
+            calls = intent.calls[:6]
+        except Exception as e:
+            self._log(state, f"market planner failed ({e}); skipping market lane")
+            return {"market_data": [], "charts": []}
+
+        market_data: list[dict] = []
+        charts: list[dict] = []
+        for c in calls:
+            kwargs: dict[str, object] = {}
+            if c.tool == "compare":
+                kwargs["symbols"] = c.symbols
+            else:
+                kwargs["symbol"] = c.symbol
+            if c.tool == "get_history":
+                kwargs["period"] = c.period
+                kwargs["interval"] = c.interval
+            if c.tool == "get_news":
+                kwargs["limit"] = 5
+
+            res = call_market_tool(c.tool, **kwargs)
+            entry = {
+                "tool": c.tool,
+                "args": kwargs,
+                "ok": res.get("ok", False),
+                "data": res.get("data"),
+                "error": res.get("error"),
+                "sub_query": market_q,
+            }
+            market_data.append(entry)
+
+            # `get_history` produces a chart spec we want to surface separately.
+            if c.tool == "get_history" and res.get("ok") and res["data"].get("chart"):
+                charts.append(res["data"]["chart"])
+        return {"market_data": market_data, "charts": charts}
+
     def web_search_node(self, state: AgentState) -> dict:
         """Search the web for `external` sub-queries, AND escalate when text
         retrieval came back empty or poorly graded.
@@ -210,29 +319,52 @@ class AgenticRAGv4(AgenticRAGv3):
         return {"web_results": hits}
 
     def critic_node(self, state: AgentState) -> dict:
-        """v3 critic with web-search hits added to the evidence pool.
-
-        Without this, a claim grounded in a Tavily hit looks "unsupported"
-        to the critic (because v3 only sees text + table chunks), triggers
-        a retry, and ends up refused even though the verifier accepts it.
+        """v3 critic with web-search hits AND market-data tool results added to
+        the evidence pool. Without this, a claim grounded in a Tavily hit or
+        a yfinance quote looks "unsupported" to the critic (which only sees
+        text + table chunks by default), triggers a retry, and ends up refused
+        even though the verifier accepts it.
         """
-        web_pseudo_chunks: list[dict] = []
+        pseudo_chunks: list[dict] = []
+
+        # Web hits → pseudo chunks
         for h in state.get("web_results", []) or []:
-            web_pseudo_chunks.append({
+            pseudo_chunks.append({
                 "text": (h.get("content") or "")[:1500],
                 "source": (
                     f"<News: {h.get('title','')[:80]} — {h.get('source','web')}>"
                 ),
                 "company": h.get("source", "web"),
-                "year": (h.get("date") or "")[:4] or "?",
+                "year": (h.get("published_date") or h.get("date") or "")[:4] or "?",
                 "page": "—",
                 "sub_query": h.get("sub_query", ""),
             })
-        if not web_pseudo_chunks:
+
+        # Live market data → pseudo chunks (one per successful tool call).
+        for m in state.get("market_data", []) or []:
+            if not m.get("ok"):
+                continue
+            tool = m.get("tool", "")
+            data = m.get("data") or {}
+            sym = (
+                data.get("symbol")
+                or (data.get("summary") or {}).get("symbol")
+                or "—"
+            )
+            pseudo_chunks.append({
+                "text": str(data)[:1800],
+                "source": f"<Market: yfinance.{tool} {sym}>",
+                "company": sym,
+                "year": "—",
+                "page": "—",
+                "sub_query": m.get("sub_query", ""),
+            })
+
+        if not pseudo_chunks:
             return super().critic_node(state)
 
         proxy = dict(state)
-        proxy["retrieved_chunks"] = list(state.get("retrieved_chunks", [])) + web_pseudo_chunks
+        proxy["retrieved_chunks"] = list(state.get("retrieved_chunks", [])) + pseudo_chunks
         return super().critic_node(proxy)
 
     def synthesize_node(self, state: AgentState) -> dict:
@@ -246,6 +378,7 @@ class AgenticRAGv4(AgenticRAGv3):
         chunks = state.get("retrieved_chunks", []) or []
         web_res = state.get("web_results", []) or []
         table_res = state.get("table_results", []) or []
+        market_data = state.get("market_data", []) or []
 
         evidence_items: list[str] = []
         idx = 1
@@ -257,11 +390,60 @@ class AgenticRAGv4(AgenticRAGv3):
             evidence_items.append(f"[{idx}] FILING EXCERPT — {tag}\n{text[:1500]}")
             idx += 1
 
-        # 2. Web hits (trusted first thanks to WebSearcher's two-pass)
+        # 1b. Live market data (yfinance) — fresh numbers the synth should
+        # prefer when the question is market-flavoured.
+        for m in market_data:
+            if not m.get("ok"):
+                continue
+            tool = m.get("tool", "")
+            data = m.get("data") or {}
+            if tool == "get_history":
+                s = data.get("summary", {})
+                evidence_items.append(
+                    f"[{idx}] LIVE MARKET (yfinance · get_history) — "
+                    f"{s.get('symbol','?')} {s.get('period','?')} {s.get('interval','?')}\n"
+                    f"Range {s.get('start','?')} → {s.get('end','?')}; "
+                    f"first_close={s.get('first_close')}, last_close={s.get('last_close')}, "
+                    f"high={s.get('high')}, low={s.get('low')}, "
+                    f"pct_change={s.get('pct_change')}%."
+                )
+            elif tool == "compare":
+                rows = "\n".join(
+                    f"  - {r.get('symbol')}: last={r.get('lastPrice')} "
+                    f"prevClose={r.get('previousClose')} yearChange={r.get('yearChange')}"
+                    for r in (data.get("rows") or [])
+                )
+                evidence_items.append(
+                    f"[{idx}] LIVE MARKET (yfinance · compare)\n{rows}"
+                )
+            elif tool == "get_news":
+                arts = "\n".join(
+                    f"  - {a.get('title','')} ({a.get('publisher','')})"
+                    for a in (data.get("articles") or [])
+                )
+                evidence_items.append(
+                    f"[{idx}] LIVE MARKET (yfinance · get_news) — {data.get('symbol','?')}\n{arts}"
+                )
+            else:
+                # get_quote / get_company_info — flatten dict
+                kv = ", ".join(
+                    f"{k}={v}" for k, v in (data or {}).items() if v not in (None, "")
+                )
+                evidence_items.append(
+                    f"[{idx}] LIVE MARKET (yfinance · {tool})\n{kv[:1200]}"
+                )
+            idx += 1
+
+        # 2. Web hits (trusted first thanks to WebSearcher's two-pass).
+        # The publication date is surfaced in the header so the synthesizer
+        # can reason about recency — essential for "premarket", "today's
+        # price", "this week's news" style questions.
         for h in web_res:
             tier = "TRUSTED PRESS" if h.get("tier") == "trusted" else "WEB"
+            pub = h.get("published_date") or ""
+            pub_str = f" (published {pub})" if pub else ""
             evidence_items.append(
-                f"[{idx}] {tier} — {h.get('title','')[:120]} "
+                f"[{idx}] {tier}{pub_str} — {h.get('title','')[:120]} "
                 f"({h.get('url','')})\n{(h.get('content') or '')[:1000]}"
             )
             idx += 1
@@ -427,6 +609,7 @@ unless every single item is irrelevant."""
         g.add_node("grader", self.grader_node)
         g.add_node("rewrite", self.rewrite_node)
         g.add_node("table_agent", self.table_agent_node)
+        g.add_node("market_data", self.market_data_node)
         g.add_node("web_search", self.web_search_node)
         g.add_node("synthesize", self.synthesize_node)
         g.add_node("critic", self.critic_node)
@@ -445,7 +628,8 @@ unless every single item is irrelevant."""
             {"rewrite": "rewrite", "table_agent": "table_agent"},
         )
         g.add_edge("rewrite", "retrieve")
-        g.add_edge("table_agent", "web_search")
+        g.add_edge("table_agent", "market_data")
+        g.add_edge("market_data", "web_search")
         g.add_edge("web_search", "synthesize")
         g.add_edge("synthesize", "critic")
         g.add_edge("critic", "verify_numbers")
@@ -494,7 +678,12 @@ unless every single item is irrelevant."""
         for h in state.get("web_results", []):
             parts.append(f"[Web/{h.get('source', '')}] {h.get('title', '')}\n"
                          f"{(h.get('content') or '')[:600]}")
-        # Cap to a sane size so the verifier prompt stays small.
+        # Live market data (yfinance) is structured but legitimate evidence
+        # for any numeric claim about prices, ranges, returns.
+        for m in state.get("market_data", []) or []:
+            if not m.get("ok"):
+                continue
+            parts.append(f"[Market/{m.get('tool')}] {str(m.get('data',''))[:1200]}")
         return ("\n\n".join(parts))[:8000] or "(no evidence)"
 
 

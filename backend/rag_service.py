@@ -113,6 +113,7 @@ def run_naive(market: str, question: str, top_k: int = 5,
     return {
         "answer": res["answer"],
         "chunks": chunks,
+        "charts": [],   # naive mode has no market lane
         "metadata": {
             "model": res.get("model", "llama-3.1-8b-instant"),
             "latency": res.get("latency", 0.0),
@@ -205,11 +206,42 @@ def run_agentic(market: str, question: str, top_k: int = 5,
         })
         next_id += 1
 
+    # 4. Live market data (yfinance tools) — one synthetic chunk per
+    # successful call so the user can inspect the raw numbers next to the
+    # other evidence in the right-hand panel.
+    for m in state.get("market_data", []) or []:
+        if not m.get("ok"):
+            continue
+        data = m.get("data") or {}
+        tool = m.get("tool", "")
+        sym = (
+            data.get("symbol")
+            or (data.get("summary") or {}).get("symbol")
+            or "—"
+        )
+        chunks.append({
+            "id": next_id,
+            "text": str(data)[:1500],
+            "company": sym,
+            "ticker": sym,
+            "year": "—",
+            "page": "—",
+            "market": market,
+            "source_url": "",
+            "citation": f"<Market: yfinance.{tool} {sym}>",
+            "sub_query": m.get("sub_query", ""),
+            "kind": "market",
+        })
+        next_id += 1
+
     nv = state.get("numeric_verification") or {}
 
     return {
         "answer": state.get("final_answer") or "",
         "chunks": chunks,
+        # `charts` rides on its own channel — the frontend attaches them to
+        # the assistant message and renders inline via lightweight-charts.
+        "charts": list(state.get("charts", []) or []),
         "metadata": {
             "model": rag.synth_model,
             "latency": 0.0,                          # filled in by main.py wrapper
@@ -227,6 +259,7 @@ def run_agentic(market: str, question: str, top_k: int = 5,
             "unverified_count": len(nv.get("unverified", [])) if isinstance(nv, dict) else 0,
             "web_hits": len(state.get("web_results", []) or []),
             "table_computations": len(state.get("table_results", []) or []),
+            "market_calls": len(state.get("market_data", []) or []),
             "citations": state.get("citations", []),
         },
     }

@@ -180,6 +180,11 @@ async def _stream_answer(request: QueryRequest) -> AsyncGenerator[str, None]:
         "metadata": meta,
     })
 
+    # Charts are emitted separately so the frontend can attach them to the
+    # current assistant message without bloating the chunks payload.
+    for chart in (result.get("charts") or []):
+        yield _sse({"type": "chart", "chart": chart})
+
     yield _sse({"type": "status", "stage": "generating",
                 "label": f"Generating answer ({meta.get('model','')})..."})
 

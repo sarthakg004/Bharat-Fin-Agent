@@ -65,6 +65,30 @@ TRUSTED_FINANCIAL_DOMAINS: tuple[str, ...] = (
 )
 
 
+# Recency cues in the query → narrower Tavily `time_range`. Without these,
+# Tavily returns articles by relevance with no time bias, so a "premarket"
+# question can come back with last quarter's premarket move.
+_RECENCY_DAY_MARKERS = (
+    "premarket", "pre-market", "today", "this morning",
+    "right now", "current price", "live price", "as of now",
+)
+_RECENCY_WEEK_MARKERS = (
+    "yesterday", "this week", "latest", "this quarter results",
+)
+# Stock / company news is generally only useful within ~30 days.
+_DEFAULT_NEWS_RANGE = "month"
+
+
+def infer_time_range(query: str) -> str:
+    """day | week | month — used by Tavily to drop stale articles."""
+    q = (query or "").lower()
+    if any(m in q for m in _RECENCY_DAY_MARKERS):
+        return "day"
+    if any(m in q for m in _RECENCY_WEEK_MARKERS):
+        return "week"
+    return _DEFAULT_NEWS_RANGE
+
+
 class WebSearcher:
     """Unified web/news search with Tavily → local-news fallback.
 
@@ -73,6 +97,10 @@ class WebSearcher:
     Bloomberg, …) and one unrestricted general search. Trusted hits are
     returned first so the synthesizer can prefer them; each hit carries a
     `tier` of `"trusted"` or `"web"` for that decision.
+
+    All Tavily calls request `topic="news"` and a `time_range` inferred from
+    the query (day / week / month), so dated content gets filtered server-side
+    rather than being lumped into the synthesizer's context.
     """
 
     # Tavily's `max_results` accepts up to 20. We default to 10 so the
@@ -127,54 +155,76 @@ class WebSearcher:
             self._tavily = TavilyClient(api_key=self.tavily_api_key)
         return self._tavily
 
-    def _tavily_search(self, query: str, k: int) -> list[dict]:
-        """Two-pass search: trusted-domain first, then unrestricted general.
+    # Fallback widths when the inferred time_range returns too few hits.
+    # Order matters — we expand outwards: day → week → month.
+    _TIME_RANGE_FALLBACK = {
+        "day":   ["day", "week", "month"],
+        "week":  ["week", "month"],
+        "month": ["month"],
+    }
+    # Stop widening once we've collected this many useful hits.
+    _ENOUGH_HITS = 4
 
-        We do separate calls because Tavily's `include_domains` is a hard
-        filter — combining it with general results in a single call isn't
-        possible. Returns trusted hits first so the synthesizer can prefer
-        them; duplicates by URL are dropped.
+    def _tavily_search(self, query: str, k: int) -> list[dict]:
+        """Two-pass search with progressive time-range fallback.
+
+        Each iteration runs the same two-pass (trusted then general); we add
+        only newly-seen URLs so widening the window can never down-rank an
+        earlier fresher hit. We stop as soon as we have `_ENOUGH_HITS`.
+
+        `topic` is left at Tavily's default (general) — combining `topic="news"`
+        with `include_domains` and a tight `time_range` over-filters and we
+        end up with generic market headlines instead of stock-specific ones.
         """
         client = self._tavily_client()
         trusted_k = max(1, int(round(k * self.trusted_ratio)))
         general_k = max(0, k - trusted_k)
-        # search_depth="basic" is the free tier; "advanced" costs more credits.
-        common = dict(search_depth="basic")
 
         hits: list[dict] = []
         seen_urls: set[str] = set()
+        primary = infer_time_range(query)
 
-        # --- 1. Trusted financial domains -----------------------------------
-        try:
-            resp = client.search(
-                query=query, max_results=trusted_k,
-                include_domains=list(self.TRUSTED_DOMAINS),
-                **common,
-            )
-            for r in (resp.get("results") or []):
-                norm = self._normalize_tavily(r, tier="trusted")
-                if norm["url"] and norm["url"] not in seen_urls:
-                    seen_urls.add(norm["url"])
-                    hits.append(norm)
-        except Exception as e:
-            print(f"[Tavily] trusted-domain search failed ({type(e).__name__}: {e})")
+        for time_range in self._TIME_RANGE_FALLBACK[primary]:
+            if len(hits) >= self._ENOUGH_HITS:
+                break
+            common = dict(search_depth="basic", time_range=time_range)
 
-        # --- 2. General web (only if we still have budget) ------------------
-        if general_k > 0:
+            # --- Trusted financial domains ---------------------------------
             try:
-                resp = client.search(query=query, max_results=general_k, **common)
+                resp = client.search(
+                    query=query, max_results=trusted_k,
+                    include_domains=list(self.TRUSTED_DOMAINS),
+                    **common,
+                )
                 for r in (resp.get("results") or []):
-                    norm = self._normalize_tavily(r, tier="web")
+                    norm = self._normalize_tavily(r, tier="trusted")
                     if norm["url"] and norm["url"] not in seen_urls:
                         seen_urls.add(norm["url"])
                         hits.append(norm)
             except Exception as e:
-                print(f"[Tavily] general search failed ({type(e).__name__}: {e})")
+                print(f"[Tavily] trusted ({time_range}) failed "
+                      f"({type(e).__name__}: {e})")
+
+            # --- General web ----------------------------------------------
+            if general_k > 0:
+                try:
+                    resp = client.search(query=query, max_results=general_k, **common)
+                    for r in (resp.get("results") or []):
+                        norm = self._normalize_tavily(r, tier="web")
+                        if norm["url"] and norm["url"] not in seen_urls:
+                            seen_urls.add(norm["url"])
+                            hits.append(norm)
+                except Exception as e:
+                    print(f"[Tavily] general ({time_range}) failed "
+                          f"({type(e).__name__}: {e})")
 
         return hits
 
     @staticmethod
     def _normalize_tavily(r: dict, tier: str) -> dict:
+        # Tavily's `published_date` for news topic is ISO-8601; first 10 chars
+        # are the YYYY-MM-DD we want to surface to the synthesizer.
+        pub = (r.get("published_date") or "")[:10]
         return {
             "title": (r.get("title") or "")[:240],
             "url": r.get("url") or "",
@@ -182,6 +232,7 @@ class WebSearcher:
             "score": float(r.get("score") or 0.0),
             "source": "tavily",
             "tier": tier,
+            "published_date": pub,
         }
 
     # ------------------------------------------------------------------ #
@@ -218,7 +269,8 @@ class WebSearcher:
                 "content": (d.page_content or "")[:1200],
                 "score": 1.0,           # similarity scores aren't exposed by the wrapper
                 "source": "news_local",
-                "date": d.metadata.get("date", ""),
+                "tier": "web",
+                "published_date": (d.metadata.get("date") or "")[:10],
             }
             for d in docs
         ]

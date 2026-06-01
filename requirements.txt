@@ -35,6 +35,9 @@ langchain-anthropic>=0.3.0       # Anthropic Claude (needs ANTHROPIC_API_KEY)
 tavily-python>=0.5.0             # Tavily web search (needs TAVILY_API_KEY)
 langdetect>=1.0.9                # Language detection for bilingual support
 
+# ── Market data (free, no API key) ────────────────────────────────────────
+yfinance>=0.2.40                 # OHLCV + fundamentals + news (Yahoo Finance)
+
 # ── HTTP API for the frontend ─────────────────────────────────────────────
 fastapi>=0.115.0
 uvicorn[standard]>=0.30.0

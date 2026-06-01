@@ -24,14 +24,16 @@ import type { Root, Text, Link, PhrasingContent } from "mdast";
 
 import { useChatStore } from "@/store/chatStore";
 
-const CITATION_RE = /\[(\d+(?:\s*,\s*\d+)*)\]/g;
+// Accept both ASCII `[N]` and full-width CJK `【N】` brackets — gpt-oss
+// models occasionally emit the latter even when asked for the former.
+const CITATION_RE = /\[(\d+(?:\s*,\s*\d+)*)\]|【(\d+(?:\s*,\s*\d+)*)】/g;
 
 /** Remark plugin: text nodes → text + link("#cite:N,M") segments. */
 const remarkCitations: Plugin<[], Root> = () => (tree) => {
   visit(tree, "text", (node: Text, index, parent) => {
     if (!parent || typeof index !== "number") return;
     const value = node.value;
-    if (!value.includes("[")) return;
+    if (!value.includes("[") && !value.includes("【")) return;
     CITATION_RE.lastIndex = 0;
 
     const segments: PhrasingContent[] = [];
@@ -41,7 +43,9 @@ const remarkCitations: Plugin<[], Root> = () => (tree) => {
       if (m.index > last) {
         segments.push({ type: "text", value: value.slice(last, m.index) });
       }
-      const ids = m[1].split(",").map((s) => parseInt(s.trim(), 10));
+      // One of the two capture groups will match (ASCII or CJK brackets).
+      const inner = m[1] ?? m[2] ?? "";
+      const ids = inner.split(",").map((s) => parseInt(s.trim(), 10));
       const link: Link = {
         type: "link",
         url: `#cite:${ids.join(",")}`,

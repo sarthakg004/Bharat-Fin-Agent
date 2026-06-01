@@ -3,6 +3,7 @@ import { ExternalLink } from "lucide-react";
 
 import type { ChatMessage } from "@/store/chatStore";
 import { MarkdownAnswer } from "@/lib/markdown";
+import { ChartView } from "@/components/ChartView";
 
 export function MessageBubble({ msg }: { msg: ChatMessage }) {
   if (msg.role === "user") return <UserBubble msg={msg} />;
@@ -54,6 +55,13 @@ function AssistantBubble({ msg }: { msg: ChatMessage }) {
           )}
         </div>
       )}
+
+      {/* Inline charts produced by the market-data tool lane. They arrive on
+          a separate SSE channel and attach to the in-progress assistant
+          message, so they appear immediately when the data lands. */}
+      {msg.charts?.map((chart, i) => (
+        <ChartView key={`${chart.symbol}-${i}`} spec={chart} />
+      ))}
 
       {!msg.streaming && msg.metadata && <MetadataFooter msg={msg} />}
     </motion.div>

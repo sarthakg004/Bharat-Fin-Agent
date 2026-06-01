@@ -116,8 +116,10 @@ class NaiveRAG:
     """
 
     # Default generator model per provider (override via generator_model=).
+    # Groq: openai/gpt-oss-120b — 120B open-weights model with better long-form
+    # writing + reasoning than llama-3.1-8b-instant for the same Groq endpoint.
     DEFAULT_MODELS = {
-        "groq": "llama-3.1-8b-instant",
+        "groq": "openai/gpt-oss-120b",
         "gemini": "gemini-2.5-flash",
         "openai": "gpt-4o-mini",
         "anthropic": "claude-haiku-4-5",

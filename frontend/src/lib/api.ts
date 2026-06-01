@@ -100,9 +100,34 @@ export const api = {
 // SSE query stream
 // --------------------------------------------------------------------------- //
 
+/** lightweight-charts candle. `time` is UNIX seconds. */
+export interface Candle {
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+}
+
+export interface VolumeBar {
+  time: number;
+  value: number;
+  color?: string;
+}
+
+export interface ChartSpec {
+  type: "candlestick";
+  symbol: string;
+  period: string;
+  interval: string;
+  candles: Candle[];
+  volume?: VolumeBar[];
+}
+
 export type SSEEvent =
   | { type: "status"; stage: string; label: string }
   | { type: "sources"; chunks: Chunk[]; metadata: QueryMetadata }
+  | { type: "chart"; chart: ChartSpec }
   | { type: "chunk"; content: string }
   | { type: "metrics"; latency: number; model?: string; input_tokens?: number; output_tokens?: number; agentic?: QueryMetadata | null }
   | { type: "error"; message: string }

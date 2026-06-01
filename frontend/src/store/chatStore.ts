@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { Chunk, ConfigId, HistoryItemFull, Market, QueryMetadata } from "@/lib/api";
+import type { ChartSpec, Chunk, ConfigId, HistoryItemFull, Market, QueryMetadata } from "@/lib/api";
 
 export type MessageRole = "user" | "assistant";
 
@@ -9,6 +9,7 @@ export interface ChatMessage {
   content: string;
   status?: { stage: string; label: string };
   chunks?: Chunk[];
+  charts?: ChartSpec[];
   metadata?: QueryMetadata;
   config?: ConfigId;
   market?: Market;
@@ -35,6 +36,7 @@ interface ChatState {
   appendMessage: (m: Omit<ChatMessage, "id" | "createdAt">) => string;
   patchMessage: (id: string, patch: Partial<ChatMessage>) => void;
   appendChunkToMessage: (id: string, text: string) => void;
+  appendChartToMessage: (id: string, chart: ChartSpec) => void;
   clear: () => void;
   setHighlight: (id: number | null) => void;
   setStreaming: (id: string | null) => void;
@@ -74,6 +76,14 @@ export const useChatStore = create<ChatState>((set) => ({
     set((s) => ({
       messages: s.messages.map((msg) =>
         msg.id === id ? { ...msg, content: (msg.content || "") + text } : msg,
+      ),
+    })),
+  appendChartToMessage: (id, chart) =>
+    set((s) => ({
+      messages: s.messages.map((msg) =>
+        msg.id === id
+          ? { ...msg, charts: [...(msg.charts || []), chart] }
+          : msg,
       ),
     })),
   clear: () =>

@@ -60,18 +60,24 @@ from src.graph.table_agent import TableAgent
 # --------------------------------------------------------------------------- #
 
 ROUTER_SYSTEM = """\
-You route financial-QA sub-queries to one of three retrievers:
+You route financial-QA sub-queries to one of FOUR retrievers:
 
 - narrative: text retrieval over filings. Prose-style questions (strategy,
   risks, segment overviews, MD&A commentary).
-- numeric:   table-based answer. Specific figures, ratios, margins, growth %,
-  multi-year financial comparisons, currency amounts.
-- external:  web search. Current events, share prices, real-time news
-  (not implemented yet; route as `narrative` if unsure).
+- numeric:   table-based answer FROM THE FILINGS. Specific figures, ratios,
+  margins, growth %, multi-year financial comparisons that the company has
+  reported in a 10-K or annual report.
+- market:    live market-data tools (yfinance). Anything about a listed
+  company's MARKET BEHAVIOUR — current/premarket/intraday price, OHLC
+  history, 52-week range, charts, ticker-level news headlines.
+- external:  general web search. Macro news, corporate events, post-cutoff
+  developments that aren't specifically about market data.
 
-Numeric markers to watch for: "what was", "how much", "ratio", "margin",
-"growth %", specific fiscal years (FY23, FY2024), currency amounts (₹, $),
-units like "crore", "billion".
+Numeric markers: "what was", "how much", "ratio", "margin", "growth %",
+specific fiscal years (FY23, FY2024), currency amounts (₹, $), "crore", "billion".
+
+Market markers: "current price", "premarket", "intraday", "today's move",
+"stock chart", "52-week", "OHLC", "candlestick", "compare X and Y stock".
 
 Examples:
   - "What is HDFC Bank's net interest margin in FY23?"           → numeric
@@ -79,7 +85,11 @@ Examples:
   - "Describe Infosys' AI strategy"                              → narrative
   - "What were the principal risks listed in TCS' annual report?" → narrative
   - "EBITDA margin growth from FY21 to FY23?"                    → numeric
-  - "What is Wipro's current share price?"                       → external
+  - "What is Wipro's current share price?"                       → market
+  - "Show me Apple's 1-year stock chart"                         → market
+  - "ServiceNow premarket figures today?"                        → market
+  - "Compare AAPL and MSFT YoY return"                           → market
+  - "Latest macro headlines from India today"                    → external
 """
 
 ROUTER_PROMPT = """\
@@ -97,10 +107,11 @@ numbered evidence supplied below.
 Citations
 ---------
 Cite by **number** only. After every factual claim, append the index of the
-evidence item(s) that support it in square brackets, e.g.
+evidence item(s) that support it in ASCII square brackets, e.g.
 "Reliance's FY24 revenue was ₹9.74 lakh crore [1]."
-Multiple sources for one claim: `[1,3]`. NEVER write out the source title,
-the URL, or any tag in prose — the user sees those in a sidebar already.
+Multiple sources for one claim: `[1,3]`. Use `[N]` — NOT `【N】`, `(N)`, or
+any other bracket style. NEVER write out the source title, the URL, or any
+tag in prose — the user sees those in a sidebar already.
 
 Formatting (markdown)
 ---------------------
@@ -114,6 +125,18 @@ Formatting (markdown)
 
 Aim for a thorough, well-structured answer — long enough to fully address the
 question but with no filler.
+
+Time-sensitive questions
+------------------------
+Each web / news item has a publication date printed in its header
+(`[N] TRUSTED PRESS (published 2026-04-15) — ...`). For time-sensitive
+questions — premarket prices, "today's", "current", "this week's" — you must:
+
+- Use the MOST RECENT item by publication date.
+- State the as-of date in the answer ("As of <date>, ...").
+- Do NOT lump older datapoints together with the most recent one as if they
+  were equivalent. If you mention historical context, label it explicitly
+  ("Earlier, on <date>, the stock had moved ...").
 
 If the evidence does NOT contain enough information to answer:
 - Say so in one short sentence.
@@ -151,18 +174,27 @@ _NUMERIC_MARKERS = (
     "liability", "equity", "share", "dividend",
 )
 _NUMERIC_YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b|fy ?\d{2,4}", re.IGNORECASE)
-# Err toward `external` — text retrieval still runs in parallel, and the v4
-# web_search node also escalates when text retrieval comes back poor.
+# Anything about live market behaviour goes to `market` (yfinance tools).
+_MARKET_MARKERS = (
+    "current price", "share price", "stock price", "premarket", "pre-market",
+    "intraday", "today's move", "today's price", "live price",
+    "1-year", "5-year", "ytd", "52-week", "52 week",
+    "ohlc", "candlestick", "chart", "stock chart",
+    "compare stock", "vs stock", "stock comparison",
+)
+# Fallback news/web markers.
 _EXTERNAL_MARKERS = (
-    "current", "today", "live", "right now", "latest", "recent",
-    "share price", "stock price", "stock", "shares", "share performance",
-    "ipo", "listed", "listing", "this quarter", "this year",
-    "news", "announcement", "press release",
+    "latest news", "press release", "macro", "geopolitical",
+    "this week", "yesterday", "breaking",
 )
 
 
 def _heuristic_route(query: str) -> str:
     q = (query or "").lower()
+    # Market beats external when both keywords appear — "today's stock chart"
+    # is market, not news.
+    if any(m in q for m in _MARKET_MARKERS):
+        return "market"
     if any(m in q for m in _EXTERNAL_MARKERS):
         return "external"
     hits = sum(1 for m in _NUMERIC_MARKERS if m in q)

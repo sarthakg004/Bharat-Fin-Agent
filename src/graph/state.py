@@ -55,6 +55,10 @@ class AgentState(TypedDict, total=False):
     numeric_verification: dict         # {"claims": [...], "unverified": [...], "score": 0..1}
     refused: bool                      # set when the agent explicitly declines to answer
 
+    # --- Market-data tool results ----------------------------------------- #
+    market_data: list[dict]            # one entry per tool call (quote/history/...)
+    charts: list[dict]                 # frontend-ready chart specs (lightweight-charts JSON)
+
 
 # --------------------------------------------------------------------------- #
 # Structured-output schemas (used with llm.with_structured_output(...))
@@ -133,12 +137,15 @@ class QueryRoute(BaseModel):
     """Per-sub-query routing verdict."""
 
     sub_query: str = Field(description="The sub-query being classified, copied verbatim.")
-    route: Literal["narrative", "numeric", "external"] = Field(
+    route: Literal["narrative", "numeric", "market", "external"] = Field(
         description=(
             "narrative = text retrieval over filings (default for prose-y questions); "
-            "numeric = table agent (specific figures, ratios, growth %, "
-            "currency amounts, multi-year comparisons); "
-            "external = web search (current events, prices) — not yet implemented."
+            "numeric   = table agent over extracted filing tables (ratios from 10-Ks, "
+            "segment breakdowns, multi-year financial comparisons IN the filings); "
+            "market    = live market data via yfinance (current price, intraday move, "
+            "premarket, historical OHLC, charts, news headlines — anything about a "
+            "listed company's market behaviour, not about its filings); "
+            "external  = web search (general news, events, post-cutoff)."
         )
     )
     reason: str = Field(description="One-line justification.")
@@ -186,3 +193,44 @@ class NumericVerification(BaseModel):
     """Verifier output for all numeric claims in the draft answer."""
 
     claims: list[NumericClaim] = Field(description="One entry per distinct numeric claim.")
+
+
+# --------------------------------------------------------------------------- #
+# Market-data tool selection
+# --------------------------------------------------------------------------- #
+
+class MarketToolCall(BaseModel):
+    """One call into the market-data toolbelt (yfinance-backed)."""
+
+    tool: Literal["get_quote", "get_history", "get_company_info", "get_news", "compare"] = Field(
+        description="Which market-data tool to invoke.",
+    )
+    symbol: str = Field(
+        default="",
+        description="Yahoo ticker (e.g. AAPL, RELIANCE.NS, TSLA). Empty for `compare`.",
+    )
+    symbols: list[str] = Field(
+        default_factory=list,
+        description="Multiple tickers for `compare`; ignored by other tools.",
+    )
+    period: str = Field(
+        default="1y",
+        description="History period: 1d, 5d, 1mo, 3mo, 6mo, 1y, 2y, 5y, 10y, ytd, max.",
+    )
+    interval: str = Field(
+        default="1d",
+        description="History interval: 1m, 5m, 15m, 30m, 1h, 1d, 1wk, 1mo.",
+    )
+
+
+class MarketIntent(BaseModel):
+    """The market-data node's plan: 0+ tool calls to execute for this question."""
+
+    calls: list[MarketToolCall] = Field(
+        default_factory=list,
+        description=(
+            "Tool calls in order. Use multiple when the question needs combined "
+            "data (e.g. quote + history for a chart). Return an empty list if "
+            "the question isn't about market data at all."
+        ),
+    )
