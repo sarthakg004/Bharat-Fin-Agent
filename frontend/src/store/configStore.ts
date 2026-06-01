@@ -1,16 +1,15 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import type { ConfigId, Market } from "@/lib/api";
+import type { Market } from "@/lib/api";
 
-// Width clamps for the side panels (in px). Sidebar can't go too narrow
-// (history items become unreadable) or too wide (chat panel loses room).
+// Width clamps for the side panels (in px).
 export const SIDEBAR_MIN = 200;
 export const SIDEBAR_MAX = 420;
-export const SIDEBAR_DEFAULT = 240;
+export const SIDEBAR_DEFAULT = 260;
 
 export const CITATIONS_MIN = 280;
 export const CITATIONS_MAX = 560;
-export const CITATIONS_DEFAULT = 340;
+export const CITATIONS_DEFAULT = 360;
 
 function clamp(n: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, n));
@@ -18,46 +17,30 @@ function clamp(n: number, lo: number, hi: number): number {
 
 interface ConfigState {
   market: Market;
-  config: ConfigId;
-  companyFilter: string[];
   sidebarOpen: boolean;
   citationsOpen: boolean;
   sidebarWidth: number;
   citationsWidth: number;
 
   setMarket: (m: Market) => void;
-  setConfig: (c: ConfigId) => void;
-  toggleCompany: (c: string) => void;
-  clearCompanies: () => void;
   toggleSidebar: () => void;
   toggleCitations: () => void;
   setSidebarWidth: (px: number) => void;
   setCitationsWidth: (px: number) => void;
 }
 
-// We persist the active config AND the resized panel widths — users who drag
-// the sidebar to fit their screen don't want to redo it every page load.
-// Companies / market / open-state stay session-only.
+// Persist only the resize widths + market preference.
+// Mode (always "agentic" now) and company filters are gone.
 export const useConfigStore = create<ConfigState>()(
   persist(
     (set) => ({
       market: "us",
-      config: "agentic",
-      companyFilter: [],
       sidebarOpen: true,
       citationsOpen: true,
       sidebarWidth: SIDEBAR_DEFAULT,
       citationsWidth: CITATIONS_DEFAULT,
 
-      setMarket: (market) => set({ market, companyFilter: [] }),
-      setConfig: (config) => set({ config }),
-      toggleCompany: (c) =>
-        set((s) => ({
-          companyFilter: s.companyFilter.includes(c)
-            ? s.companyFilter.filter((x) => x !== c)
-            : [...s.companyFilter, c],
-        })),
-      clearCompanies: () => set({ companyFilter: [] }),
+      setMarket: (market) => set({ market }),
       toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
       toggleCitations: () => set((s) => ({ citationsOpen: !s.citationsOpen })),
       setSidebarWidth: (px) => set({ sidebarWidth: clamp(px, SIDEBAR_MIN, SIDEBAR_MAX) }),
@@ -67,7 +50,7 @@ export const useConfigStore = create<ConfigState>()(
     {
       name: "finagent.config",
       partialize: (s) => ({
-        config: s.config,
+        market: s.market,
         sidebarWidth: s.sidebarWidth,
         citationsWidth: s.citationsWidth,
       }),

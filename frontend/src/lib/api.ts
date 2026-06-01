@@ -1,9 +1,8 @@
-// Typed API client. Keeps URL building + JSON parsing in one place.
+// Typed API client. Single source of truth for backend shapes + URLs.
 
 const BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
 export type Market = "us" | "india";
-export type ConfigId = "naive" | "agentic";
 
 export interface Chunk {
   id: number;
@@ -16,6 +15,7 @@ export interface Chunk {
   source_url?: string;
   citation: string;
   sub_query?: string;
+  kind?: "text" | "web" | "table" | "market";
 }
 
 export interface QueryMetadata {
@@ -24,83 +24,27 @@ export interface QueryMetadata {
   input_tokens?: number;
   output_tokens?: number;
   sub_queries?: string[];
+  query_routes?: string[];
   grading_score?: number | null;
   avg_grade?: number | null;
   rewrite_iterations?: number;
   critic_iterations?: number;
   needs_retry?: boolean | null;
   low_confidence?: boolean | null;
+  refused?: boolean;
+  numeric_verification_score?: number | null;
+  unverified_count?: number;
+  web_hits?: number;
+  table_computations?: number;
+  market_calls?: number;
   citations?: string[];
   agentic?: QueryMetadata | null;
 }
 
-export interface QueryRequest {
-  question: string;
-  config: ConfigId;
-  market: Market;
-  company_filter?: string[] | null;
-  top_k?: number;
-}
-
-export interface ConfigInfo {
-  id: string;
-  label: string;
-  model: string;
-  description: string;
-}
-
-export interface HealthResponse {
-  status: string;
-  collections: string[];
-  configs: string[];
-}
-
-export interface HistoryItem {
-  id: number;
-  question: string;
-  config: string;
-  market: string;
-  answer: string;
-  latency: number;
-  created_at: string;
-}
-
-export interface HistoryItemFull extends HistoryItem {
-  chunks: Chunk[];
-  metadata: QueryMetadata;
-}
-
 // --------------------------------------------------------------------------- //
-// JSON endpoints
+// Charts
 // --------------------------------------------------------------------------- //
 
-async function getJson<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE}${path}`);
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-  return res.json() as Promise<T>;
-}
-
-async function send<T>(path: string, method: "DELETE" | "POST"): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, { method });
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-  return res.json() as Promise<T>;
-}
-
-export const api = {
-  health: () => getJson<HealthResponse>("/api/health"),
-  configs: () => getJson<{ configs: ConfigInfo[] }>("/api/configs"),
-  history: (limit = 50) => getJson<{ items: HistoryItem[] }>(`/api/history?limit=${limit}`),
-  historyItem: (id: number) => getJson<HistoryItemFull>(`/api/history/${id}`),
-  deleteHistoryItem: (id: number) =>
-    send<{ deleted: number }>(`/api/history/${id}`, "DELETE"),
-  clearHistory: () => send<{ deleted: number }>(`/api/history`, "DELETE"),
-};
-
-// --------------------------------------------------------------------------- //
-// SSE query stream
-// --------------------------------------------------------------------------- //
-
-/** lightweight-charts candle. `time` is UNIX seconds. */
 export interface Candle {
   time: number;
   open: number;
@@ -124,7 +68,55 @@ export interface ChartSpec {
   volume?: VolumeBar[];
 }
 
+// --------------------------------------------------------------------------- //
+// Chats + messages
+// --------------------------------------------------------------------------- //
+
+export interface ChatSummary {
+  id: number;
+  title: string;
+  market: Market;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+  preview?: string | null;
+}
+
+export interface PersistedMessage {
+  id: number;
+  chat_id: number;
+  role: "user" | "assistant";
+  content: string;
+  chunks: Chunk[];
+  charts: ChartSpec[];
+  metadata: QueryMetadata;
+  latency?: number | null;
+  created_at: string;
+}
+
+export interface ChatMessagesResponse {
+  chat: ChatSummary;
+  messages: PersistedMessage[];
+}
+
+// --------------------------------------------------------------------------- //
+// Query (SSE)
+// --------------------------------------------------------------------------- //
+
+export interface QueryRequest {
+  question: string;
+  market: Market;
+  chat_id?: number | null;
+  top_k?: number;
+}
+
+export interface HealthResponse {
+  status: string;
+  collections: string[];
+}
+
 export type SSEEvent =
+  | { type: "chat"; chat_id: number }
   | { type: "status"; stage: string; label: string }
   | { type: "sources"; chunks: Chunk[]; metadata: QueryMetadata }
   | { type: "chart"; chart: ChartSpec }
@@ -138,10 +130,43 @@ export interface StreamHandlers {
   signal?: AbortSignal;
 }
 
+// --------------------------------------------------------------------------- //
+// JSON / SSE
+// --------------------------------------------------------------------------- //
+
+async function getJson<T>(path: string): Promise<T> {
+  const res = await fetch(`${BASE}${path}`);
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json() as Promise<T>;
+}
+
+async function sendJson<T>(path: string, method: "POST" | "PATCH" | "DELETE", body?: unknown): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    method,
+    headers: body ? { "Content-Type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json() as Promise<T>;
+}
+
+export const api = {
+  health: () => getJson<HealthResponse>("/api/health"),
+  // Chats
+  listChats: () => getJson<{ chats: ChatSummary[] }>("/api/chats"),
+  createChat: (title: string, market: Market) =>
+    sendJson<ChatSummary>("/api/chats", "POST", { title, market }),
+  getChat: (id: number) => getJson<ChatMessagesResponse>(`/api/chats/${id}`),
+  renameChat: (id: number, title: string) =>
+    sendJson<ChatSummary>(`/api/chats/${id}`, "PATCH", { title }),
+  deleteChat: (id: number) =>
+    sendJson<{ deleted: number }>(`/api/chats/${id}`, "DELETE"),
+  clearAllChats: () => sendJson<{ deleted: number }>(`/api/chats`, "DELETE"),
+};
+
 /**
  * Stream a POST /api/query response as Server-Sent Events.
- * We do the parsing ourselves because the standard `EventSource` only supports
- * GET requests and we need to POST a JSON body.
+ * We do the parsing manually because `EventSource` is GET-only.
  */
 export async function streamQuery(req: QueryRequest, handlers: StreamHandlers): Promise<void> {
   const res = await fetch(`${BASE}/api/query`, {
@@ -164,7 +189,6 @@ export async function streamQuery(req: QueryRequest, handlers: StreamHandlers): 
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
 
-    // SSE messages are separated by a blank line.
     let idx: number;
     while ((idx = buffer.indexOf("\n\n")) !== -1) {
       const rawEvent = buffer.slice(0, idx);

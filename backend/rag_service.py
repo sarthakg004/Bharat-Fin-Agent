@@ -1,17 +1,14 @@
 """
 RAG service singletons.
 
-We hold one NaiveRAG per market and one AgenticRAG per market, lazily
-constructed so importing this module is cheap.
+Single agentic pipeline (`AgenticRAGv4`): planner → router → hybrid retrieve →
+grader → rewrite/proceed → table_agent → market_data (yfinance) → web_search
+→ synthesize → critic → numeric verification → refusal / translate-out.
 
-The `agentic` mode uses the **full v4 graph** (`AgenticRAGv4`):
-planner → router → hybrid retrieve → grader → rewrite/proceed → table_agent →
-**web_search** → synthesize → critic → numeric verification → refusal /
-translate-out. Web search uses Tavily when `TAVILY_API_KEY` is set and falls
-back to the local `news` Chroma collection otherwise; the web_search node
-escalates automatically when text retrieval comes back empty or weakly graded,
-so questions about companies not in the corpus (recent IPOs, foreign listings)
-hit the web instead of returning "no information".
+Web search uses Tavily when `TAVILY_API_KEY` is set and falls back to the
+local `news` Chroma collection otherwise; web_search escalates automatically
+when text retrieval comes back empty or weakly graded, so questions about
+companies not in the corpus hit the web instead of returning "no information".
 
 We default to the small reranker (`bge-reranker-base`) so backend startup is
 quick; swap to `bge-reranker-large` once you don't mind the download.
@@ -22,8 +19,6 @@ from __future__ import annotations
 from threading import Lock
 from typing import Optional
 
-# Local imports of the existing RAG code.
-from src.agents.naive_rag import NaiveRAG
 from src.graph.final_rag import AgenticRAGv4
 
 _COLLECTIONS = {
@@ -31,21 +26,10 @@ _COLLECTIONS = {
     "india": "india_filings",
 }
 
-# Each combination of (market, mode) gets one instance — heavy Chroma + embedding
-# + reranker loads are paid once at first use, not per request.
+# Each market gets one instance — heavy Chroma + embedding + reranker loads
+# are paid once at first use, not per request.
 _lock = Lock()
-_naive_cache: dict[str, NaiveRAG] = {}
 _agentic_cache: dict[str, AgenticRAGv4] = {}
-
-
-def get_naive(market: str) -> NaiveRAG:
-    with _lock:
-        if market not in _naive_cache:
-            _naive_cache[market] = NaiveRAG(
-                collection_name=_COLLECTIONS[market],
-                llm_provider="groq",
-            )
-        return _naive_cache[market]
 
 
 def get_agentic(market: str) -> AgenticRAGv4:
@@ -96,46 +80,34 @@ def _normalise_chunk(text: str, meta: dict, idx: int) -> dict:
     }
 
 
-def run_naive(market: str, question: str, top_k: int = 5,
-              company_filter: Optional[list[str]] = None) -> dict:
-    """One-shot synchronous call. Filters are honoured client-side after retrieve."""
-    rag = get_naive(market)
-    if top_k:
-        rag.top_k = top_k
-    res = rag.answer(question)
-    chunks = []
-    for i, (text, meta) in enumerate(zip(res["retrieved_chunks"], res["chunk_metadata"])):
-        if company_filter:
-            co = meta.get("company") or meta.get("ticker", "")
-            if co not in company_filter:
-                continue
-        chunks.append(_normalise_chunk(text, meta, i))
-    return {
-        "answer": res["answer"],
-        "chunks": chunks,
-        "charts": [],   # naive mode has no market lane
-        "metadata": {
-            "model": res.get("model", "llama-3.1-8b-instant"),
-            "latency": res.get("latency", 0.0),
-            "input_tokens": res.get("input_tokens", 0),
-            "output_tokens": res.get("output_tokens", 0),
-        },
-    }
-
-
 def run_agentic(market: str, question: str, top_k: int = 5,
-                company_filter: Optional[list[str]] = None) -> dict:
-    """Synchronous v4 agentic run. The graph handles its own loops + refusal.
+                company_filter: Optional[list[str]] = None,
+                chat_history: Optional[list[dict]] = None) -> dict:
+    """Synchronous v4 agentic run with optional conversation memory.
+
+    `chat_history` is the last few (role, content) turns of the active chat —
+    the agent uses it to resolve pronouns and follow-ups ("what about FY24
+    instead?", "compare them"). When absent the agent behaves as before.
 
     Web hits and table-derived computations are appended to the returned
-    `chunks` list so the frontend's Citations panel can show them next to the
-    text excerpts. The `metadata` carries the rest of the v4-specific run state
-    (route classifications, verifier score, refused flag, ...).
+    `chunks` list so the frontend's Citations panel can show them next to
+    the text excerpts.
     """
     rag = get_agentic(market)
     if top_k:
         rag.final_top_k = top_k
-    state = rag.run(question)
+
+    # `chat_history` lives directly on AgentState (TypedDict, total=False) so
+    # nodes can read it without changing graph signatures.
+    initial_state: dict[str, object] = {"question": question}
+    if chat_history:
+        initial_state["chat_history"] = chat_history
+
+    state = rag.run(question) if not chat_history else rag.graph.invoke({
+        **initial_state,
+        "iteration_count": 0, "errors": [],
+        "table_results": [], "web_results": [],
+    })
 
     chunks: list[dict] = []
     next_id = 0

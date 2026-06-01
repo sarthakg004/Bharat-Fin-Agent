@@ -314,11 +314,30 @@ class AgenticRAG:
     # ------------------------------------------------------------------ #
 
     def planner_node(self, state: AgentState) -> dict:
-        """Decompose the question into 1-3 sub-queries (structured output)."""
+        """Decompose the question into 1-3 sub-queries (structured output).
+
+        If `chat_history` is present, prepend a compact transcript so the
+        planner can resolve follow-ups like "what about the previous year?".
+        """
         question = state["question"]
+        history = state.get("chat_history") or []
+        history_block = ""
+        if history:
+            lines = [
+                f"{('User' if t.get('role')=='user' else 'Assistant')}: "
+                f"{(t.get('content') or '')[:400]}"
+                for t in history[-6:]
+            ]
+            history_block = (
+                "Recent conversation (most recent last):\n"
+                + "\n".join(lines) + "\n\n"
+            )
+
         llm = self._get_llm("planner").with_structured_output(SubQueries)
         try:
-            out: SubQueries = llm.invoke(PLANNER_PROMPT.format(question=question))
+            out: SubQueries = llm.invoke(
+                history_block + PLANNER_PROMPT.format(question=question)
+            )
             queries = [q.strip() for q in out.queries if q.strip()][:3]
         except Exception as e:
             queries = []

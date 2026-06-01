@@ -59,6 +59,9 @@ class AgentState(TypedDict, total=False):
     market_data: list[dict]            # one entry per tool call (quote/history/...)
     charts: list[dict]                 # frontend-ready chart specs (lightweight-charts JSON)
 
+    # --- Conversation memory ---------------------------------------------- #
+    chat_history: list[dict]           # last K turns: [{role: "user"|"assistant", content}]
+
 
 # --------------------------------------------------------------------------- #
 # Structured-output schemas (used with llm.with_structured_output(...))

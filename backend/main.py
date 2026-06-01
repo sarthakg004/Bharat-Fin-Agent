@@ -1,14 +1,23 @@
 """
-FastAPI wrapper around the existing RAG code.
+FastAPI app — multi-chat agentic RAG.
 
-Endpoints:
-    GET  /api/health
-    GET  /api/configs
-    GET  /api/history
-    POST /api/query     (Server-Sent Events stream)
+The single "agentic" pipeline (`AgenticRAGv4`) drives every answer; naive
+mode is gone. Conversations are organised into chat threads; the agent gets
+the last few turns of the active thread as memory.
 
-Run with:
-    uvicorn backend.main:app --reload --port 8000
+Endpoints
+---------
+    GET    /api/health
+    GET    /api/configs              # legacy; returns just the agentic config
+    GET    /api/chats                # list all chat threads
+    POST   /api/chats                # create new chat
+    GET    /api/chats/{id}           # chat metadata + messages
+    PATCH  /api/chats/{id}           # rename
+    DELETE /api/chats/{id}           # delete chat + its messages
+    DELETE /api/chats                # delete all chats
+    POST   /api/query                # SSE stream — appends to a chat
+
+Streaming events on /api/query: status, sources, chart, chunk, metrics, done.
 """
 
 from __future__ import annotations
@@ -21,7 +30,6 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import AsyncGenerator
 
-# Make `src` importable when uvicorn launches from anywhere.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from fastapi import FastAPI, HTTPException
@@ -30,96 +38,128 @@ from fastapi.responses import StreamingResponse
 
 from backend import history, rag_service
 from backend.models import (
+    ChatListResponse,
+    ChatMessage,
+    ChatMessagesResponse,
+    ChatSummary,
     ConfigInfo,
     ConfigsResponse,
+    CreateChatRequest,
     DeleteResponse,
     HealthResponse,
-    HistoryItem,
-    HistoryItemFull,
-    HistoryResponse,
     QueryRequest,
+    RenameChatRequest,
 )
 
 
-app = FastAPI(title="FinAgent API", version="1.0.0")
+app = FastAPI(title="FinAgent API", version="2.0.0")
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "https://*.hf.space",
+        "http://localhost:5173", "http://127.0.0.1:5173", "https://*.hf.space",
     ],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["*"], allow_headers=["*"],
 )
 
-# A dedicated pool for the sync RAG calls so SSE stays responsive.
 _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="rag")
 
 
 # --------------------------------------------------------------------------- #
-# Health / configs / history
+# Health + configs
 # --------------------------------------------------------------------------- #
 
 @app.get("/api/health", response_model=HealthResponse)
 def healthcheck():
-    return HealthResponse(**rag_service.health())
+    return HealthResponse(**{k: v for k, v in rag_service.health().items() if k != "configs"})
 
 
 @app.get("/api/configs", response_model=ConfigsResponse)
 def list_configs():
     return ConfigsResponse(configs=[
         ConfigInfo(
-            id="naive",
-            label="Naive RAG",
-            model="llama-3.1-8b-instant",
-            description="Single-shot embed → retrieve → stuff-into-prompt → generate.",
-        ),
-        ConfigInfo(
             id="agentic",
             label="Agentic RAG",
-            model="llama-3.3-70b-versatile",
+            model="openai/gpt-oss-120b",
             description=(
-                "Planner → hybrid retrieve (BM25 + dense + reranker) → grader → "
-                "rewrite/synthesize → critic. Loops on low-grade retrieval and "
-                "unsupported claims."
+                "Planner → router → hybrid retrieve → grader → rewrite/synthesize → "
+                "table agent → market tools → web search → critic → verifier. "
+                "Loops on poor retrieval and unsupported claims; refuses if it can't ground."
             ),
         ),
     ])
 
 
-@app.get("/api/history", response_model=HistoryResponse)
-def list_history(limit: int = 50):
-    rows = history.list_recent(limit=limit)
-    items = [HistoryItem(
-        id=r["id"], question=r["question"], config=r["config"],
-        market=r["market"], answer=r["answer"] or "",
-        latency=r["latency"] or 0.0, created_at=r["created_at"],
-    ) for r in rows]
-    return HistoryResponse(items=items)
+# --------------------------------------------------------------------------- #
+# Chats — list / create / read / rename / delete
+# --------------------------------------------------------------------------- #
+
+def _to_summary(d: dict) -> ChatSummary:
+    return ChatSummary(
+        id=d["id"], title=d["title"], market=d["market"],
+        created_at=str(d["created_at"]), updated_at=str(d["updated_at"]),
+        message_count=int(d.get("message_count", 0)),
+        preview=(d.get("preview") or None),
+    )
 
 
-@app.get("/api/history/{item_id}", response_model=HistoryItemFull)
-def get_history_item(item_id: int):
-    row = history.get_one(item_id)
-    if row is None:
-        raise HTTPException(status_code=404, detail=f"History item {item_id} not found.")
-    return HistoryItemFull(**row)
+@app.get("/api/chats", response_model=ChatListResponse)
+def list_chats():
+    return ChatListResponse(chats=[_to_summary(c) for c in history.list_chats(200)])
 
 
-@app.delete("/api/history/{item_id}", response_model=DeleteResponse)
-def delete_history_item(item_id: int):
-    ok = history.delete_one(item_id)
+@app.post("/api/chats", response_model=ChatSummary)
+def create_chat(req: CreateChatRequest):
+    chat = history.create_chat(title=req.title, market=req.market)
+    if not chat:
+        raise HTTPException(status_code=500, detail="Could not create chat.")
+    chat["message_count"] = 0
+    chat["preview"] = None
+    return _to_summary(chat)
+
+
+@app.get("/api/chats/{chat_id}", response_model=ChatMessagesResponse)
+def get_chat(chat_id: int):
+    chat = history.get_chat(chat_id)
+    if not chat:
+        raise HTTPException(status_code=404, detail=f"Chat {chat_id} not found.")
+    msgs = history.list_messages(chat_id)
+    # The summary endpoint computes preview + count; do the same inline.
+    chat["message_count"] = len(msgs)
+    chat["preview"] = next((m["content"] for m in msgs if m["role"] == "user"), None)
+    return ChatMessagesResponse(
+        chat=_to_summary(chat),
+        messages=[
+            ChatMessage(
+                id=m["id"], chat_id=m["chat_id"], role=m["role"],
+                content=m["content"], chunks=m["chunks"], charts=m["charts"],
+                metadata=m["metadata"], latency=m["latency"],
+                created_at=str(m["created_at"]),
+            )
+            for m in msgs
+        ],
+    )
+
+
+@app.patch("/api/chats/{chat_id}", response_model=ChatSummary)
+def rename_chat(chat_id: int, req: RenameChatRequest):
+    ok = history.rename_chat(chat_id, req.title)
     if not ok:
-        raise HTTPException(status_code=404, detail=f"History item {item_id} not found.")
+        raise HTTPException(status_code=404, detail=f"Chat {chat_id} not found.")
+    return _to_summary(history.get_chat(chat_id) or {})
+
+
+@app.delete("/api/chats/{chat_id}", response_model=DeleteResponse)
+def delete_chat(chat_id: int):
+    ok = history.delete_chat(chat_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"Chat {chat_id} not found.")
     return DeleteResponse(deleted=1)
 
 
-@app.delete("/api/history", response_model=DeleteResponse)
-def delete_all_history():
-    n = history.delete_all()
-    return DeleteResponse(deleted=n)
+@app.delete("/api/chats", response_model=DeleteResponse)
+def delete_all_chats():
+    return DeleteResponse(deleted=history.delete_all_chats())
 
 
 # --------------------------------------------------------------------------- #
@@ -127,92 +167,93 @@ def delete_all_history():
 # --------------------------------------------------------------------------- #
 
 def _sse(event: dict) -> str:
-    """Encode one event for an SSE stream."""
     return f"data: {json.dumps(event, default=str, ensure_ascii=False)}\n\n"
 
 
-async def _run_rag(request: QueryRequest) -> dict:
-    """Run the chosen RAG in a thread and return the normalised result."""
+def _build_history_for_agent(chat_id: int) -> list[dict]:
+    """The agent's `chat_history` parameter — last 6 turns, truncated."""
+    msgs = history.recent_turns(chat_id, k=6)
+    return [
+        {"role": m["role"], "content": (m["content"] or "")[:1200]}
+        for m in msgs
+    ]
+
+
+async def _run_rag(request: QueryRequest, chat_id: int) -> dict:
     loop = asyncio.get_event_loop()
-    if request.config == "naive":
-        return await loop.run_in_executor(
-            _executor, rag_service.run_naive,
-            request.market, request.question, request.top_k, request.company_filter,
-        )
+    hist = _build_history_for_agent(chat_id)
     return await loop.run_in_executor(
         _executor, rag_service.run_agentic,
-        request.market, request.question, request.top_k, request.company_filter,
+        request.market, request.question, request.top_k, None, hist,
     )
 
 
 async def _stream_answer(request: QueryRequest) -> AsyncGenerator[str, None]:
-    """
-    The streaming protocol the frontend expects:
-        chunk    incremental answer text
-        sources  retrieved chunks + run metadata
-        metrics  final latency / token info
-        done     close the stream
-
-    We get the full answer from the synchronous RAG call (existing code path) and
-    then feed it back in word-sized pieces so the UI behaves like it's streaming.
-    Retrieval status is emitted as `chunk` events with role=status — see the
-    React side for how those are rendered as the progress row.
-    """
     t0 = time.time()
 
-    yield _sse({"type": "status", "stage": "retrieving",
-                "label": f"Retrieving from {request.market.upper()} filings..."})
+    # Resolve / create the chat the user is interacting with.
+    chat_id = request.chat_id
+    if chat_id is None or not history.get_chat(chat_id):
+        chat_id = history.create_chat(title="New chat", market=request.market)["id"]
+
+    # Persist the user message first so any failure mid-stream still keeps it.
+    history.add_message(chat_id, role="user", content=request.question)
+    history.auto_title_if_default(chat_id, request.question)
+    yield _sse({"type": "chat", "chat_id": chat_id})
+
+    yield _sse({
+        "type": "status", "stage": "retrieving",
+        "label": f"Retrieving from {request.market.upper()} filings...",
+    })
 
     try:
-        result = await _run_rag(request)
+        result = await _run_rag(request, chat_id)
     except Exception as e:
+        history.add_message(
+            chat_id, role="assistant", content="",
+            metadata={"error": f"{type(e).__name__}: {e}"},
+        )
         yield _sse({"type": "error", "message": f"{type(e).__name__}: {e}"})
         yield _sse({"type": "done"})
         return
 
     answer = result.get("answer") or ""
     chunks = result.get("chunks") or []
+    charts = result.get("charts") or []
     meta = result.get("metadata") or {}
 
-    yield _sse({
-        "type": "sources",
-        "chunks": chunks,
-        "metadata": meta,
-    })
+    yield _sse({"type": "sources", "chunks": chunks, "metadata": meta})
 
-    # Charts are emitted separately so the frontend can attach them to the
-    # current assistant message without bloating the chunks payload.
-    for chart in (result.get("charts") or []):
+    # Charts go on their own channel so the UI attaches them to the message.
+    for chart in charts:
         yield _sse({"type": "chart", "chart": chart})
 
-    yield _sse({"type": "status", "stage": "generating",
-                "label": f"Generating answer ({meta.get('model','')})..."})
+    yield _sse({
+        "type": "status", "stage": "generating",
+        "label": f"Generating answer ({meta.get('model','')})...",
+    })
 
-    # Pseudo-stream the answer in word-sized pieces. ~25ms per word is fast
-    # enough that the UI feels live but slow enough that the eye can follow.
+    # Word-piece pseudo-stream — gives the UI the live feel without a deep
+    # token-streaming refactor on the LLM side.
     for piece in _piecewise(answer, words_per_chunk=3):
         yield _sse({"type": "chunk", "content": piece})
         await asyncio.sleep(0.025)
 
-    latency = time.time() - t0
-    meta["latency"] = round(latency, 3)
+    latency = round(time.time() - t0, 3)
+    meta["latency"] = latency
 
     yield _sse({
-        "type": "metrics",
-        "latency": meta["latency"],
+        "type": "metrics", "latency": latency,
         "model": meta.get("model"),
         "input_tokens": meta.get("input_tokens"),
         "output_tokens": meta.get("output_tokens"),
-        "agentic": meta if request.config == "agentic" else None,
+        "agentic": meta,
     })
 
     try:
-        history.log_query(
-            question=request.question, config=request.config,
-            market=request.market, answer=answer, latency=latency,
-            # Persist chunks + metadata so the UI can re-open the full
-            # conversation later without burning another Groq call.
-            chunks=chunks, metadata=meta,
+        history.add_message(
+            chat_id, role="assistant", content=answer,
+            chunks=chunks, charts=charts, metadata=meta, latency=latency,
         )
     except Exception:
         pass
@@ -221,7 +262,6 @@ async def _stream_answer(request: QueryRequest) -> AsyncGenerator[str, None]:
 
 
 def _piecewise(text: str, words_per_chunk: int = 3) -> list[str]:
-    """Split text into space-preserving pieces."""
     if not text:
         return []
     parts: list[str] = []
@@ -241,8 +281,5 @@ async def query(request: QueryRequest):
     return StreamingResponse(
         _stream_answer(request),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",  # disable proxy buffering
-        },
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

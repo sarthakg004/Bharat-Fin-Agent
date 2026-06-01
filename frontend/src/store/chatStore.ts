@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { ChartSpec, Chunk, ConfigId, HistoryItemFull, Market, QueryMetadata } from "@/lib/api";
+import type { ChartSpec, Chunk, Market, PersistedMessage, QueryMetadata } from "@/lib/api";
 
 export type MessageRole = "user" | "assistant";
 
@@ -11,7 +11,6 @@ export interface ChatMessage {
   chunks?: Chunk[];
   charts?: ChartSpec[];
   metadata?: QueryMetadata;
-  config?: ConfigId;
   market?: Market;
   ragas?: RagasScores;
   error?: string;
@@ -30,8 +29,8 @@ interface ChatState {
   messages: ChatMessage[];
   highlightedChunkId: number | null;
   streamingId: string | null;
-  /** ID of the history row currently loaded in the chat (null = fresh chat). */
-  currentHistoryId: number | null;
+  /** Backend chat thread the current `messages` belong to (null = fresh chat). */
+  activeChatId: number | null;
 
   appendMessage: (m: Omit<ChatMessage, "id" | "createdAt">) => string;
   patchMessage: (id: string, patch: Partial<ChatMessage>) => void;
@@ -40,8 +39,9 @@ interface ChatState {
   clear: () => void;
   setHighlight: (id: number | null) => void;
   setStreaming: (id: string | null) => void;
-  loadHistoryItem: (item: HistoryItemFull) => void;
   startNewChat: () => void;
+  setActiveChatId: (id: number | null) => void;
+  loadMessagesFor: (chatId: number, persisted: PersistedMessage[]) => void;
 }
 
 function uid(): string {
@@ -52,22 +52,13 @@ export const useChatStore = create<ChatState>((set) => ({
   messages: [],
   highlightedChunkId: null,
   streamingId: null,
-  currentHistoryId: null,
+  activeChatId: null,
 
   appendMessage: (m) => {
     const id = uid();
-    set((s) => ({
-      messages: [...s.messages, { ...m, id, createdAt: Date.now() }],
-    }));
+    set((s) => ({ messages: [...s.messages, { ...m, id, createdAt: Date.now() }] }));
     return id;
   },
-  startNewChat: () =>
-    set({
-      messages: [],
-      highlightedChunkId: null,
-      streamingId: null,
-      currentHistoryId: null,
-    }),
   patchMessage: (id, patch) =>
     set((s) => ({
       messages: s.messages.map((msg) => (msg.id === id ? { ...msg, ...patch } : msg)),
@@ -81,58 +72,41 @@ export const useChatStore = create<ChatState>((set) => ({
   appendChartToMessage: (id, chart) =>
     set((s) => ({
       messages: s.messages.map((msg) =>
-        msg.id === id
-          ? { ...msg, charts: [...(msg.charts || []), chart] }
-          : msg,
+        msg.id === id ? { ...msg, charts: [...(msg.charts || []), chart] } : msg,
       ),
     })),
-  clear: () =>
-    set({
-      messages: [],
-      highlightedChunkId: null,
-      streamingId: null,
-      currentHistoryId: null,
-    }),
+  clear: () => set({
+    messages: [], highlightedChunkId: null, streamingId: null, activeChatId: null,
+  }),
   setHighlight: (id) => set({ highlightedChunkId: id }),
   setStreaming: (id) => set({ streamingId: id }),
-  loadHistoryItem: (item) => {
-    // Replace the entire view with the historical question + stored answer.
-    // Streaming is force-cleared so any in-flight query is visually abandoned;
-    // the underlying SSE call is aborted by the hook layer (App.tsx).
+  startNewChat: () => set({
+    messages: [], highlightedChunkId: null, streamingId: null, activeChatId: null,
+  }),
+  setActiveChatId: (id) => set({ activeChatId: id }),
+
+  loadMessagesFor: (chatId, persisted) => {
     const now = Date.now();
+    const messages: ChatMessage[] = persisted.map((m, i) => ({
+      id: uid(),
+      role: m.role,
+      content: m.content,
+      chunks: m.chunks,
+      charts: m.charts,
+      metadata: m.metadata,
+      streaming: false,
+      createdAt: now + i,
+    }));
     set({
+      messages,
       highlightedChunkId: null,
       streamingId: null,
-      currentHistoryId: item.id,
-      messages: [
-        {
-          id: uid(),
-          role: "user",
-          content: item.question,
-          market: item.market as Market,
-          config: item.config as ConfigId,
-          createdAt: now,
-        },
-        {
-          id: uid(),
-          role: "assistant",
-          content: item.answer,
-          chunks: item.chunks,
-          metadata: item.metadata,
-          market: item.market as Market,
-          config: item.config as ConfigId,
-          streaming: false,
-          createdAt: now + 1,
-        },
-      ],
+      activeChatId: chatId,
     });
   },
 }));
 
-/**
- * Convenience selector — last assistant message (the one citation cards
- * scroll into view for, the one CitationsPanel reflects).
- */
+/** Convenience selector — last assistant message. */
 export function selectLastAssistant(state: ChatState): ChatMessage | undefined {
   for (let i = state.messages.length - 1; i >= 0; i--) {
     if (state.messages[i].role === "assistant") return state.messages[i];

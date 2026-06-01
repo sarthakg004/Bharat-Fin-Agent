@@ -4,6 +4,7 @@ import { motion } from "framer-motion";
 import { useChatStore } from "@/store/chatStore";
 import { useConfigStore } from "@/store/configStore";
 import { useRAGQuery } from "@/hooks/useRAGQuery";
+import { useThreadStore } from "@/store/threadStore";
 import { MessageBubble } from "./MessageBubble";
 import { InputBar } from "./InputBar";
 import { cls } from "@/lib/utils";
@@ -21,10 +22,11 @@ interface Props {
 
 export function ChatPanel({ backendOnline }: Props) {
   const messages = useChatStore((s) => s.messages);
-  const clear = useChatStore((s) => s.clear);
+  const startNewChat = useChatStore((s) => s.startNewChat);
   const streamingId = useChatStore((s) => s.streamingId);
-  const { market, config, companyFilter } = useConfigStore();
-  const { ask } = useRAGQuery(market, config, companyFilter);
+  const market = useConfigStore((s) => s.market);
+  const createChat = useThreadStore((s) => s.createChat);
+  const { ask } = useRAGQuery(market);
 
   const scrollerRef = useRef<HTMLDivElement>(null);
 
@@ -59,7 +61,7 @@ export function ChatPanel({ backendOnline }: Props) {
         <div className="mx-auto max-w-[760px]">
           <InputBar
             onSend={ask}
-            onClear={clear}
+            onClear={() => { startNewChat(); createChat("New chat", market); }}
             streaming={!!streamingId}
             disabled={!backendOnline}
           />

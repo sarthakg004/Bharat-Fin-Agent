@@ -2,27 +2,34 @@
 
 from __future__ import annotations
 
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-
 Market = Literal["us", "india"]
-ConfigId = Literal["naive", "agentic"]
 
+
+# --------------------------------------------------------------------------- #
+# Query
+# --------------------------------------------------------------------------- #
 
 class QueryRequest(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
-    config: ConfigId = "naive"
     market: Market = "us"
-    company_filter: Optional[list[str]] = None
+    chat_id: Optional[int] = Field(
+        default=None,
+        description="Existing chat to append to. If null, the server creates one.",
+    )
     top_k: int = Field(default=5, ge=1, le=20)
 
+
+# --------------------------------------------------------------------------- #
+# Health + configs
+# --------------------------------------------------------------------------- #
 
 class HealthResponse(BaseModel):
     status: str
     collections: list[str]
-    configs: list[str]
 
 
 class ConfigInfo(BaseModel):
@@ -36,26 +43,55 @@ class ConfigsResponse(BaseModel):
     configs: list[ConfigInfo]
 
 
-class HistoryItem(BaseModel):
+# --------------------------------------------------------------------------- #
+# Chats + messages
+# --------------------------------------------------------------------------- #
+
+class ChatSummary(BaseModel):
+    """List-view chat row."""
     id: int
-    question: str
-    config: str
+    title: str
     market: str
-    answer: str
-    latency: float
+    created_at: str
+    updated_at: str
+    message_count: int = 0
+    preview: Optional[str] = None
+
+
+class ChatListResponse(BaseModel):
+    chats: list[ChatSummary]
+
+
+class CreateChatRequest(BaseModel):
+    title: str = "New chat"
+    market: Market = "us"
+
+
+class RenameChatRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+
+
+class ChatMessage(BaseModel):
+    id: int
+    chat_id: int
+    role: Literal["user", "assistant"]
+    content: str
+    chunks: list[dict] = []
+    charts: list[dict] = []
+    metadata: dict = {}
+    latency: Optional[float] = None
     created_at: str
 
 
-class HistoryItemFull(HistoryItem):
-    """Single-item endpoint adds the chunks + run metadata so the UI can
-    rehydrate a past chat without re-running the LLM."""
-    chunks: list[dict] = []
-    metadata: dict = {}
-
-
-class HistoryResponse(BaseModel):
-    items: list[HistoryItem]
+class ChatMessagesResponse(BaseModel):
+    chat: ChatSummary
+    messages: list[ChatMessage]
 
 
 class DeleteResponse(BaseModel):
     deleted: int
+
+
+class GenericOk(BaseModel):
+    ok: bool = True
+    detail: Optional[Any] = None

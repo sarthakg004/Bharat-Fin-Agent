@@ -467,7 +467,23 @@ class AgenticRAGv4(AgenticRAGv3):
         )
         sub_queries = "\n".join(f"- {q}" for q in state.get("sub_queries", []))
 
-        prompt = f"""Question: {state['question']}
+        # Conversation memory — only include if we actually have prior turns
+        # so single-turn questions stay short.
+        history = state.get("chat_history") or []
+        history_block = ""
+        if history:
+            lines = []
+            for turn in history[-6:]:                       # cap at last 6
+                role = "User" if turn.get("role") == "user" else "Assistant"
+                body = (turn.get("content") or "")[:600]
+                lines.append(f"{role}: {body}")
+            history_block = (
+                "Earlier in this conversation (most recent last):\n"
+                + "\n".join(lines)
+                + "\n\n"
+            )
+
+        prompt = f"""{history_block}Question: {state['question']}
 
 Sub-queries researched:
 {sub_queries}
@@ -477,9 +493,12 @@ Numbered evidence (cite with `[N]`):
 
 ---
 Write your answer now in well-structured markdown with [N] citations after
-every factual claim. If the evidence above does contain usable material —
-including web / news items — USE IT; don't fall back to "no information"
-unless every single item is irrelevant."""
+every factual claim. Treat the conversation history above as context for
+resolving pronouns / follow-ups ("it", "that company", "what about FY24")
+but do NOT cite items from prior turns — only cite the numbered evidence in
+this turn. If the current evidence contains usable material — including
+web / news items — USE IT; don't fall back to "no information" unless every
+single item is irrelevant."""
 
         llm = self._get_llm("synth")
         response = llm.invoke([

@@ -1,23 +1,22 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
 import { Toaster } from "react-hot-toast";
 import { useQuery } from "@tanstack/react-query";
 
 import { api } from "@/lib/api";
 import { useConfigStore } from "@/store/configStore";
-import { useRAGQuery } from "@/hooks/useRAGQuery";
+import { useThreadStore } from "@/store/threadStore";
+import { useChatStore } from "@/store/chatStore";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 
 import { Header } from "@/components/Header";
 import { Sidebar } from "@/components/Sidebar";
 import { ChatPanel } from "@/components/ChatPanel";
 import { CitationsPanel } from "@/components/CitationsPanel";
-import { CompareModal } from "@/components/CompareModal";
 import { CommandPalette } from "@/components/CommandPalette";
 import { ShortcutsOverlay } from "@/components/ShortcutsOverlay";
 import { PanelResizer } from "@/components/PanelResizer";
 import { PanelOpenButton } from "@/components/PanelOpenButton";
-import { useChatStore } from "@/store/chatStore";
 
 export function App() {
   const reduce = useReducedMotion();
@@ -31,34 +30,33 @@ export function App() {
   const backendOnline = health.isSuccess;
 
   const {
-    market, config, companyFilter,
-    sidebarOpen, citationsOpen,
+    market, sidebarOpen, citationsOpen,
     sidebarWidth, citationsWidth,
     toggleSidebar, toggleCitations,
     setSidebarWidth, setCitationsWidth,
   } = useConfigStore();
   const clearChat = useChatStore((s) => s.clear);
+  const createChat = useThreadStore((s) => s.createChat);
 
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [compareOpen, setCompareOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
 
-  const { ask } = useRAGQuery(market, config, companyFilter);
+  // Fetch threads on first paint so the sidebar isn't empty.
+  useEffect(() => { useThreadStore.getState().refresh(); }, []);
 
   const closeAll = () => {
     setPaletteOpen(false);
-    setCompareOpen(false);
     setShortcutsOpen(false);
   };
 
   useKeyboardShortcuts({
-    "mod+k":      () => setPaletteOpen((v) => !v),
-    "mod+shift+c":() => setCompareOpen((v) => !v),
-    "mod+l":      () => clearChat(),
-    "mod+[":      () => toggleSidebar(),
-    "mod+]":      () => toggleCitations(),
-    "escape":     () => closeAll(),
-    "?":          () => setShortcutsOpen((v) => !v),
+    "mod+k":  () => setPaletteOpen((v) => !v),
+    "mod+n":  () => createChat("New chat", market),
+    "mod+l":  () => clearChat(),
+    "mod+[":  () => toggleSidebar(),
+    "mod+]":  () => toggleCitations(),
+    "escape": () => closeAll(),
+    "?":      () => setShortcutsOpen((v) => !v),
   });
 
   const stagger = reduce ? 0 : 0.08;
@@ -74,7 +72,6 @@ export function App() {
       </motion.div>
 
       <main className="flex min-h-0 flex-1">
-        {/* Sidebar (or its open-handle when collapsed) */}
         <AnimatePresence initial={false}>
           {sidebarOpen ? (
             <motion.div
@@ -82,29 +79,21 @@ export function App() {
               className="hidden md:block"
               style={{ width: sidebarWidth }}
               initial={reduce ? false : { x: -sidebarWidth, opacity: 0 }}
-              animate={{
-                x: 0, opacity: 1,
-                transition: { delay: stagger * 0, type: "spring", stiffness: 300, damping: 30 },
-              }}
+              animate={{ x: 0, opacity: 1,
+                transition: { delay: stagger * 0, type: "spring", stiffness: 300, damping: 30 } }}
               exit={{ x: -sidebarWidth, opacity: 0, transition: { duration: 0.18 } }}
             >
-              <Sidebar onAsk={ask} />
+              <Sidebar />
             </motion.div>
           ) : null}
         </AnimatePresence>
 
-        {/* Sidebar resizer / open handle — these sit between the sidebar and the chat */}
         {sidebarOpen ? (
-          <PanelResizer
-            side="left"
-            width={sidebarWidth}
-            onResize={setSidebarWidth}
-          />
+          <PanelResizer side="left" width={sidebarWidth} onResize={setSidebarWidth} />
         ) : (
           <PanelOpenButton side="left" onClick={toggleSidebar} />
         )}
 
-        {/* Chat */}
         <motion.div
           className="min-w-0 flex-1"
           initial={reduce ? false : { y: 12, opacity: 0 }}
@@ -113,18 +102,12 @@ export function App() {
           <ChatPanel backendOnline={backendOnline} />
         </motion.div>
 
-        {/* Citations resizer / open handle */}
         {citationsOpen ? (
-          <PanelResizer
-            side="right"
-            width={citationsWidth}
-            onResize={setCitationsWidth}
-          />
+          <PanelResizer side="right" width={citationsWidth} onResize={setCitationsWidth} />
         ) : (
           <PanelOpenButton side="right" onClick={toggleCitations} />
         )}
 
-        {/* Citations */}
         <AnimatePresence initial={false}>
           {citationsOpen ? (
             <motion.div
@@ -132,10 +115,8 @@ export function App() {
               className="hidden lg:block"
               style={{ width: citationsWidth }}
               initial={reduce ? false : { x: citationsWidth, opacity: 0 }}
-              animate={{
-                x: 0, opacity: 1,
-                transition: { delay: stagger * 2, type: "spring", stiffness: 300, damping: 30 },
-              }}
+              animate={{ x: 0, opacity: 1,
+                transition: { delay: stagger * 2, type: "spring", stiffness: 300, damping: 30 } }}
               exit={{ x: citationsWidth, opacity: 0, transition: { duration: 0.18 } }}
             >
               <CitationsPanel />
@@ -145,16 +126,13 @@ export function App() {
       </main>
 
       {/* Mobile bottom sheets */}
-      <MobileSheets sidebarOpen={sidebarOpen} citationsOpen={citationsOpen} onAsk={ask} />
+      <MobileSheets sidebarOpen={sidebarOpen} citationsOpen={citationsOpen} />
 
-      {/* Overlays */}
       <CommandPalette
         open={paletteOpen}
         onClose={() => setPaletteOpen(false)}
-        onCompare={() => setCompareOpen(true)}
         onShortcuts={() => setShortcutsOpen(true)}
       />
-      <CompareModal open={compareOpen} onClose={() => setCompareOpen(false)} />
       <ShortcutsOverlay open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
 
       <Toaster
@@ -177,11 +155,9 @@ export function App() {
 function MobileSheets({
   sidebarOpen,
   citationsOpen,
-  onAsk,
 }: {
   sidebarOpen: boolean;
   citationsOpen: boolean;
-  onAsk: (q: string) => void;
 }) {
   const reduce = useReducedMotion();
   const { toggleSidebar, toggleCitations } = useConfigStore();
@@ -205,7 +181,7 @@ function MobileSheets({
             }}
           >
             <div className="mx-auto my-2 h-1 w-10 rounded bg-border-strong" />
-            <Sidebar onAsk={onAsk} />
+            <Sidebar />
           </motion.aside>
         )}
       </AnimatePresence>

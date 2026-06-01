@@ -4,9 +4,9 @@ import { modKey } from "@/lib/utils";
 
 const SHORTCUTS: { combo: string; label: string }[] = [
   { combo: "↵",     label: "Send message" },
+  { combo: "N",     label: "New chat" },
   { combo: "K",     label: "Command palette" },
-  { combo: "⇧+C",   label: "Compare modes" },
-  { combo: "L",     label: "Clear conversation" },
+  { combo: "L",     label: "Clear current view" },
   { combo: "[",     label: "Toggle sidebar" },
   { combo: "]",     label: "Toggle citations panel" },
 ];

@@ -5,12 +5,12 @@ import toast from "react-hot-toast";
 
 import { useChatStore, selectLastAssistant } from "@/store/chatStore";
 import { useConfigStore } from "@/store/configStore";
+import { useThreadStore } from "@/store/threadStore";
 import { cls } from "@/lib/utils";
 
 interface Props {
   open: boolean;
   onClose: () => void;
-  onCompare: () => void;
   onShortcuts: () => void;
 }
 
@@ -21,13 +21,14 @@ interface CommandItem {
   run: () => void;
 }
 
-export function CommandPalette({ open, onClose, onCompare, onShortcuts }: Props) {
+export function CommandPalette({ open, onClose, onShortcuts }: Props) {
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const { setMarket, setConfig } = useConfigStore();
+  const { setMarket, market } = useConfigStore();
   const clear = useChatStore((s) => s.clear);
+  const createChat = useThreadStore((s) => s.createChat);
 
   useEffect(() => {
     if (open) {
@@ -38,23 +39,21 @@ export function CommandPalette({ open, onClose, onCompare, onShortcuts }: Props)
   }, [open]);
 
   const commands = useMemo<CommandItem[]>(() => [
-    { id: "us",     label: "Switch to US Market",   hint: "🇺🇸", run: () => { setMarket("us"); } },
-    { id: "in",     label: "Switch to India Market", hint: "🇮🇳", run: () => { setMarket("india"); } },
-    { id: "naive",  label: "Switch mode → Naive RAG", run: () => setConfig("naive") },
-    { id: "agentic",label: "Switch mode → Agentic RAG", run: () => setConfig("agentic") },
-    { id: "clear",  label: "Clear conversation", run: clear },
-    { id: "compare",label: "Compare modes", hint: "C", run: onCompare },
-    { id: "copy",   label: "Copy last answer", run: () => {
+    { id: "new",   label: "New chat",                    hint: "⌘N",  run: () => createChat("New chat", market) },
+    { id: "us",    label: "Switch market → US",          hint: "🇺🇸",  run: () => setMarket("us") },
+    { id: "in",    label: "Switch market → India",       hint: "🇮🇳",  run: () => setMarket("india") },
+    { id: "clear", label: "Clear current view",          run: clear },
+    { id: "copy",  label: "Copy last answer",            run: () => {
       const last = selectLastAssistant(useChatStore.getState());
-      if (!last?.content) return toast.error("No assistant message yet.");
+      if (!last?.content) { toast.error("No assistant message yet."); return; }
       navigator.clipboard?.writeText(last.content);
       toast.success("Copied.");
     } },
-    { id: "trace",  label: "Open LangSmith trace", run: () => {
+    { id: "trace", label: "Open LangSmith trace",        run: () => {
       window.open("https://smith.langchain.com/", "_blank");
     } },
-    { id: "shortcuts", label: "Keyboard shortcuts", hint: "?", run: onShortcuts },
-  ], [setMarket, setConfig, clear, onCompare, onShortcuts]);
+    { id: "kbd",   label: "Keyboard shortcuts",          hint: "?",   run: onShortcuts },
+  ], [setMarket, market, clear, createChat, onShortcuts]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -68,19 +67,10 @@ export function CommandPalette({ open, onClose, onCompare, onShortcuts }: Props)
   }
 
   function onKey(e: React.KeyboardEvent<HTMLInputElement>) {
-    if (e.key === "ArrowDown") {
-      e.preventDefault();
-      setActive((a) => Math.min(filtered.length - 1, a + 1));
-    } else if (e.key === "ArrowUp") {
-      e.preventDefault();
-      setActive((a) => Math.max(0, a - 1));
-    } else if (e.key === "Enter" && filtered[active]) {
-      e.preventDefault();
-      run(filtered[active]);
-    } else if (e.key === "Escape") {
-      e.preventDefault();
-      onClose();
-    }
+    if (e.key === "ArrowDown")      { e.preventDefault(); setActive((a) => Math.min(filtered.length - 1, a + 1)); }
+    else if (e.key === "ArrowUp")   { e.preventDefault(); setActive((a) => Math.max(0, a - 1)); }
+    else if (e.key === "Enter" && filtered[active]) { e.preventDefault(); run(filtered[active]); }
+    else if (e.key === "Escape")    { e.preventDefault(); onClose(); }
   }
 
   return (
