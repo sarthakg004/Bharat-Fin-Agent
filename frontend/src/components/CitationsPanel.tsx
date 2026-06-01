@@ -20,7 +20,8 @@ export function CitationsPanel() {
 
   return (
     <motion.aside
-      className="flex h-full w-[340px] shrink-0 flex-col border-l border-border-default bg-bg-base"
+      // Width is controlled by the wrapper in App.tsx so it can be resized.
+      className="flex h-full w-full shrink-0 flex-col border-l border-border-default bg-bg-base"
       initial={false}
     >
       <header className="flex items-center justify-between border-b border-border-subtle px-4 py-3">

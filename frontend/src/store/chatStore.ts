@@ -29,6 +29,8 @@ interface ChatState {
   messages: ChatMessage[];
   highlightedChunkId: number | null;
   streamingId: string | null;
+  /** ID of the history row currently loaded in the chat (null = fresh chat). */
+  currentHistoryId: number | null;
 
   appendMessage: (m: Omit<ChatMessage, "id" | "createdAt">) => string;
   patchMessage: (id: string, patch: Partial<ChatMessage>) => void;
@@ -37,6 +39,7 @@ interface ChatState {
   setHighlight: (id: number | null) => void;
   setStreaming: (id: string | null) => void;
   loadHistoryItem: (item: HistoryItemFull) => void;
+  startNewChat: () => void;
 }
 
 function uid(): string {
@@ -47,6 +50,7 @@ export const useChatStore = create<ChatState>((set) => ({
   messages: [],
   highlightedChunkId: null,
   streamingId: null,
+  currentHistoryId: null,
 
   appendMessage: (m) => {
     const id = uid();
@@ -55,6 +59,13 @@ export const useChatStore = create<ChatState>((set) => ({
     }));
     return id;
   },
+  startNewChat: () =>
+    set({
+      messages: [],
+      highlightedChunkId: null,
+      streamingId: null,
+      currentHistoryId: null,
+    }),
   patchMessage: (id, patch) =>
     set((s) => ({
       messages: s.messages.map((msg) => (msg.id === id ? { ...msg, ...patch } : msg)),
@@ -65,7 +76,13 @@ export const useChatStore = create<ChatState>((set) => ({
         msg.id === id ? { ...msg, content: (msg.content || "") + text } : msg,
       ),
     })),
-  clear: () => set({ messages: [], highlightedChunkId: null, streamingId: null }),
+  clear: () =>
+    set({
+      messages: [],
+      highlightedChunkId: null,
+      streamingId: null,
+      currentHistoryId: null,
+    }),
   setHighlight: (id) => set({ highlightedChunkId: id }),
   setStreaming: (id) => set({ streamingId: id }),
   loadHistoryItem: (item) => {
@@ -76,6 +93,7 @@ export const useChatStore = create<ChatState>((set) => ({
     set({
       highlightedChunkId: null,
       streamingId: null,
+      currentHistoryId: item.id,
       messages: [
         {
           id: uid(),

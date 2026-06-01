@@ -32,7 +32,9 @@ export function Sidebar({ onAsk: _onAsk }: Props) {
 
   return (
     <motion.aside
-      className="flex h-full w-[240px] shrink-0 flex-col border-r border-border-default bg-bg-base"
+      // Width is controlled by the wrapper in App.tsx so it can be resized;
+      // on mobile we let the bottom-sheet container drive layout instead.
+      className="flex h-full w-full shrink-0 flex-col border-r border-border-default bg-bg-base"
       initial={false}
     >
       {/* Mode selector */}
@@ -101,6 +103,7 @@ function HistorySection({
 }) {
   const queryClient = useQueryClient();
   const loadHistoryItem = useChatStore((s) => s.loadHistoryItem);
+  const startNewChat = useChatStore((s) => s.startNewChat);
   // If the user rapidly clicks several history items, only the most recent
   // request should win. We ignore any in-flight load whose token has been
   // superseded by a newer click.
@@ -120,8 +123,13 @@ function HistorySection({
 
   async function handleDelete(id: number, e: React.MouseEvent) {
     e.stopPropagation();
+    // If we're currently viewing this item, deleting it should also clear
+    // the chat — otherwise the user is left looking at content that no
+    // longer exists in history.
+    const viewingThis = useChatStore.getState().currentHistoryId === id;
     try {
       await api.deleteHistoryItem(id);
+      if (viewingThis) startNewChat();
       toast.success("Deleted.");
       queryClient.invalidateQueries({ queryKey: ["history"] });
     } catch (err) {
@@ -134,6 +142,8 @@ function HistorySection({
     if (!window.confirm(`Delete all ${items.length} history items?`)) return;
     try {
       const res = await api.clearHistory();
+      // Clearing all history also wipes whatever historical chat we're on.
+      if (useChatStore.getState().currentHistoryId != null) startNewChat();
       toast.success(`Cleared ${res.deleted} item(s).`);
       queryClient.invalidateQueries({ queryKey: ["history"] });
     } catch (err) {

@@ -12,11 +12,22 @@ import { useSSE } from "./useSSE";
  */
 export function useRAGQuery(market: Market, config: ConfigId, companyFilter: string[]) {
   const { send, abort } = useSSE();
-  const { appendMessage, patchMessage, appendChunkToMessage, setStreaming } = useChatStore();
+  const {
+    appendMessage,
+    patchMessage,
+    appendChunkToMessage,
+    setStreaming,
+    startNewChat,
+  } = useChatStore();
 
   const ask = useCallback(
     async (question: string) => {
       if (!question.trim()) return;
+
+      // Submitting a fresh question detaches us from any history row that
+      // happened to be loaded — the new turn becomes its own chat.
+      const wasInHistory = useChatStore.getState().currentHistoryId != null;
+      if (wasInHistory) startNewChat();
 
       appendMessage({ role: "user", content: question, market, config });
       const assistantId = appendMessage({

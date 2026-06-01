@@ -15,6 +15,8 @@ import { CitationsPanel } from "@/components/CitationsPanel";
 import { CompareModal } from "@/components/CompareModal";
 import { CommandPalette } from "@/components/CommandPalette";
 import { ShortcutsOverlay } from "@/components/ShortcutsOverlay";
+import { PanelResizer } from "@/components/PanelResizer";
+import { PanelOpenButton } from "@/components/PanelOpenButton";
 import { useChatStore } from "@/store/chatStore";
 
 export function App() {
@@ -28,7 +30,13 @@ export function App() {
   });
   const backendOnline = health.isSuccess;
 
-  const { market, config, companyFilter, sidebarOpen, citationsOpen, toggleSidebar, toggleCitations } = useConfigStore();
+  const {
+    market, config, companyFilter,
+    sidebarOpen, citationsOpen,
+    sidebarWidth, citationsWidth,
+    toggleSidebar, toggleCitations,
+    setSidebarWidth, setCitationsWidth,
+  } = useConfigStore();
   const clearChat = useChatStore((s) => s.clear);
 
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -66,19 +74,35 @@ export function App() {
       </motion.div>
 
       <main className="flex min-h-0 flex-1">
-        {/* Sidebar */}
+        {/* Sidebar (or its open-handle when collapsed) */}
         <AnimatePresence initial={false}>
-          {sidebarOpen && (
+          {sidebarOpen ? (
             <motion.div
+              key="sidebar"
               className="hidden md:block"
-              initial={reduce ? false : { x: -240, opacity: 0 }}
-              animate={{ x: 0, opacity: 1, transition: { delay: stagger * 0, type: "spring", stiffness: 300, damping: 30 } }}
-              exit={{ x: -240, opacity: 0, transition: { duration: 0.18 } }}
+              style={{ width: sidebarWidth }}
+              initial={reduce ? false : { x: -sidebarWidth, opacity: 0 }}
+              animate={{
+                x: 0, opacity: 1,
+                transition: { delay: stagger * 0, type: "spring", stiffness: 300, damping: 30 },
+              }}
+              exit={{ x: -sidebarWidth, opacity: 0, transition: { duration: 0.18 } }}
             >
               <Sidebar onAsk={ask} />
             </motion.div>
-          )}
+          ) : null}
         </AnimatePresence>
+
+        {/* Sidebar resizer / open handle — these sit between the sidebar and the chat */}
+        {sidebarOpen ? (
+          <PanelResizer
+            side="left"
+            width={sidebarWidth}
+            onResize={setSidebarWidth}
+          />
+        ) : (
+          <PanelOpenButton side="left" onClick={toggleSidebar} />
+        )}
 
         {/* Chat */}
         <motion.div
@@ -89,18 +113,34 @@ export function App() {
           <ChatPanel backendOnline={backendOnline} />
         </motion.div>
 
+        {/* Citations resizer / open handle */}
+        {citationsOpen ? (
+          <PanelResizer
+            side="right"
+            width={citationsWidth}
+            onResize={setCitationsWidth}
+          />
+        ) : (
+          <PanelOpenButton side="right" onClick={toggleCitations} />
+        )}
+
         {/* Citations */}
         <AnimatePresence initial={false}>
-          {citationsOpen && (
+          {citationsOpen ? (
             <motion.div
+              key="citations"
               className="hidden lg:block"
-              initial={reduce ? false : { x: 340, opacity: 0 }}
-              animate={{ x: 0, opacity: 1, transition: { delay: stagger * 2, type: "spring", stiffness: 300, damping: 30 } }}
-              exit={{ x: 340, opacity: 0, transition: { duration: 0.18 } }}
+              style={{ width: citationsWidth }}
+              initial={reduce ? false : { x: citationsWidth, opacity: 0 }}
+              animate={{
+                x: 0, opacity: 1,
+                transition: { delay: stagger * 2, type: "spring", stiffness: 300, damping: 30 },
+              }}
+              exit={{ x: citationsWidth, opacity: 0, transition: { duration: 0.18 } }}
             >
               <CitationsPanel />
             </motion.div>
-          )}
+          ) : null}
         </AnimatePresence>
       </main>
 

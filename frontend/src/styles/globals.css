@@ -16,8 +16,8 @@
 
   /* Text */
   --text-primary:   #F0EDE8;
-  --text-secondary: #8A8A9A;
-  --text-muted:     #4A4A5A;
+  --text-secondary: #B2B2C2;   /* labels, metadata — lifted from #8A8A9A for legibility */
+  --text-muted:     #7A7A8E;   /* placeholders / tertiary — lifted from #4A4A5A */
 
   /* Accent — financial green */
   --accent:         #00D084;
