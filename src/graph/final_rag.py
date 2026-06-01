@@ -93,7 +93,10 @@ class AgenticRAGv4(AgenticRAGv3):
         self,
         *args,
         news_collection: str = "news",
-        web_top_k: int = 3,
+        # ~10 hits gives the synthesiser enough material for multi-faceted
+        # questions ("performance over the last year"); a single article rarely
+        # covers the full ground. Tavily allows up to 20 per call.
+        web_top_k: int = 10,
         translator_model: Optional[str] = None,
         verifier_model: Optional[str] = None,
         min_verify_score: float = 0.5,
@@ -165,10 +168,36 @@ class AgenticRAGv4(AgenticRAGv3):
         return {"question": translated}
 
     def web_search_node(self, state: AgentState) -> dict:
-        """Search the web (or local news) for `external` sub-queries."""
+        """Search the web for `external` sub-queries, AND escalate when text
+        retrieval came back empty or poorly graded.
+
+        The escalation path covers the case the router can't anticipate: the
+        question is about a company that simply isn't in the ingested corpus
+        (recent IPO, foreign listing, etc.). Without it, web search would only
+        fire when the router happened to call the question "external" — but
+        the router doesn't know what's in our Chroma collections.
+        """
         sub_queries = state.get("sub_queries") or [state["question"]]
         routes = state.get("query_routes") or ["narrative"] * len(sub_queries)
         external_subs = [s for s, r in zip(sub_queries, routes) if r == "external"]
+
+        # Escalation: no explicit external sub-queries, but text retrieval
+        # didn't find usable evidence → fall back to the original question.
+        if not external_subs:
+            chunks = state.get("retrieved_chunks") or []
+            avg_grade = state.get("avg_grade")
+            retrieval_was_poor = (not chunks) or (
+                avg_grade is not None and avg_grade < 2.0
+            )
+            if retrieval_was_poor:
+                fallback = state.get("query_original") or state["question"]
+                self._log(
+                    state,
+                    f"web_search escalation: chunks={len(chunks)} "
+                    f"avg_grade={avg_grade}; searching web for {fallback!r}",
+                )
+                external_subs = [fallback]
+
         if not external_subs:
             return {"web_results": []}
 
@@ -179,6 +208,32 @@ class AgenticRAGv4(AgenticRAGv3):
             except Exception as e:
                 self._log(state, f"web_search failed for {sub_q!r}: {e}")
         return {"web_results": hits}
+
+    def critic_node(self, state: AgentState) -> dict:
+        """v3 critic with web-search hits added to the evidence pool.
+
+        Without this, a claim grounded in a Tavily hit looks "unsupported"
+        to the critic (because v3 only sees text + table chunks), triggers
+        a retry, and ends up refused even though the verifier accepts it.
+        """
+        web_pseudo_chunks: list[dict] = []
+        for h in state.get("web_results", []) or []:
+            web_pseudo_chunks.append({
+                "text": (h.get("content") or "")[:1500],
+                "source": (
+                    f"<News: {h.get('title','')[:80]} — {h.get('source','web')}>"
+                ),
+                "company": h.get("source", "web"),
+                "year": (h.get("date") or "")[:4] or "?",
+                "page": "—",
+                "sub_query": h.get("sub_query", ""),
+            })
+        if not web_pseudo_chunks:
+            return super().critic_node(state)
+
+        proxy = dict(state)
+        proxy["retrieved_chunks"] = list(state.get("retrieved_chunks", [])) + web_pseudo_chunks
+        return super().critic_node(proxy)
 
     def synthesize_node(self, state: AgentState) -> dict:
         """v3 synthesizer + web results merged into the context."""
@@ -200,19 +255,25 @@ class AgenticRAGv4(AgenticRAGv3):
 Sub-queries researched:
 {sub_queries}
 
-Text excerpts (each begins with its citation tag):
+Text excerpts (each begins with its citation tag, may be empty):
 {text_context}
 
-Numeric / table-derived results:
+Numeric / table-derived results (may be empty):
 {table_context}
 
-Web / news results:
+Web / news results — each prefixed with `[Trusted]` (financial press,
+exchanges, regulator sites) or `[Web]` (general). When both kinds of evidence
+are available, prefer trusted ones for figures.
 {web_context}
 
 ---
 Write the final answer now, with an inline citation after every fact.
-Text citations: [Company AR 2024, p. 102].  Table citations: (Table: <title>, <company> <year>, p. <page>).
-Web citations: <News: title — source>."""
+Tags must be copied verbatim from the evidence header; do not invent any.
+
+When the corpus excerpts above are empty/sparse but web results ARE present,
+answer using the web results — they ARE the evidence for this question.
+Only fall back to "the provided evidence does not contain information about X"
+if NONE of the three evidence buckets contains anything useful."""
 
         llm = self._get_llm("synth")
         response = llm.invoke([
@@ -303,21 +364,28 @@ Web citations: <News: title — source>."""
     # ------------------------------------------------------------------ #
 
     def _verify_router(self, state: AgentState) -> str:
-        """After numeric verification: refuse / retry retrieval / continue to translate-out."""
+        """After numeric verification: refuse / retry retrieval / continue to translate-out.
+
+        The **verifier** is the source of truth for refusal: it does a precise
+        per-number match against ALL evidence (text + tables + web). The
+        critic is a cheaper retry trigger; if it disagrees with a passing
+        verifier (e.g. it didn't see the web hits) we trust the verifier.
+        """
         nv = state.get("numeric_verification") or {}
         score = nv.get("score")
-        crit_grade = state.get("grading_score")
+        claims = nv.get("claims") if isinstance(nv, dict) else None
 
-        # If critic ALREADY scheduled a retry (and we still have budget), follow it.
+        # If critic asked for a retry and we still have budget, follow it.
         if state.get("needs_retry"):
             return "retrieve"
 
-        # Refuse only after we've exhausted critic retries AND verification is poor.
         out_of_retries = state.get("critic_iterations", 0) >= self.max_critic_retries
-        critic_failed = (crit_grade is not None and crit_grade < 0.5)
         verify_failed = (score is not None and score < self.min_verify_score)
 
-        if out_of_retries and (critic_failed or verify_failed):
+        # We only refuse when (a) we've used up retries, (b) the verifier
+        # actually saw numeric claims AND rejected enough of them. A passing
+        # verifier overrides a complaining critic.
+        if out_of_retries and verify_failed and claims:
             return "refuse"
         return "translate_out"
 
@@ -375,10 +443,12 @@ Web citations: <News: title — source>."""
     def _format_web_results(web_res: list[dict]) -> str:
         parts: list[str] = []
         for h in web_res:
-            tag = f"<News: {h.get('title', '?')[:80]} — {h.get('source', 'web')}>"
+            tier = h.get("tier", "web")
+            label = "Trusted" if tier == "trusted" else "Web"
+            tag = f"<News: {h.get('title', '?')[:90]} — {h.get('source', 'web')}>"
             url = h.get("url", "")
-            body = (h.get("content") or "")[:400]
-            parts.append(f"{tag} {url}\n{body}")
+            body = (h.get("content") or "")[:1000]
+            parts.append(f"[{label}] {tag} {url}\n{body}")
         return "\n\n".join(parts)
 
     @staticmethod

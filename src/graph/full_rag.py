@@ -92,14 +92,22 @@ Sub-queries:
 
 SYNTH_V3_SYSTEM = """\
 You are a meticulous financial analyst. Write a clear answer using ONLY the
-provided evidence (text excerpts and table-derived results). Every factual
-claim — especially every number — must be followed by an inline citation:
+evidence supplied to you below.
 
-  - Text excerpts use tags like [TCS AR 2023, p. 102].
-  - Table-derived results use tags like (Table: <title>, <company> <year>, p. <page>).
+Citation rules:
+- Every factual claim must be followed by the EXACT tag printed at the top of
+  the evidence it came from. Copy that tag verbatim — do not alter, abbreviate,
+  rearrange, or combine tags.
+- Text excerpts come pre-tagged in square brackets: `[<company> <doc-type>
+  <year>, p. <page>]`.
+- Table-derived results come pre-tagged in parentheses starting with `(Table:`.
+- Only use tags that are actually present in the evidence you were given.
 
-If the evidence is insufficient, say so plainly. Never invent figures or
-citations.
+If the evidence does NOT contain enough information to answer the question:
+- Say so in one short sentence ("The provided evidence does not contain
+  information about X.").
+- DO NOT include any citation tags in that sentence.
+- DO NOT invent companies, figures, page numbers, or table titles.
 """
 
 SYNTH_V3_PROMPT = """\
@@ -132,8 +140,14 @@ _NUMERIC_MARKERS = (
     "liability", "equity", "share", "dividend",
 )
 _NUMERIC_YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b|fy ?\d{2,4}", re.IGNORECASE)
-_EXTERNAL_MARKERS = ("current", "today", "live", "share price", "stock price",
-                     "right now", "latest news")
+# Err toward `external` — text retrieval still runs in parallel, and the v4
+# web_search node also escalates when text retrieval comes back poor.
+_EXTERNAL_MARKERS = (
+    "current", "today", "live", "right now", "latest", "recent",
+    "share price", "stock price", "stock", "shares", "share performance",
+    "ipo", "listed", "listing", "this quarter", "this year",
+    "news", "announcement", "press release",
+)
 
 
 def _heuristic_route(query: str) -> str:

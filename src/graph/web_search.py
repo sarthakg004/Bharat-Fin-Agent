@@ -37,8 +37,49 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+TRUSTED_FINANCIAL_DOMAINS: tuple[str, ...] = (
+    # India
+    "moneycontrol.com",
+    "economictimes.indiatimes.com",
+    "livemint.com",
+    "business-standard.com",
+    "thehindubusinessline.com",
+    "tradingview.com",
+    "screener.in",
+    "nseindia.com",
+    "bseindia.com",
+    "sebi.gov.in",
+    "rbi.org.in",
+    # Global
+    "reuters.com",
+    "bloomberg.com",
+    "ft.com",
+    "wsj.com",
+    "cnbc.com",
+    "barrons.com",
+    "marketwatch.com",
+    "finance.yahoo.com",
+    "seekingalpha.com",
+    "investopedia.com",
+    "sec.gov",
+)
+
+
 class WebSearcher:
-    """Unified web/news search with Tavily → local-news fallback."""
+    """Unified web/news search with Tavily → local-news fallback.
+
+    The Tavily path runs **two passes** per call: one restricted to
+    `TRUSTED_FINANCIAL_DOMAINS` (Moneycontrol, ET, TradingView, Reuters,
+    Bloomberg, …) and one unrestricted general search. Trusted hits are
+    returned first so the synthesizer can prefer them; each hit carries a
+    `tier` of `"trusted"` or `"web"` for that decision.
+    """
+
+    # Tavily's `max_results` accepts up to 20. We default to 10 so the
+    # synthesizer has enough material to answer multi-faceted questions
+    # ("performance over the last year" rarely fits in 3 snippets).
+    MAX_RESULTS_CAP = 20
+    TRUSTED_DOMAINS = TRUSTED_FINANCIAL_DOMAINS
 
     def __init__(
         self,
@@ -46,13 +87,17 @@ class WebSearcher:
         chroma_dir: Union[str, Path] = "data/chroma",
         collection_name: str = "news",
         embedding_model: str = "BAAI/bge-small-en-v1.5",
-        top_k: int = 3,
+        top_k: int = 10,
+        trusted_ratio: float = 0.7,
     ):
         self.tavily_api_key = tavily_api_key or os.getenv("TAVILY_API_KEY")
         self.chroma_dir = str(chroma_dir)
         self.collection_name = collection_name
         self.embedding_model = embedding_model
-        self.top_k = top_k
+        self.top_k = min(top_k, self.MAX_RESULTS_CAP)
+        # Share of slots reserved for trusted-domain results (the rest go to
+        # general web). 0.7 → with k=10, ~7 trusted + ~3 general.
+        self.trusted_ratio = max(0.0, min(1.0, trusted_ratio))
 
         self._tavily = None
         self._news_store = None
@@ -63,7 +108,7 @@ class WebSearcher:
 
     def search(self, query: str, k: Optional[int] = None) -> list[dict]:
         """Return top-k results. Tavily first; falls back to local news on any error."""
-        k = k or self.top_k
+        k = min(k or self.top_k, self.MAX_RESULTS_CAP)
         if self.tavily_api_key:
             try:
                 return self._tavily_search(query, k)
@@ -83,20 +128,61 @@ class WebSearcher:
         return self._tavily
 
     def _tavily_search(self, query: str, k: int) -> list[dict]:
+        """Two-pass search: trusted-domain first, then unrestricted general.
+
+        We do separate calls because Tavily's `include_domains` is a hard
+        filter — combining it with general results in a single call isn't
+        possible. Returns trusted hits first so the synthesizer can prefer
+        them; duplicates by URL are dropped.
+        """
         client = self._tavily_client()
+        trusted_k = max(1, int(round(k * self.trusted_ratio)))
+        general_k = max(0, k - trusted_k)
         # search_depth="basic" is the free tier; "advanced" costs more credits.
-        resp = client.search(query=query, max_results=k, search_depth="basic")
-        results = resp.get("results", []) if isinstance(resp, dict) else []
-        return [
-            {
-                "title": (r.get("title") or "")[:240],
-                "url": r.get("url") or "",
-                "content": (r.get("content") or "")[:1200],
-                "score": float(r.get("score", 0.0) or 0.0),
-                "source": "tavily",
-            }
-            for r in results
-        ]
+        common = dict(search_depth="basic")
+
+        hits: list[dict] = []
+        seen_urls: set[str] = set()
+
+        # --- 1. Trusted financial domains -----------------------------------
+        try:
+            resp = client.search(
+                query=query, max_results=trusted_k,
+                include_domains=list(self.TRUSTED_DOMAINS),
+                **common,
+            )
+            for r in (resp.get("results") or []):
+                norm = self._normalize_tavily(r, tier="trusted")
+                if norm["url"] and norm["url"] not in seen_urls:
+                    seen_urls.add(norm["url"])
+                    hits.append(norm)
+        except Exception as e:
+            print(f"[Tavily] trusted-domain search failed ({type(e).__name__}: {e})")
+
+        # --- 2. General web (only if we still have budget) ------------------
+        if general_k > 0:
+            try:
+                resp = client.search(query=query, max_results=general_k, **common)
+                for r in (resp.get("results") or []):
+                    norm = self._normalize_tavily(r, tier="web")
+                    if norm["url"] and norm["url"] not in seen_urls:
+                        seen_urls.add(norm["url"])
+                        hits.append(norm)
+            except Exception as e:
+                print(f"[Tavily] general search failed ({type(e).__name__}: {e})")
+
+        return hits
+
+    @staticmethod
+    def _normalize_tavily(r: dict, tier: str) -> dict:
+        return {
+            "title": (r.get("title") or "")[:240],
+            "url": r.get("url") or "",
+            "content": (r.get("content") or "")[:1500],
+            "score": float(r.get("score") or 0.0),
+            "source": "tavily",
+            "tier": tier,
+        }
 
     # ------------------------------------------------------------------ #
     # Local news fallback

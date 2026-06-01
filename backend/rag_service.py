@@ -2,10 +2,19 @@
 RAG service singletons.
 
 We hold one NaiveRAG per market and one AgenticRAG per market, lazily
-constructed so importing this module is cheap. The agentic side uses
-`AgenticRAGv2` (corrective: hybrid retrieve + grader + rewrite) with the
-small reranker to keep startup fast — swap to `bge-reranker-large` when
-you're ready to wait for the download.
+constructed so importing this module is cheap.
+
+The `agentic` mode uses the **full v4 graph** (`AgenticRAGv4`):
+planner → router → hybrid retrieve → grader → rewrite/proceed → table_agent →
+**web_search** → synthesize → critic → numeric verification → refusal /
+translate-out. Web search uses Tavily when `TAVILY_API_KEY` is set and falls
+back to the local `news` Chroma collection otherwise; the web_search node
+escalates automatically when text retrieval comes back empty or weakly graded,
+so questions about companies not in the corpus (recent IPOs, foreign listings)
+hit the web instead of returning "no information".
+
+We default to the small reranker (`bge-reranker-base`) so backend startup is
+quick; swap to `bge-reranker-large` once you don't mind the download.
 """
 
 from __future__ import annotations
@@ -15,7 +24,7 @@ from typing import Optional
 
 # Local imports of the existing RAG code.
 from src.agents.naive_rag import NaiveRAG
-from src.graph.corrective_rag import AgenticRAGv2
+from src.graph.final_rag import AgenticRAGv4
 
 _COLLECTIONS = {
     "us": "us_filings",
@@ -26,7 +35,7 @@ _COLLECTIONS = {
 # + reranker loads are paid once at first use, not per request.
 _lock = Lock()
 _naive_cache: dict[str, NaiveRAG] = {}
-_agentic_cache: dict[str, AgenticRAGv2] = {}
+_agentic_cache: dict[str, AgenticRAGv4] = {}
 
 
 def get_naive(market: str) -> NaiveRAG:
@@ -39,17 +48,26 @@ def get_naive(market: str) -> NaiveRAG:
         return _naive_cache[market]
 
 
-def get_agentic(market: str) -> AgenticRAGv2:
+def get_agentic(market: str) -> AgenticRAGv4:
     with _lock:
         if market not in _agentic_cache:
-            _agentic_cache[market] = AgenticRAGv2(
+            _agentic_cache[market] = AgenticRAGv4(
                 collection_name=_COLLECTIONS[market],
                 market=market,
                 provider="groq",
-                # Small reranker by default — large is great but downloads 1.3GB.
+                # Small reranker by default — large is great but downloads 1.3 GB.
                 reranker_model="BAAI/bge-reranker-base",
                 bm25_top_k=8, dense_top_k=8, final_top_k=5,
+                # Keep loops tight so the user isn't waiting forever on bad
+                # questions; the agent will refuse rather than spin.
                 max_rewrites=2, max_critic_retries=1,
+                # These collections are only consulted if the router classifies
+                # sub-queries as numeric/external; missing collections just yield
+                # empty `table_results` / `web_results` and the run continues.
+                table_collection="tables",
+                news_collection="news",
+                web_top_k=10,        # ~7 trusted + ~3 general after the two-pass split
+                table_top_k=3,
             )
         return _agentic_cache[market]
 
@@ -106,20 +124,29 @@ def run_naive(market: str, question: str, top_k: int = 5,
 
 def run_agentic(market: str, question: str, top_k: int = 5,
                 company_filter: Optional[list[str]] = None) -> dict:
-    """Synchronous agentic run. The corrective graph handles its own loops."""
+    """Synchronous v4 agentic run. The graph handles its own loops + refusal.
+
+    Web hits and table-derived computations are appended to the returned
+    `chunks` list so the frontend's Citations panel can show them next to the
+    text excerpts. The `metadata` carries the rest of the v4-specific run state
+    (route classifications, verifier score, refused flag, ...).
+    """
     rag = get_agentic(market)
     if top_k:
         rag.final_top_k = top_k
     state = rag.run(question)
 
-    chunks = []
-    for i, c in enumerate(state.get("retrieved_chunks", []) or []):
+    chunks: list[dict] = []
+    next_id = 0
+
+    # 1. Text excerpts (filtered by company if requested).
+    for c in state.get("retrieved_chunks", []) or []:
         if company_filter:
             co = c.get("company") or c.get("ticker", "")
             if co not in company_filter:
                 continue
         chunks.append({
-            "id": i,
+            "id": next_id,
             "text": c.get("text", ""),
             "company": c.get("company", "?"),
             "ticker": c.get("ticker", ""),
@@ -129,21 +156,77 @@ def run_agentic(market: str, question: str, top_k: int = 5,
             "source_url": "",
             "citation": c.get("source", ""),
             "sub_query": c.get("sub_query", ""),
+            "kind": "text",
         })
+        next_id += 1
+
+    # 2. Web search hits — appear in the same Citations panel alongside text.
+    for h in state.get("web_results", []) or []:
+        chunks.append({
+            "id": next_id,
+            "text": (h.get("content") or "")[:1500],
+            "company": h.get("source", "web"),
+            "ticker": "",
+            "year": h.get("date", "")[:4] or "?",
+            "page": "—",
+            "market": market,
+            "source_url": h.get("url", ""),
+            "citation": f"<News: {h.get('title','')[:80]} — {h.get('source','web')}>",
+            "sub_query": h.get("sub_query", ""),
+            "kind": "web",
+        })
+        next_id += 1
+
+    # 3. Table-agent computations — one synthetic chunk per numeric result.
+    for t in state.get("table_results", []) or []:
+        if t.get("error") and not t.get("answer"):
+            continue
+        used = t.get("tables_used", []) or []
+        first = used[0] if used else {}
+        chunks.append({
+            "id": next_id,
+            "text": (
+                f"Computed: {t.get('answer','')[:600]}\n"
+                f"Code:\n{(t.get('code','') or '')[:600]}"
+            ),
+            "company": first.get("company", "?"),
+            "ticker": "",
+            "year": str(first.get("year", "?")),
+            "page": first.get("page", "—"),
+            "market": market,
+            "source_url": "",
+            "citation": (
+                f"(Table: {first.get('title','?')}, "
+                f"{first.get('company','?')} {first.get('year','?')}, "
+                f"p. {first.get('page','?')})"
+            ),
+            "sub_query": t.get("sub_query", ""),
+            "kind": "table",
+        })
+        next_id += 1
+
+    nv = state.get("numeric_verification") or {}
 
     return {
         "answer": state.get("final_answer") or "",
         "chunks": chunks,
         "metadata": {
             "model": rag.synth_model,
-            "latency": 0.0,           # filled in by main.py wrapper
+            "latency": 0.0,                          # filled in by main.py wrapper
+            "language": state.get("language"),
             "sub_queries": state.get("sub_queries", []),
+            "query_routes": state.get("query_routes", []),
             "grading_score": state.get("grading_score"),
             "avg_grade": state.get("avg_grade"),
             "rewrite_iterations": state.get("iteration_count", 0),
             "critic_iterations": state.get("critic_iterations", 0),
             "needs_retry": state.get("needs_retry"),
             "low_confidence": state.get("low_confidence"),
+            "refused": state.get("refused", False),
+            "numeric_verification_score": nv.get("score"),
+            "unverified_count": len(nv.get("unverified", [])) if isinstance(nv, dict) else 0,
+            "web_hits": len(state.get("web_results", []) or []),
+            "table_computations": len(state.get("table_results", []) or []),
             "citations": state.get("citations", []),
         },
     }
