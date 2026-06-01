@@ -1,0 +1,142 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* Backgrounds */
+  --bg-base:        #0B0B0F;
+  --bg-surface:     #111116;
+  --bg-elevated:    #18181F;
+  --bg-hover:       #1E1E28;
+
+  /* Borders */
+  --border-subtle:  #1E1E28;
+  --border-default: #2A2A38;
+  --border-strong:  #3A3A50;
+
+  /* Text */
+  --text-primary:   #F0EDE8;
+  --text-secondary: #8A8A9A;
+  --text-muted:     #4A4A5A;
+
+  /* Accent — financial green */
+  --accent:         #00D084;
+  --accent-dim:     #00D08420;
+  --accent-hover:   #00E894;
+
+  /* Semantic */
+  --warning:        #F59E0B;
+  --warning-dim:    #F59E0B18;
+  --error:          #F87171;
+  --error-dim:      #F8717118;
+  --info:           #60A5FA;
+  --info-dim:       #60A5FA18;
+
+  /* Data colours */
+  --chart-1:        #00D084;
+  --chart-2:        #60A5FA;
+  --chart-3:        #F59E0B;
+  --chart-4:        #F472B6;
+
+  /* Fonts */
+  --font-display: 'DM Serif Display', Georgia, serif;
+  --font-ui:      'Geist', 'Helvetica Neue', sans-serif;
+  --font-mono:    'IBM Plex Mono', 'Courier New', monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  font-feature-settings: "ss01", "cv11";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Subtle grain overlay — pure SVG noise, no images shipped. */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0.035;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+}
+
+#root {
+  position: relative;
+  z-index: 1;
+}
+
+/* Selection */
+::selection {
+  background: var(--accent-dim);
+  color: var(--text-primary);
+}
+
+/* Scrollbars */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border-default); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--border-strong); }
+
+/* Reusable utility classes */
+.font-display { font-family: var(--font-display); }
+.font-ui      { font-family: var(--font-ui); }
+.font-mono    { font-family: var(--font-mono); }
+
+/* Skeleton shimmer */
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--bg-elevated) 0%,
+    var(--bg-hover) 50%,
+    var(--bg-elevated) 100%
+  );
+  background-size: 400px 100%;
+  animation: shimmer 1.6s linear infinite;
+}
+
+/* Citation marker in answer text */
+.citation-mark {
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  padding: 0 2px;
+  cursor: pointer;
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: border-color 120ms ease;
+}
+.citation-mark:hover {
+  border-bottom-color: var(--accent);
+}
+
+/* Streaming cursor */
+.streaming-cursor {
+  display: inline-block;
+  margin-left: 2px;
+  animation: blink 1s steps(2) infinite;
+}
+
+/* Focus rings — keyboard only */
+:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Honour reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
