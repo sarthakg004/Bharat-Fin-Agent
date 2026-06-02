@@ -426,7 +426,7 @@ class AgenticRAG:
             return {"grading_score": None, "needs_retry": False}
 
         supported = sum(1 for v in verdicts if v.supported)
-        score = supported / len(verdicts)
+        score = supported / len(verdicts) if verdicts else None
         unsupported = [v.claim for v in verdicts if not v.supported]
 
         errors = list(state.get("errors", []))
@@ -490,21 +490,10 @@ class AgenticRAG:
 
     def _get_retriever(self):
         if self._retriever is None:
-            from langchain_chroma import Chroma
-            from langchain_huggingface import HuggingFaceEmbeddings
+            from finagent.vectorstore import build_store
 
-            from finagent.chroma_client import chroma_kwargs_for_langchain
-            from finagent.device import get_device
-
-            embeddings = HuggingFaceEmbeddings(
-                model_name=self.embedding_model,
-                model_kwargs={"device": get_device()},
-                encode_kwargs={"normalize_embeddings": True},
-            )
-            self._retriever = Chroma(
-                collection_name=self.collection_name,
-                embedding_function=embeddings,
-                **chroma_kwargs_for_langchain(self.chroma_dir),
+            self._retriever = build_store(
+                self.collection_name, self.embedding_model, self.chroma_dir
             )
         return self._retriever
 

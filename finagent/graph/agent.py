@@ -546,7 +546,7 @@ single item is irrelevant."""
             return {"numeric_verification": {"claims": [], "unverified": [], "score": 1.0}}
 
         unverified = [c for c in claims if not c.get("matched")]
-        score = (len(claims) - len(unverified)) / len(claims)
+        score = (len(claims) - len(unverified)) / len(claims) if claims else 1.0
         # Log unverified claims so they show up in the run's `errors` list.
         for u in unverified:
             self._log(state, f"unverified figure: {u.get('number')} — {u.get('claim')[:120]}")

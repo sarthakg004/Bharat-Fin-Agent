@@ -241,21 +241,10 @@ class WebSearcher:
 
     def _news_store_handle(self):
         if self._news_store is None:
-            from langchain_chroma import Chroma
-            from langchain_huggingface import HuggingFaceEmbeddings
+            from finagent.vectorstore import build_store
 
-            from finagent.chroma_client import chroma_kwargs_for_langchain
-            from finagent.device import get_device
-
-            emb = HuggingFaceEmbeddings(
-                model_name=self.embedding_model,
-                model_kwargs={"device": get_device()},
-                encode_kwargs={"normalize_embeddings": True},
-            )
-            self._news_store = Chroma(
-                collection_name=self.collection_name,
-                embedding_function=emb,
-                **chroma_kwargs_for_langchain(self.chroma_dir),
+            self._news_store = build_store(
+                self.collection_name, self.embedding_model, self.chroma_dir
             )
         return self._news_store
 
