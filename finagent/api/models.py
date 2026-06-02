@@ -32,6 +32,13 @@ class ProviderConfig(BaseModel):
     )
 
 
+class ChatTurn(BaseModel):
+    """One prior turn of conversation, supplied by the client for per-session
+    memory when the server runs stateless (no server-side chat store)."""
+    role: Literal["user", "assistant"]
+    content: str
+
+
 class QueryRequest(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
     market: Market = "us"
@@ -41,6 +48,11 @@ class QueryRequest(BaseModel):
     )
     top_k: int = Field(default=5, ge=1, le=20)
     provider_config: Optional[ProviderConfig] = None
+    chat_history: Optional[list[ChatTurn]] = Field(
+        default=None,
+        description="Recent turns for conversation memory. Used when the server "
+                    "runs stateless (STATELESS=1); ignored otherwise.",
+    )
 
 
 # --------------------------------------------------------------------------- #

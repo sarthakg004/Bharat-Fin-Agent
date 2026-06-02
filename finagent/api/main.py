@@ -70,6 +70,12 @@ app.add_middleware(
 
 _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="rag")
 
+# Stateless mode (set on scale-to-zero hosts like Cloud Run): no server-side
+# chat store — the client supplies conversation memory via QueryRequest.chat_history
+# and nothing is persisted to disk. Local dev leaves this off and keeps the
+# SQLite multi-chat store + /api/chats endpoints.
+STATELESS = os.getenv("STATELESS", "").strip().lower() in ("1", "true", "yes")
+
 
 # --------------------------------------------------------------------------- #
 # Health + configs
@@ -185,9 +191,8 @@ def _build_history_for_agent(chat_id: int) -> list[dict]:
     ]
 
 
-async def _run_rag(request: QueryRequest, chat_id: int) -> dict:
+async def _run_rag(request: QueryRequest, hist: list[dict]) -> dict:
     loop = asyncio.get_event_loop()
-    hist = _build_history_for_agent(chat_id)
     pc = request.provider_config
     provider = (pc.provider if pc else "groq")
     synth_model = (pc.synth_model if pc else None)
@@ -205,14 +210,20 @@ async def _run_rag(request: QueryRequest, chat_id: int) -> dict:
 async def _stream_answer(request: QueryRequest) -> AsyncGenerator[str, None]:
     t0 = time.time()
 
-    # Resolve / create the chat the user is interacting with.
-    chat_id = request.chat_id
-    if chat_id is None or not history.get_chat(chat_id):
-        chat_id = history.create_chat(title="New chat", market=request.market)["id"]
-
-    # Persist the user message first so any failure mid-stream still keeps it.
-    history.add_message(chat_id, role="user", content=request.question)
-    history.auto_title_if_default(chat_id, request.question)
+    # Resolve the conversation + memory. In stateless mode the client owns the
+    # history (per-session, cleared on exit) and nothing is persisted; otherwise
+    # we use the SQLite chat store.
+    if STATELESS:
+        chat_id = request.chat_id or 0
+        agent_history = [t.model_dump() for t in (request.chat_history or [])][-6:]
+    else:
+        chat_id = request.chat_id
+        if chat_id is None or not history.get_chat(chat_id):
+            chat_id = history.create_chat(title="New chat", market=request.market)["id"]
+        # Persist the user message first so any failure mid-stream still keeps it.
+        history.add_message(chat_id, role="user", content=request.question)
+        history.auto_title_if_default(chat_id, request.question)
+        agent_history = _build_history_for_agent(chat_id)
     yield _sse({"type": "chat", "chat_id": chat_id})
 
     yield _sse({
@@ -221,12 +232,13 @@ async def _stream_answer(request: QueryRequest) -> AsyncGenerator[str, None]:
     })
 
     try:
-        result = await _run_rag(request, chat_id)
+        result = await _run_rag(request, agent_history)
     except Exception as e:
-        history.add_message(
-            chat_id, role="assistant", content="",
-            metadata={"error": f"{type(e).__name__}: {e}"},
-        )
+        if not STATELESS:
+            history.add_message(
+                chat_id, role="assistant", content="",
+                metadata={"error": f"{type(e).__name__}: {e}"},
+            )
         yield _sse({"type": "error", "message": f"{type(e).__name__}: {e}"})
         yield _sse({"type": "done"})
         return
@@ -264,13 +276,14 @@ async def _stream_answer(request: QueryRequest) -> AsyncGenerator[str, None]:
         "agentic": meta,
     })
 
-    try:
-        history.add_message(
-            chat_id, role="assistant", content=answer,
-            chunks=chunks, charts=charts, metadata=meta, latency=latency,
-        )
-    except Exception:
-        pass
+    if not STATELESS:
+        try:
+            history.add_message(
+                chat_id, role="assistant", content=answer,
+                chunks=chunks, charts=charts, metadata=meta, latency=latency,
+            )
+        except Exception:
+            pass
 
     yield _sse({"type": "done"})
 
