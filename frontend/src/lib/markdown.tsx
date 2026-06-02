@@ -18,7 +18,7 @@
 import { type ComponentPropsWithoutRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { visit } from "unist-util-visit";
+import { visit, SKIP } from "unist-util-visit";
 import type { Plugin } from "unified";
 import type { Root, Text, Link, PhrasingContent } from "mdast";
 
@@ -59,7 +59,7 @@ const remarkCitations: Plugin<[], Root> = () => (tree) => {
     if (last < value.length) segments.push({ type: "text", value: value.slice(last) });
 
     parent.children.splice(index, 1, ...segments);
-    return [visit.SKIP, index + segments.length];
+    return [SKIP, index + segments.length];
   });
 };
 

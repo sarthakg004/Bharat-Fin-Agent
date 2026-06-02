@@ -14,6 +14,7 @@ import { Sidebar } from "@/components/Sidebar";
 import { ChatPanel } from "@/components/ChatPanel";
 import { CitationsPanel } from "@/components/CitationsPanel";
 import { CommandPalette } from "@/components/CommandPalette";
+import { SettingsModal } from "@/components/SettingsModal";
 import { ShortcutsOverlay } from "@/components/ShortcutsOverlay";
 import { PanelResizer } from "@/components/PanelResizer";
 import { PanelOpenButton } from "@/components/PanelOpenButton";
@@ -40,6 +41,7 @@ export function App() {
 
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   // Fetch threads on first paint so the sidebar isn't empty.
   useEffect(() => { useThreadStore.getState().refresh(); }, []);
@@ -47,16 +49,18 @@ export function App() {
   const closeAll = () => {
     setPaletteOpen(false);
     setShortcutsOpen(false);
+    setSettingsOpen(false);
   };
 
   useKeyboardShortcuts({
-    "mod+k":  () => setPaletteOpen((v) => !v),
-    "mod+n":  () => createChat("New chat", market),
-    "mod+l":  () => clearChat(),
-    "mod+[":  () => toggleSidebar(),
-    "mod+]":  () => toggleCitations(),
-    "escape": () => closeAll(),
-    "?":      () => setShortcutsOpen((v) => !v),
+    "mod+k":      () => setPaletteOpen((v) => !v),
+    "mod+n":      () => createChat("New chat", market),
+    "mod+,":      () => setSettingsOpen((v) => !v),
+    "mod+l":      () => clearChat(),
+    "mod+[":      () => toggleSidebar(),
+    "mod+]":      () => toggleCitations(),
+    "escape":     () => closeAll(),
+    "?":          () => setShortcutsOpen((v) => !v),
   });
 
   const stagger = reduce ? 0 : 0.08;
@@ -68,7 +72,10 @@ export function App() {
         animate={{ y: 0, opacity: 1 }}
         transition={{ duration: 0.4 }}
       >
-        <Header onCommandPalette={() => setPaletteOpen(true)} />
+        <Header
+          onCommandPalette={() => setPaletteOpen(true)}
+          onSettings={() => setSettingsOpen(true)}
+        />
       </motion.div>
 
       <main className="flex min-h-0 flex-1">
@@ -132,7 +139,9 @@ export function App() {
         open={paletteOpen}
         onClose={() => setPaletteOpen(false)}
         onShortcuts={() => setShortcutsOpen(true)}
+        onSettings={() => setSettingsOpen(true)}
       />
+      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
       <ShortcutsOverlay open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
 
       <Toaster

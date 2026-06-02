@@ -5,7 +5,6 @@ import toast from "react-hot-toast";
 
 import { useConfigStore } from "@/store/configStore";
 import { useThreadStore } from "@/store/threadStore";
-import { useChatStore } from "@/store/chatStore";
 import { cls, timeAgo } from "@/lib/utils";
 
 export function Sidebar() {
@@ -90,7 +89,13 @@ export function Sidebar() {
             active={activeId === t.id}
             onSelect={() => handleSwitch(t.id)}
             onRename={(title) => renameChat(t.id, title)}
-            onDelete={() => deleteChat(t.id).then(() => toast.success("Deleted."))}
+            onDelete={() =>
+              // Wrap in a block so the toast id (string) isn't returned —
+              // the prop is typed `() => Promise<void>`.
+              deleteChat(t.id).then(() => {
+                toast.success("Deleted.");
+              })
+            }
           />
         ))}
       </nav>

@@ -4,6 +4,7 @@ import toast from "react-hot-toast";
 import type { Market, SSEEvent } from "@/lib/api";
 import { useChatStore } from "@/store/chatStore";
 import { useThreadStore } from "@/store/threadStore";
+import { currentProviderConfig } from "@/store/settingsStore";
 import { useSSE } from "./useSSE";
 
 /**
@@ -43,7 +44,10 @@ export function useRAGQuery(market: Market) {
 
       try {
         await send(
-          { question, market, chat_id: activeChatId, top_k: 5 },
+          {
+            question, market, chat_id: activeChatId, top_k: 5,
+            provider_config: currentProviderConfig(),
+          },
           (e: SSEEvent) => {
             switch (e.type) {
               case "chat":

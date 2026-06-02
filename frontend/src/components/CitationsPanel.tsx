@@ -5,14 +5,12 @@ import { PanelRightClose } from "lucide-react";
 import { selectLastAssistant, useChatStore } from "@/store/chatStore";
 import { useConfigStore } from "@/store/configStore";
 import { ChunkCard } from "./ChunkCard";
-import { MetricsBadge } from "./MetricsBadge";
 
 export function CitationsPanel() {
   const last = useChatStore((s) => selectLastAssistant(s));
   const toggleCitations = useConfigStore((s) => s.toggleCitations);
 
   const chunks = last?.chunks ?? [];
-  const ragas = last?.ragas;
 
   const empty = chunks.length === 0;
 
@@ -85,14 +83,6 @@ export function CitationsPanel() {
           </div>
         </div>
       )}
-
-      {/* RAGAS row */}
-      <div className="flex flex-wrap gap-1 border-t border-border-subtle px-4 py-3">
-        <MetricsBadge label="Faithfulness" score={ragas?.faithfulness} />
-        <MetricsBadge label="Relevancy" score={ragas?.answer_relevancy} />
-        <MetricsBadge label="Precision" score={ragas?.context_precision} />
-        <MetricsBadge label="Recall" score={ragas?.context_recall} />
-      </div>
     </motion.aside>
   );
 }

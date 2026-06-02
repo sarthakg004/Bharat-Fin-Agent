@@ -12,6 +12,7 @@ interface Props {
   open: boolean;
   onClose: () => void;
   onShortcuts: () => void;
+  onSettings: () => void;
 }
 
 interface CommandItem {
@@ -21,7 +22,7 @@ interface CommandItem {
   run: () => void;
 }
 
-export function CommandPalette({ open, onClose, onShortcuts }: Props) {
+export function CommandPalette({ open, onClose, onShortcuts, onSettings }: Props) {
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -40,6 +41,7 @@ export function CommandPalette({ open, onClose, onShortcuts }: Props) {
 
   const commands = useMemo<CommandItem[]>(() => [
     { id: "new",   label: "New chat",                    hint: "⌘N",  run: () => createChat("New chat", market) },
+    { id: "set",   label: "Provider & model settings",   hint: "⌘,",  run: onSettings },
     { id: "us",    label: "Switch market → US",          hint: "🇺🇸",  run: () => setMarket("us") },
     { id: "in",    label: "Switch market → India",       hint: "🇮🇳",  run: () => setMarket("india") },
     { id: "clear", label: "Clear current view",          run: clear },
@@ -53,7 +55,7 @@ export function CommandPalette({ open, onClose, onShortcuts }: Props) {
       window.open("https://smith.langchain.com/", "_blank");
     } },
     { id: "kbd",   label: "Keyboard shortcuts",          hint: "?",   run: onShortcuts },
-  ], [setMarket, market, clear, createChat, onShortcuts]);
+  ], [setMarket, market, clear, createChat, onShortcuts, onSettings]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();

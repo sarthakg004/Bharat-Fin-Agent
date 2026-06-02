@@ -1,6 +1,10 @@
 // Typed API client. Single source of truth for backend shapes + URLs.
 
-const BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
+// Same-origin by default: an empty/unset VITE_API_URL means we hit "/api/..."
+// on whatever host serves the page. That works both in production (the Docker
+// Space serves API + SPA on one origin) and in dev (Vite proxies /api → :8000,
+// see vite.config.ts). Only set VITE_API_URL to point at a different host.
+const BASE = import.meta.env.VITE_API_URL || "";
 
 export type Market = "us" | "india";
 
@@ -103,11 +107,18 @@ export interface ChatMessagesResponse {
 // Query (SSE)
 // --------------------------------------------------------------------------- //
 
+export interface ProviderConfig {
+  provider: "groq" | "gemini" | "openai" | "anthropic";
+  synth_model?: string;
+  api_key?: string;
+}
+
 export interface QueryRequest {
   question: string;
   market: Market;
   chat_id?: number | null;
   top_k?: number;
+  provider_config?: ProviderConfig;
 }
 
 export interface HealthResponse {

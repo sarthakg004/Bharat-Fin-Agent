@@ -1,0 +1,19 @@
+node_modules/
+dist/
+
+# Vite/esbuild build from .tsx directly. Never commit (or leave lying in src)
+# compiled .js/.jsx — esbuild resolves .js BEFORE .tsx, so stale emit can
+# silently shadow real source. `tsc` for type-checking only: see "type-check".
+src/**/*.js
+src/**/*.jsx
+# Stale tsc emit of the config (real config is vite.config.ts).
+vite.config.js
+
+# Local env overrides — never bake a personal API URL into a build.
+.env
+.env.local
+.env.*.local
+
+# Editor / OS junk
+.DS_Store
+*.local

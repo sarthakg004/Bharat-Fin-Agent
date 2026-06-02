@@ -11,7 +11,15 @@
  */
 
 import { useEffect, useRef } from "react";
-import { createChart, ColorType, CrosshairMode, type IChartApi } from "lightweight-charts";
+import {
+  createChart,
+  ColorType,
+  CrosshairMode,
+  type IChartApi,
+  type CandlestickData,
+  type HistogramData,
+  type UTCTimestamp,
+} from "lightweight-charts";
 
 import type { ChartSpec } from "@/lib/api";
 
@@ -58,7 +66,13 @@ export function ChartView({ spec }: Props) {
       wickUpColor: cssVar("--accent") || "#00D084",
       wickDownColor: cssVar("--error") || "#F87171",
     });
-    candleSeries.setData(spec.candles);
+    // lightweight-charts brands `time` as `UTCTimestamp` (a nominal number
+    // type). Our backend serialises plain unix seconds, so we cast per item.
+    const candles: CandlestickData<UTCTimestamp>[] = spec.candles.map((c) => ({
+      ...c,
+      time: c.time as UTCTimestamp,
+    }));
+    candleSeries.setData(candles);
 
     // Volume on a separate (overlay) price scale at the bottom 25 %.
     if (spec.volume && spec.volume.length) {
@@ -67,7 +81,11 @@ export function ChartView({ spec }: Props) {
         priceScaleId: "volume",
         color: cssVar("--accent-dim") || "#00D08420",
       });
-      volSeries.setData(spec.volume);
+      const volumeBars: HistogramData<UTCTimestamp>[] = spec.volume.map((v) => ({
+        ...v,
+        time: v.time as UTCTimestamp,
+      }));
+      volSeries.setData(volumeBars);
       chart.priceScale("volume").applyOptions({
         scaleMargins: { top: 0.75, bottom: 0 },
       });

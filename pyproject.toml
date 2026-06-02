@@ -1,0 +1,76 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "finagent"
+version = "2.0.0"
+description = "Agentic RAG over financial filings with live market data, web search, and a bilingual UI."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Saarthak Gupta" }]
+
+# Core = the runtime serve path (mirrors requirements-app.txt, which stays the
+# pinned list the Docker image installs). torch arrives via sentence-transformers
+# and runs on GPU when available, CPU otherwise (see finagent/device.py).
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "pydantic>=2.0.0",
+    "python-dotenv>=1.0.0",
+    "requests>=2.31.0",
+    "pandas>=2.0.0",
+    "tqdm>=4.66.0",
+    "langgraph",
+    "langsmith",
+    "langchain-core>=0.3.0",
+    "langchain-chroma>=0.1.4",
+    "langchain-huggingface>=0.1.0",
+    "langchain-groq>=0.2.0",
+    "langchain-google-genai>=2.0.0",
+    "langchain-openai>=0.2.0",
+    "langchain-anthropic>=0.3.0",
+    "chromadb>=0.5.0",
+    "huggingface_hub>=0.24.0",
+    "rank-bm25",
+    "sentence-transformers>=3.0.0",
+    "yfinance>=0.2.40",
+    "tavily-python>=0.5.0",
+    "langdetect>=1.0.9",
+]
+
+[project.optional-dependencies]
+# Building the corpus: PDF parsing + SEC / NSE / BSE fetchers.
+ingest = [
+    "pypdf",
+    "unstructured[pdf]>=0.15.0",
+    "sec-edgar-downloader>=5.0.0",
+    "nse>=1.0.4",
+    "bse>=2.0.1",
+    "langchain-text-splitters>=0.3.0",
+]
+# Offline evaluation with RAGAS.
+eval = [
+    "ragas>=0.2.0",
+    "datasets>=2.19.0",
+]
+# Local development: everything above + test/lint tooling.
+dev = [
+    "finagent[ingest,eval]",
+    "pytest>=8.0",
+    "ruff>=0.5",
+]
+
+[project.urls]
+Homepage = "https://huggingface.co/spaces/"
+
+[tool.setuptools.packages.find]
+include = ["finagent*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
