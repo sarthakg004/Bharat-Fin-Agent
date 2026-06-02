@@ -1,7 +1,6 @@
 import { useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { ArrowUp, X, Loader2, ChevronDown, Cpu } from "lucide-react";
-import toast from "react-hot-toast";
 
 import {
   PROVIDER_LABELS, PROVIDER_MODELS, type Provider, useSettingsStore,
@@ -121,20 +120,28 @@ function ModelSelect() {
   const keys = useSettingsStore((s) => s.keys);
   const setProvider = useSettingsStore((s) => s.setProvider);
   const setModel = useSettingsStore((s) => s.setModel);
+  const setKey = useSettingsStore((s) => s.setKey);
+
+  const [draft, setDraft] = useState("");
 
   function pick(value: string) {
     const [p, m] = value.split("::") as [Provider, string];
     setProvider(p);
     setModel(p, m);
-    if (p !== "groq" && !keys[p]) {
-      toast(`Add your ${PROVIDER_LABELS[p]} API key (gear, top-right)`, { icon: "🔑" });
-    }
+    setDraft("");
   }
 
+  function saveKey(e: React.FormEvent) {
+    e.preventDefault();
+    if (draft.trim()) { setKey(provider, draft.trim()); setDraft(""); }
+  }
+
+  // Groq uses the server key; the others need the user's own key.
   const needsKey = provider !== "groq" && !keys[provider];
+  const hasUserKey = provider !== "groq" && !!keys[provider];
 
   return (
-    <div className="relative flex items-center gap-1.5">
+    <div className="flex flex-wrap items-center gap-1.5">
       <div className="relative">
         <select
           value={`${provider}::${model}`}
@@ -155,10 +162,36 @@ function ModelSelect() {
           className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 text-text-muted"
         />
       </div>
+
+      {/* Non-Groq models need the user's own key — collect it right here. */}
       {needsKey && (
-        <span className="font-mono text-[10px] uppercase tracking-wider text-warning">
-          key needed
-        </span>
+        <form onSubmit={saveKey} className="flex items-center gap-1">
+          <input
+            type="password"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            placeholder={`${PROVIDER_LABELS[provider]} API key`}
+            className="w-[180px] border border-warning/60 bg-bg-elevated px-2 py-1 font-mono text-[11px] text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none"
+            aria-label={`${PROVIDER_LABELS[provider]} API key`}
+          />
+          <button
+            type="submit"
+            disabled={!draft.trim()}
+            className="border border-accent bg-accent px-2 py-1 font-mono text-[10px] uppercase tracking-wider text-bg-base transition-colors hover:bg-accent-hover disabled:opacity-40"
+          >
+            Use
+          </button>
+        </form>
+      )}
+
+      {hasUserKey && (
+        <button
+          onClick={() => setKey(provider, "")}
+          className="inline-flex items-center gap-1 font-mono text-[10px] uppercase tracking-wider text-accent hover:text-text-primary"
+          title="Your key is stored in this browser — click to clear"
+        >
+          <span className="inline-block h-1.5 w-1.5 rounded-full bg-accent" /> key set
+        </button>
       )}
     </div>
   );

@@ -69,10 +69,7 @@ export function App() {
         animate={{ y: 0, opacity: 1 }}
         transition={{ duration: 0.4 }}
       >
-        <Header
-          onCommandPalette={() => setPaletteOpen(true)}
-          onSettings={() => setSettingsOpen(true)}
-        />
+        <Header onCommandPalette={() => setPaletteOpen(true)} />
       </motion.div>
 
       <main className="flex min-h-0 flex-1">

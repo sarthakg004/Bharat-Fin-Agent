@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { Command, Pencil, Check, Settings as SettingsIcon } from "lucide-react";
+import { Command, Pencil, Check } from "lucide-react";
 
-import { MarketToggle } from "./MarketToggle";
 import { StatusBadge } from "./StatusBadge";
 import { useThreadStore } from "@/store/threadStore";
 import { useChatStore } from "@/store/chatStore";
@@ -9,10 +8,9 @@ import { cls, modKey } from "@/lib/utils";
 
 interface HeaderProps {
   onCommandPalette: () => void;
-  onSettings: () => void;
 }
 
-export function Header({ onCommandPalette, onSettings }: HeaderProps) {
+export function Header({ onCommandPalette }: HeaderProps) {
   const activeChatId = useChatStore((s) => s.activeChatId);
   const threads = useThreadStore((s) => s.threads);
   const renameChat = useThreadStore((s) => s.renameChat);
@@ -41,20 +39,8 @@ export function Header({ onCommandPalette, onSettings }: HeaderProps) {
         }}
       />
 
-      {/* Right cluster */}
+      {/* Right cluster — model + API key live in the question bar now. */}
       <div className="ml-auto flex items-center gap-3">
-        <MarketToggle />
-
-        {/* API keys live in Settings; model selection is in the question bar. */}
-        <button
-          onClick={onSettings}
-          title="API keys"
-          aria-label="API keys"
-          className="hidden h-[28px] w-[28px] items-center justify-center border border-border-default text-text-secondary transition-colors hover:border-accent hover:bg-bg-hover hover:text-text-primary md:flex"
-        >
-          <SettingsIcon size={13} />
-        </button>
-
         <StatusBadge />
         <button
           onClick={onCommandPalette}

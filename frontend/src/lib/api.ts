@@ -109,7 +109,7 @@ export type SSEEvent =
   | { type: "chart"; chart: ChartSpec }
   | { type: "chunk"; content: string }
   | { type: "metrics"; latency: number; model?: string; input_tokens?: number; output_tokens?: number; agentic?: QueryMetadata | null }
-  | { type: "error"; message: string }
+  | { type: "error"; message: string; code?: string }
   | { type: "done" };
 
 export interface StreamHandlers {

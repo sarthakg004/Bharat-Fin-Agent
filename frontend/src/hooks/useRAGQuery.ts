@@ -64,9 +64,18 @@ export function useRAGQuery(market: Market) {
                 });
                 break;
               case "error":
-                patchMessage(assistantId, { error: e.message, streaming: false });
+                if (e.code === "rate_limit") {
+                  // Daily limit hit on all keys — show it as a calm message in
+                  // the thread, not a red error.
+                  patchMessage(assistantId, {
+                    content: e.message, streaming: false, status: undefined,
+                  });
+                  toast("Daily usage limit reached", { icon: "⏳" });
+                } else {
+                  patchMessage(assistantId, { error: e.message, streaming: false });
+                  toast.error(e.message);
+                }
                 setStreaming(null);
-                toast.error(e.message);
                 break;
               case "done":
                 patchMessage(assistantId, { streaming: false, status: undefined });
