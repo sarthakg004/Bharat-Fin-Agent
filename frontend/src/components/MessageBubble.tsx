@@ -1,13 +1,19 @@
 import { motion } from "framer-motion";
-import { ExternalLink } from "lucide-react";
+import { ExternalLink, RotateCcw } from "lucide-react";
 
 import type { ChatMessage } from "@/store/chatStore";
 import { MarkdownAnswer } from "@/lib/markdown";
 import { ChartView } from "@/components/ChartView";
 
-export function MessageBubble({ msg }: { msg: ChatMessage }) {
+interface BubbleProps {
+  msg: ChatMessage;
+  /** Set on the last assistant message (when not streaming) to show Retry. */
+  onRetry?: () => void;
+}
+
+export function MessageBubble({ msg, onRetry }: BubbleProps) {
   if (msg.role === "user") return <UserBubble msg={msg} />;
-  return <AssistantBubble msg={msg} />;
+  return <AssistantBubble msg={msg} onRetry={onRetry} />;
 }
 
 function UserBubble({ msg }: { msg: ChatMessage }) {
@@ -25,7 +31,7 @@ function UserBubble({ msg }: { msg: ChatMessage }) {
   );
 }
 
-function AssistantBubble({ msg }: { msg: ChatMessage }) {
+function AssistantBubble({ msg, onRetry }: BubbleProps) {
   const showStatus = msg.streaming && (!msg.content || msg.content.length < 6);
 
   return (
@@ -64,6 +70,18 @@ function AssistantBubble({ msg }: { msg: ChatMessage }) {
       ))}
 
       {!msg.streaming && msg.metadata && <MetadataFooter msg={msg} />}
+
+      {/* Retry — re-runs the last question (shown on the latest answer). */}
+      {!msg.streaming && onRetry && (
+        <button
+          onClick={onRetry}
+          className="mt-1 inline-flex w-fit items-center gap-1.5 border border-border-subtle px-2 py-1 font-mono text-[10px] uppercase tracking-wider text-text-secondary transition-colors hover:border-accent hover:text-accent"
+          title="Regenerate this answer"
+        >
+          <RotateCcw size={11} />
+          Retry
+        </button>
+      )}
     </motion.div>
   );
 }

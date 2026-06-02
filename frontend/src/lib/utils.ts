@@ -5,7 +5,7 @@ export function cls(...parts: Array<string | false | null | undefined>): string 
   return parts.filter(Boolean).join(" ");
 }
 
-export function timeAgo(iso: string): string {
+export function timeAgo(iso: string | number): string {
   const d = new Date(iso).getTime();
   if (Number.isNaN(d)) return "";
   const s = Math.max(0, Math.round((Date.now() - d) / 1000));

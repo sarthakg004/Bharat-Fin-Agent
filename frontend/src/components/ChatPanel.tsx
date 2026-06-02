@@ -22,11 +22,17 @@ interface Props {
 
 export function ChatPanel({ backendOnline }: Props) {
   const messages = useChatStore((s) => s.messages);
-  const startNewChat = useChatStore((s) => s.startNewChat);
   const streamingId = useChatStore((s) => s.streamingId);
   const market = useConfigStore((s) => s.market);
   const createChat = useThreadStore((s) => s.createChat);
-  const { ask } = useRAGQuery(market);
+  const { ask, regenerate } = useRAGQuery(market);
+
+  const lastAssistantId = (() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === "assistant") return messages[i].id;
+    }
+    return null;
+  })();
 
   const scrollerRef = useRef<HTMLDivElement>(null);
 
@@ -51,7 +57,11 @@ export function ChatPanel({ backendOnline }: Props) {
         >
           <div className="mx-auto flex max-w-[760px] flex-col gap-6">
             {messages.map((m) => (
-              <MessageBubble key={m.id} msg={m} />
+              <MessageBubble
+                key={m.id}
+                msg={m}
+                onRetry={m.id === lastAssistantId && !streamingId ? regenerate : undefined}
+              />
             ))}
           </div>
         </div>
@@ -61,7 +71,7 @@ export function ChatPanel({ backendOnline }: Props) {
         <div className="mx-auto max-w-[760px]">
           <InputBar
             onSend={ask}
-            onClear={() => { startNewChat(); createChat("New chat", market); }}
+            onClear={() => createChat("New chat", market)}
             streaming={!!streamingId}
             disabled={!backendOnline}
           />

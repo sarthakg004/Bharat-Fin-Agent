@@ -1,74 +1,52 @@
 import { useCallback } from "react";
 import toast from "react-hot-toast";
 
-import type { Market, SSEEvent } from "@/lib/api";
+import type { ChatTurn, Market, SSEEvent } from "@/lib/api";
 import { useChatStore } from "@/store/chatStore";
 import { useThreadStore } from "@/store/threadStore";
 import { currentProviderConfig } from "@/store/settingsStore";
 import { useSSE } from "./useSSE";
 
+const MEMORY_TURNS = 6;   // how many prior turns to send as conversation memory
+
 /**
  * "Submit a question" hook — owns the SSE pipeline + state updates.
  *
- * - When no chat is active yet, the backend auto-creates one and emits a
- *   `chat` event with the new id; we adopt it and refresh the sidebar.
- * - Each new question detaches from any previously loaded message — the
- *   chat_id is what tracks identity, not the in-memory message ids.
+ * The server is stateless: we send the recent conversation as `chat_history`
+ * and, when the answer completes, persist the thread's messages client-side
+ * (threadStore → sessionStorage). `ask` adds a new turn; `regenerate` re-runs
+ * the last user question (the Retry button).
  */
 export function useRAGQuery(market: Market) {
   const { send } = useSSE();
   const {
-    appendMessage,
-    patchMessage,
-    appendChunkToMessage,
-    appendChartToMessage,
-    setStreaming,
-    setActiveChatId,
+    appendMessage, patchMessage, appendChunkToMessage,
+    appendChartToMessage, setStreaming,
   } = useChatStore();
 
-  const ask = useCallback(
-    async (question: string) => {
-      if (!question.trim()) return;
+  // Build chat_history from the messages BEFORE index `upto`.
+  const historyBefore = useCallback((upto: number): ChatTurn[] => {
+    return useChatStore.getState().messages
+      .slice(0, upto)
+      .filter((m) => m.content && !m.error)
+      .map((m) => ({ role: m.role, content: m.content }))
+      .slice(-MEMORY_TURNS);
+  }, []);
 
-      const activeChatId = useChatStore.getState().activeChatId;
-      const threads = useThreadStore.getState();
-
-      appendMessage({ role: "user", content: question, market });
-      const assistantId = appendMessage({
-        role: "assistant",
-        content: "",
-        market,
-        streaming: true,
-      });
+  const runStream = useCallback(
+    async (question: string, assistantId: string, history: ChatTurn[]) => {
       setStreaming(assistantId);
-
       try {
         await send(
-          {
-            question, market, chat_id: activeChatId, top_k: 5,
-            provider_config: currentProviderConfig(),
-          },
+          { question, market, top_k: 5, chat_history: history,
+            provider_config: currentProviderConfig() },
           (e: SSEEvent) => {
             switch (e.type) {
-              case "chat":
-                // Backend may auto-create the chat; adopt the new id and
-                // refresh the sidebar so the new thread appears.
-                if (e.chat_id && useChatStore.getState().activeChatId !== e.chat_id) {
-                  setActiveChatId(e.chat_id);
-                  threads.setActive(e.chat_id);
-                  threads.refresh();
-                }
-                break;
               case "status":
-                patchMessage(assistantId, {
-                  status: { stage: e.stage, label: e.label },
-                });
+                patchMessage(assistantId, { status: { stage: e.stage, label: e.label } });
                 break;
               case "sources":
-                patchMessage(assistantId, {
-                  chunks: e.chunks,
-                  metadata: { ...(e.metadata || {}) },
-                });
+                patchMessage(assistantId, { chunks: e.chunks, metadata: { ...(e.metadata || {}) } });
                 break;
               case "chart":
                 appendChartToMessage(assistantId, e.chart);
@@ -79,10 +57,8 @@ export function useRAGQuery(market: Market) {
               case "metrics":
                 patchMessage(assistantId, {
                   metadata: {
-                    model: e.model,
-                    latency: e.latency,
-                    input_tokens: e.input_tokens,
-                    output_tokens: e.output_tokens,
+                    model: e.model, latency: e.latency,
+                    input_tokens: e.input_tokens, output_tokens: e.output_tokens,
                     agentic: e.agentic ?? null,
                   },
                 });
@@ -95,8 +71,7 @@ export function useRAGQuery(market: Market) {
               case "done":
                 patchMessage(assistantId, { streaming: false, status: undefined });
                 setStreaming(null);
-                // Refresh sidebar to pick up updated_at + message_count.
-                threads.refresh();
+                useThreadStore.getState().saveActive();   // persist to sessionStorage
                 break;
             }
           },
@@ -108,9 +83,43 @@ export function useRAGQuery(market: Market) {
         toast.error(msg);
       }
     },
-    [send, market, appendMessage, patchMessage, appendChunkToMessage,
-     appendChartToMessage, setStreaming, setActiveChatId],
+    [send, market, patchMessage, appendChunkToMessage, appendChartToMessage, setStreaming],
   );
 
-  return { ask };
+  const ask = useCallback(
+    async (question: string) => {
+      if (!question.trim()) return;
+
+      // Ensure a thread exists to own this conversation.
+      const threads = useThreadStore.getState();
+      if (!threads.activeId) threads.createChat("New chat", market);
+
+      const history = historyBefore(useChatStore.getState().messages.length);
+      appendMessage({ role: "user", content: question, market });
+      const assistantId = appendMessage({ role: "assistant", content: "", market, streaming: true });
+      useThreadStore.getState().saveActive();   // capture the user turn immediately
+
+      await runStream(question, assistantId, history);
+    },
+    [market, appendMessage, historyBefore, runStream],
+  );
+
+  const regenerate = useCallback(
+    async () => {
+      const msgs = useChatStore.getState().messages;
+      const lastUserOffset = [...msgs].reverse().findIndex((m) => m.role === "user");
+      if (lastUserOffset === -1) return;
+      const userIdx = msgs.length - 1 - lastUserOffset;
+      const question = msgs[userIdx].content;
+
+      const history = historyBefore(userIdx);     // memory excludes the question itself
+      useChatStore.getState().dropLastAssistant(); // remove the stale answer
+      const assistantId = appendMessage({ role: "assistant", content: "", market, streaming: true });
+
+      await runStream(question, assistantId, history);
+    },
+    [market, appendMessage, historyBefore, runStream],
+  );
+
+  return { ask, regenerate };
 }

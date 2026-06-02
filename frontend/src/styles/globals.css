@@ -15,9 +15,9 @@
   --border-strong:  #3A3A50;
 
   /* Text */
-  --text-primary:   #F0EDE8;
-  --text-secondary: #B2B2C2;   /* labels, metadata — lifted from #8A8A9A for legibility */
-  --text-muted:     #7A7A8E;   /* placeholders / tertiary — lifted from #4A4A5A */
+  --text-primary:   #F5F3EF;   /* near-white body text */
+  --text-secondary: #CBCBD6;   /* labels, metadata — lifted for low-brightness legibility */
+  --text-muted:     #9CA0B0;   /* placeholders / tertiary — lifted so mono labels stay readable */
 
   /* Accent — financial green */
   --accent:         #00D084;
@@ -57,6 +57,7 @@ html, body, #root {
   font-feature-settings: "ss01", "cv11";
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
 }
 
 /* Subtle grain overlay — pure SVG noise, no images shipped. */
@@ -66,7 +67,8 @@ body::before {
   inset: 0;
   z-index: 0;
   pointer-events: none;
-  opacity: 0.035;
+  /* Eased from 0.035 — grain was lowering text contrast at low brightness. */
+  opacity: 0.02;
   background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
 }
 

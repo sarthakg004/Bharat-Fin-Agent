@@ -1,93 +1,114 @@
 /**
- * Thread store — owns the list of chat threads and the active id.
+ * Thread store — client-side, per-session chat threads.
  *
- * The chat-message state (`chatStore`) is the active thread's contents. When
- * the user switches threads we fetch its messages from the backend and pour
- * them into chatStore via `loadMessagesInto()`.
+ * The app is stateless on the server: threads + their messages live entirely in
+ * the browser, persisted to `sessionStorage` so they survive a reload but are
+ * cleared when the tab closes ("history kept as long as you're on the site").
+ *
+ * `chatStore` holds the *active* thread's live/streaming messages for rendering;
+ * `saveActive()` writes them back into the owning thread here.
  */
 
 import { create } from "zustand";
-import { api, type ChatSummary, type Market } from "@/lib/api";
-import { useChatStore } from "./chatStore";
+import { persist, createJSONStorage } from "zustand/middleware";
 
-interface ThreadState {
-  threads: ChatSummary[];
-  activeId: number | null;
-  loading: boolean;
-  error: string | null;
+import type { Market } from "@/lib/api";
+import { useChatStore, type ChatMessage } from "./chatStore";
 
-  refresh: () => Promise<void>;
-  createChat: (title?: string, market?: Market) => Promise<ChatSummary>;
-  switchTo: (id: number) => Promise<void>;
-  renameChat: (id: number, title: string) => Promise<void>;
-  deleteChat: (id: number) => Promise<void>;
-  setActive: (id: number | null) => void;
-  /** Insert / update one summary locally (used after queries that auto-create). */
-  upsertSummary: (chat: ChatSummary) => void;
+export interface Thread {
+  id: string;
+  title: string;
+  market: Market;
+  messages: ChatMessage[];
+  created_at: number;
+  updated_at: number;
 }
 
-export const useThreadStore = create<ThreadState>((set, get) => ({
-  threads: [],
-  activeId: null,
-  loading: false,
-  error: null,
+function uid(): string {
+  return Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+}
 
-  refresh: async () => {
-    set({ loading: true, error: null });
-    try {
-      const { chats } = await api.listChats();
-      set({ threads: chats, loading: false });
-    } catch (e) {
-      set({ error: (e as Error).message, loading: false });
-    }
-  },
+function deriveTitle(current: string, messages: ChatMessage[]): string {
+  if (current && current !== "New chat") return current;
+  const firstUser = messages.find((m) => m.role === "user");
+  if (!firstUser) return current;
+  const t = firstUser.content.trim().slice(0, 48);
+  return t + (firstUser.content.trim().length > 48 ? "…" : "");
+}
 
-  createChat: async (title = "New chat", market = "us") => {
-    const chat = await api.createChat(title, market);
-    set((s) => ({ threads: [chat, ...s.threads], activeId: chat.id }));
-    useChatStore.getState().startNewChat();
-    useChatStore.getState().setActiveChatId(chat.id);
-    return chat;
-  },
+interface ThreadState {
+  threads: Thread[];
+  activeId: string | null;
 
-  switchTo: async (id) => {
-    set({ activeId: id });
-    try {
-      const { messages } = await api.getChat(id);
-      useChatStore.getState().loadMessagesFor(id, messages);
-    } catch (e) {
-      // Likely 404 — refresh the list to drop the missing thread and reset.
-      set({ error: (e as Error).message });
-      await get().refresh();
-      useChatStore.getState().startNewChat();
-      set({ activeId: null });
-    }
-  },
+  createChat: (title?: string, market?: Market) => Thread;
+  switchTo: (id: string) => void;
+  renameChat: (id: string, title: string) => void;
+  deleteChat: (id: string) => void;
+  setActive: (id: string | null) => void;
+  /** Persist the active thread's current chatStore messages back into the list. */
+  saveActive: () => void;
+}
 
-  renameChat: async (id, title) => {
-    const updated = await api.renameChat(id, title);
-    set((s) => ({
-      threads: s.threads.map((t) => (t.id === id ? { ...t, ...updated } : t)),
-    }));
-  },
+export const useThreadStore = create<ThreadState>()(
+  persist(
+    (set, get) => ({
+      threads: [],
+      activeId: null,
 
-  deleteChat: async (id) => {
-    await api.deleteChat(id);
-    set((s) => {
-      const threads = s.threads.filter((t) => t.id !== id);
-      // If we deleted the active chat, drop active.
-      const activeId = s.activeId === id ? null : s.activeId;
-      return { threads, activeId };
-    });
-    if (useChatStore.getState().activeChatId === id) {
-      useChatStore.getState().startNewChat();
-    }
-  },
+      createChat: (title = "New chat", market = "us") => {
+        const thread: Thread = {
+          id: uid(), title, market, messages: [],
+          created_at: Date.now(), updated_at: Date.now(),
+        };
+        set((s) => ({ threads: [thread, ...s.threads], activeId: thread.id }));
+        useChatStore.getState().startNewChat();
+        useChatStore.getState().setActiveChatId(thread.id);
+        return thread;
+      },
 
-  setActive: (id) => set({ activeId: id }),
+      switchTo: (id) => {
+        const t = get().threads.find((x) => x.id === id);
+        if (!t) return;
+        set({ activeId: id });
+        useChatStore.getState().loadMessages(id, t.messages);
+      },
 
-  upsertSummary: (chat) => set((s) => {
-    const without = s.threads.filter((t) => t.id !== chat.id);
-    return { threads: [chat, ...without] };
-  }),
-}));
+      renameChat: (id, title) =>
+        set((s) => ({
+          threads: s.threads.map((t) =>
+            t.id === id ? { ...t, title, updated_at: Date.now() } : t),
+        })),
+
+      deleteChat: (id) =>
+        set((s) => {
+          const threads = s.threads.filter((t) => t.id !== id);
+          let activeId = s.activeId;
+          if (s.activeId === id) {
+            const next = threads[0];
+            activeId = next?.id ?? null;
+            if (next) useChatStore.getState().loadMessages(next.id, next.messages);
+            else useChatStore.getState().startNewChat();
+          }
+          return { threads, activeId };
+        }),
+
+      setActive: (id) => set({ activeId: id }),
+
+      saveActive: () => {
+        const { activeChatId, messages } = useChatStore.getState();
+        if (!activeChatId) return;
+        set((s) => ({
+          threads: s.threads.map((t) =>
+            t.id === activeChatId
+              ? { ...t, messages, updated_at: Date.now(), title: deriveTitle(t.title, messages) }
+              : t),
+        }));
+      },
+    }),
+    {
+      name: "finagent.threads",
+      // sessionStorage → cleared on tab close (per-session memory).
+      storage: createJSONStorage(() => sessionStorage),
+    },
+  ),
+);

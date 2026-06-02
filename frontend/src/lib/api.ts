@@ -72,36 +72,6 @@ export interface ChartSpec {
   volume?: VolumeBar[];
 }
 
-// --------------------------------------------------------------------------- //
-// Chats + messages
-// --------------------------------------------------------------------------- //
-
-export interface ChatSummary {
-  id: number;
-  title: string;
-  market: Market;
-  created_at: string;
-  updated_at: string;
-  message_count: number;
-  preview?: string | null;
-}
-
-export interface PersistedMessage {
-  id: number;
-  chat_id: number;
-  role: "user" | "assistant";
-  content: string;
-  chunks: Chunk[];
-  charts: ChartSpec[];
-  metadata: QueryMetadata;
-  latency?: number | null;
-  created_at: string;
-}
-
-export interface ChatMessagesResponse {
-  chat: ChatSummary;
-  messages: PersistedMessage[];
-}
 
 // --------------------------------------------------------------------------- //
 // Query (SSE)
@@ -113,12 +83,18 @@ export interface ProviderConfig {
   api_key?: string;
 }
 
+export interface ChatTurn {
+  role: "user" | "assistant";
+  content: string;
+}
+
 export interface QueryRequest {
   question: string;
   market: Market;
-  chat_id?: number | null;
   top_k?: number;
   provider_config?: ProviderConfig;
+  /** Per-session conversation memory (the server is stateless). */
+  chat_history?: ChatTurn[];
 }
 
 export interface HealthResponse {
@@ -151,28 +127,10 @@ async function getJson<T>(path: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-async function sendJson<T>(path: string, method: "POST" | "PATCH" | "DELETE", body?: unknown): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    method,
-    headers: body ? { "Content-Type": "application/json" } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-  return res.json() as Promise<T>;
-}
-
 export const api = {
+  // The server is stateless: only health + the SSE query endpoint remain.
+  // Chat threads live entirely client-side (see threadStore).
   health: () => getJson<HealthResponse>("/api/health"),
-  // Chats
-  listChats: () => getJson<{ chats: ChatSummary[] }>("/api/chats"),
-  createChat: (title: string, market: Market) =>
-    sendJson<ChatSummary>("/api/chats", "POST", { title, market }),
-  getChat: (id: number) => getJson<ChatMessagesResponse>(`/api/chats/${id}`),
-  renameChat: (id: number, title: string) =>
-    sendJson<ChatSummary>(`/api/chats/${id}`, "PATCH", { title }),
-  deleteChat: (id: number) =>
-    sendJson<{ deleted: number }>(`/api/chats/${id}`, "DELETE"),
-  clearAllChats: () => sendJson<{ deleted: number }>(`/api/chats`, "DELETE"),
 };
 
 /**

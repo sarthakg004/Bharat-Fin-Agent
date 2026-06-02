@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
 import { Toaster } from "react-hot-toast";
 import { useQuery } from "@tanstack/react-query";
@@ -42,9 +42,6 @@ export function App() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-
-  // Fetch threads on first paint so the sidebar isn't empty.
-  useEffect(() => { useThreadStore.getState().refresh(); }, []);
 
   const closeAll = () => {
     setPaletteOpen(false);

@@ -8,34 +8,9 @@ import { useThreadStore } from "@/store/threadStore";
 import { cls, timeAgo } from "@/lib/utils";
 
 export function Sidebar() {
-  const { threads, activeId, loading, refresh, createChat, switchTo,
-          renameChat, deleteChat } = useThreadStore();
+  const { threads, activeId, createChat, switchTo, renameChat, deleteChat } =
+    useThreadStore();
   const market = useConfigStore((s) => s.market);
-
-  // Initial load
-  useEffect(() => { refresh(); /* eslint-disable-next-line */ }, []);
-
-  // Race-guard for rapid clicks on different threads.
-  const tokenRef = useRef(0);
-
-  async function handleSwitch(id: number) {
-    const token = ++tokenRef.current;
-    try {
-      await switchTo(id);
-      if (tokenRef.current !== token) return;
-    } catch (e) {
-      if (tokenRef.current !== token) return;
-      toast.error(`Couldn't load: ${(e as Error).message}`);
-    }
-  }
-
-  async function handleNew() {
-    try {
-      await createChat("New chat", market);
-    } catch (e) {
-      toast.error(`Couldn't create: ${(e as Error).message}`);
-    }
-  }
 
   return (
     <motion.aside
@@ -45,7 +20,7 @@ export function Sidebar() {
       {/* New chat — primary action, top of sidebar */}
       <div className="border-b border-border-subtle p-3">
         <button
-          onClick={handleNew}
+          onClick={() => createChat("New chat", market)}
           className="group flex w-full items-center justify-between border border-accent bg-accent px-3 py-2 font-ui text-[13px] text-bg-base transition-colors hover:bg-accent-hover"
         >
           <span className="inline-flex items-center gap-2">
@@ -60,13 +35,7 @@ export function Sidebar() {
 
       {/* Thread list */}
       <nav className="flex flex-1 flex-col overflow-y-auto px-2 py-2">
-        {loading && threads.length === 0 && (
-          <>
-            <div className="mx-1 mb-1 h-[48px] skeleton" />
-            <div className="mx-1 h-[48px] skeleton" />
-          </>
-        )}
-        {!loading && threads.length === 0 && (
+        {threads.length === 0 && (
           <div className="flex flex-1 flex-col items-center justify-center gap-2 text-center">
             <MessageSquare size={22} className="text-text-muted" />
             <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-text-muted">
@@ -78,30 +47,26 @@ export function Sidebar() {
           </div>
         )}
 
-        {threads.map((t) => (
-          <ThreadRow
-            key={t.id}
-            id={t.id}
-            title={t.title}
-            updated_at={t.updated_at}
-            messageCount={t.message_count}
-            preview={t.preview || undefined}
-            active={activeId === t.id}
-            onSelect={() => handleSwitch(t.id)}
-            onRename={(title) => renameChat(t.id, title)}
-            onDelete={() =>
-              // Wrap in a block so the toast id (string) isn't returned —
-              // the prop is typed `() => Promise<void>`.
-              deleteChat(t.id).then(() => {
-                toast.success("Deleted.");
-              })
-            }
-          />
-        ))}
+        {threads.map((t) => {
+          const last = t.messages[t.messages.length - 1];
+          return (
+            <ThreadRow
+              key={t.id}
+              title={t.title}
+              updated_at={t.updated_at}
+              messageCount={t.messages.length}
+              preview={last?.content?.slice(0, 80) || undefined}
+              active={activeId === t.id}
+              onSelect={() => switchTo(t.id)}
+              onRename={(title) => renameChat(t.id, title)}
+              onDelete={() => { deleteChat(t.id); toast.success("Deleted."); }}
+            />
+          );
+        })}
       </nav>
 
       <div className="border-t border-border-subtle px-3 py-2 font-mono text-[10px] uppercase tracking-wider text-text-muted">
-        {threads.length} chat{threads.length === 1 ? "" : "s"} · market {market}
+        {threads.length} chat{threads.length === 1 ? "" : "s"} · market {market} · this session
       </div>
     </motion.aside>
   );
@@ -110,28 +75,27 @@ export function Sidebar() {
 // --------------------------------------------------------------------------- //
 
 interface ThreadRowProps {
-  id: number;
   title: string;
-  updated_at: string;
+  updated_at: number;
   messageCount: number;
   preview?: string;
   active: boolean;
   onSelect: () => void;
-  onRename: (title: string) => Promise<void>;
-  onDelete: () => Promise<void>;
+  onRename: (title: string) => void;
+  onDelete: () => void;
 }
 
-function ThreadRow({ id, title, updated_at, messageCount, preview,
+function ThreadRow({ title, updated_at, messageCount, preview,
                     active, onSelect, onRename, onDelete }: ThreadRowProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(title);
   const inputRef = useRef<HTMLInputElement>(null);
   useEffect(() => { if (editing) setTimeout(() => inputRef.current?.select(), 30); }, [editing]);
 
-  async function commit() {
+  function commit() {
     const next = draft.trim();
     if (!next || next === title) { setEditing(false); return; }
-    try { await onRename(next); } catch (e) { toast.error((e as Error).message); }
+    onRename(next);
     setEditing(false);
   }
 
@@ -200,9 +164,7 @@ function ThreadRow({ id, title, updated_at, messageCount, preview,
             <button
               onClick={(e) => {
                 e.stopPropagation();
-                if (window.confirm(`Delete chat "${title}"?`)) {
-                  onDelete().catch((err) => toast.error((err as Error).message));
-                }
+                if (window.confirm(`Delete chat "${title}"?`)) onDelete();
               }}
               className="shrink-0 text-text-muted opacity-0 transition-opacity hover:text-err group-hover:opacity-100"
               title="Delete"
@@ -214,7 +176,7 @@ function ThreadRow({ id, title, updated_at, messageCount, preview,
         )}
       </div>
       <div className="flex items-center justify-between font-mono text-[9.5px] uppercase tracking-wider text-text-muted">
-        <span>#{id} · {messageCount} msg{messageCount === 1 ? "" : "s"}</span>
+        <span>{messageCount} msg{messageCount === 1 ? "" : "s"}</span>
         <span>{timeAgo(updated_at)}</span>
       </div>
       {preview && !editing && (

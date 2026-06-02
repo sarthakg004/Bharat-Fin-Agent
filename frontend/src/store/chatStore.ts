@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { ChartSpec, Chunk, Market, PersistedMessage, QueryMetadata } from "@/lib/api";
+import type { ChartSpec, Chunk, Market, QueryMetadata } from "@/lib/api";
 
 export type MessageRole = "user" | "assistant";
 
@@ -29,8 +29,8 @@ interface ChatState {
   messages: ChatMessage[];
   highlightedChunkId: number | null;
   streamingId: string | null;
-  /** Backend chat thread the current `messages` belong to (null = fresh chat). */
-  activeChatId: number | null;
+  /** Client thread id the current `messages` belong to (null = fresh chat). */
+  activeChatId: string | null;
 
   appendMessage: (m: Omit<ChatMessage, "id" | "createdAt">) => string;
   patchMessage: (id: string, patch: Partial<ChatMessage>) => void;
@@ -40,8 +40,11 @@ interface ChatState {
   setHighlight: (id: number | null) => void;
   setStreaming: (id: string | null) => void;
   startNewChat: () => void;
-  setActiveChatId: (id: number | null) => void;
-  loadMessagesFor: (chatId: number, persisted: PersistedMessage[]) => void;
+  setActiveChatId: (id: string | null) => void;
+  /** Replace the active conversation with a thread's stored messages. */
+  loadMessages: (chatId: string, messages: ChatMessage[]) => void;
+  /** Drop the trailing assistant message (used by Retry). */
+  dropLastAssistant: () => void;
 }
 
 function uid(): string {
@@ -85,25 +88,19 @@ export const useChatStore = create<ChatState>((set) => ({
   }),
   setActiveChatId: (id) => set({ activeChatId: id }),
 
-  loadMessagesFor: (chatId, persisted) => {
-    const now = Date.now();
-    const messages: ChatMessage[] = persisted.map((m, i) => ({
-      id: uid(),
-      role: m.role,
-      content: m.content,
-      chunks: m.chunks,
-      charts: m.charts,
-      metadata: m.metadata,
-      streaming: false,
-      createdAt: now + i,
-    }));
-    set({
-      messages,
-      highlightedChunkId: null,
-      streamingId: null,
-      activeChatId: chatId,
-    });
-  },
+  loadMessages: (chatId, messages) => set({
+    messages: [...messages],
+    highlightedChunkId: null,
+    streamingId: null,
+    activeChatId: chatId,
+  }),
+
+  dropLastAssistant: () => set((s) => {
+    const idx = [...s.messages].reverse().findIndex((m) => m.role === "assistant");
+    if (idx === -1) return {};
+    const realIdx = s.messages.length - 1 - idx;
+    return { messages: s.messages.slice(0, realIdx) };
+  }),
 }));
 
 /** Convenience selector — last assistant message. */
