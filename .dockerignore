@@ -1,0 +1,23 @@
+# Build context for the Cloud Run image.
+# Ignore data/ EXCEPT the prebuilt Chroma store, which is baked into the image.
+data/*
+!data/chroma
+
+results/
+notebooks/
+tests/
+
+frontend/node_modules/
+frontend/dist/
+**/__pycache__/
+**/*.pyc
+.venv/
+venv/
+.git/
+.github/
+.env
+.env.*
+!.env.example
+.pytest_cache/
+.ruff_cache/
+*.egg-info/

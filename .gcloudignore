@@ -1,0 +1,30 @@
+# Controls what `gcloud run deploy --source .` uploads to Cloud Build.
+# IMPORTANT: gcloud falls back to .gitignore when this file is absent, and
+# .gitignore excludes data/ — which would drop the Chroma store the image needs.
+# This file overrides that: we ignore data/ EXCEPT data/chroma.
+#
+# (For a 670 MB store, building locally with `docker build` + pushing to
+# Artifact Registry is often faster than re-uploading on every --source deploy.)
+
+.git/
+.github/
+node_modules/
+frontend/node_modules/
+frontend/dist/
+**/__pycache__/
+**/*.pyc
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+results/
+notebooks/
+tests/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Data: ignore everything except the prebuilt Chroma store.
+data/*
+!data/chroma
