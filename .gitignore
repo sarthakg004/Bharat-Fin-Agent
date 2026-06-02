@@ -23,3 +23,5 @@ frontend/dist/
 
 # Dev outputs
 logs/
+
+tests/

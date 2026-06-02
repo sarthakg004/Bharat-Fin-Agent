@@ -213,8 +213,14 @@ class AgenticRAG:
         critic_model: Optional[str] = None,
         top_k: int = 5,
         api_key: Optional[str] = None,
+        collections: Optional[list[str]] = None,
     ):
         self.collection_name = collection_name
+        # Filings collections to retrieve over. Defaults to the single
+        # `collection_name`; pass several (e.g. both US + India) to let the
+        # agent pull from all of them and rerank — the question decides what's
+        # relevant, no US/India toggle needed.
+        self.collections = collections or [collection_name]
         self.chroma_dir = str(chroma_dir)
         self.market = market
         self.embedding_model = embedding_model

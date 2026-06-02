@@ -48,11 +48,13 @@ def test_agent_graph_has_expected_nodes():
     agent = _build_agent()
     nodes = {n for n in agent.graph.get_graph().nodes if not n.startswith("__")}
     expected = {
-        "detect_lang", "translate_in", "planner", "router", "retrieve",
-        "grader", "rewrite", "table_agent", "market_data", "web_search",
-        "synthesize", "critic", "verify_numbers", "refuse", "translate_out",
+        "planner", "router", "retrieve", "grader", "rewrite", "table_agent",
+        "market_data", "web_search", "synthesize", "critic", "verify_numbers",
+        "refuse",
     }
     assert expected <= nodes, f"missing nodes: {expected - nodes}"
+    # English-only: the bilingual translation nodes must be gone.
+    assert not ({"detect_lang", "translate_in", "translate_out"} & nodes)
 
 
 def test_device_selection_returns_valid_value():

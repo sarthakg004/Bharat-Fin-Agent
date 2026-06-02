@@ -36,7 +36,10 @@ _agentic_cache: dict[tuple, AgenticRAGv4] = {}
 def _build_agent(market: str, provider: str, synth_model: Optional[str],
                  api_key: Optional[str]) -> AgenticRAGv4:
     return AgenticRAGv4(
-        collection_name=_COLLECTIONS[market],
+        collection_name=_COLLECTIONS.get(market, "us_filings"),
+        # Search BOTH filings corpora — the question decides what's relevant
+        # (the grader drops the off-topic market). No US/India toggle needed.
+        collections=list(_COLLECTIONS.values()),
         market=market,
         provider=provider,
         synth_model=synth_model,                # None → AgenticRAG picks per-provider default

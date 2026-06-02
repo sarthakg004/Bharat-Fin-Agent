@@ -243,7 +243,7 @@ class AgenticRAGv2(AgenticRAG):
     """Corrective-RAG agent: hybrid retrieval + grader + rewriter + critic loop.
 
     Subclasses AgenticRAG and only overrides what changes:
-      * `_get_hybrid()` builds the hybrid retriever
+      * `_get_hybrids()` builds the hybrid retrievers (one per collection)
       * `hybrid_retrieve_node` replaces `retrieve_node`
       * `grader_node` and `rewrite_node` are new
       * `critic_node` is extended to schedule a retrieve-loop on failure
@@ -285,22 +285,30 @@ class AgenticRAGv2(AgenticRAG):
         self.very_poor_grade = very_poor_grade
         self.max_rewrites = max_rewrites
         self.max_critic_retries = max_critic_retries
-        self._hybrid: Optional[HybridRetriever] = None
+        self._hybrids: Optional[list[HybridRetriever]] = None
 
     # ------------------------------------------------------------------ #
     # Resources
     # ------------------------------------------------------------------ #
 
-    def _get_hybrid(self) -> HybridRetriever:
-        if self._hybrid is None:
-            self._hybrid = HybridRetriever(
-                self._get_retriever(),
-                reranker_model=self.reranker_model,
-                bm25_top_k=self.bm25_top_k,
-                dense_top_k=self.dense_top_k,
-                final_top_k=self.final_top_k,
-            )
-        return self._hybrid
+    def _get_hybrids(self) -> list[HybridRetriever]:
+        """One hybrid retriever per filings collection (BM25 + dense + rerank).
+        Retrieving over several collections and letting the grader/reranker sort
+        it out is how the agent serves both US + India without a market toggle."""
+        if self._hybrids is None:
+            from finagent.vectorstore import build_store
+
+            self._hybrids = [
+                HybridRetriever(
+                    build_store(c, self.embedding_model, self.chroma_dir),
+                    reranker_model=self.reranker_model,
+                    bm25_top_k=self.bm25_top_k,
+                    dense_top_k=self.dense_top_k,
+                    final_top_k=self.final_top_k,
+                )
+                for c in self.collections
+            ]
+        return self._hybrids
 
     def _get_grader_llm(self):
         """A fourth LLM role — reuses the role cache from the base class."""
@@ -317,24 +325,27 @@ class AgenticRAGv2(AgenticRAG):
     # ------------------------------------------------------------------ #
 
     def hybrid_retrieve_node(self, state: AgentState) -> dict:
-        """BM25 + dense + cross-encoder rerank, per sub-query, merged/deduped."""
-        hyb = self._get_hybrid()
+        """BM25 + dense + cross-encoder rerank, per sub-query, across every
+        configured collection, merged/deduped. The grader then drops chunks
+        that aren't relevant to the question (e.g. the other market)."""
+        hybrids = self._get_hybrids()
         seen: set = set()
         chunks: list[dict] = []
         for sub_q in state.get("sub_queries") or [state["question"]]:
-            for text, meta in hyb.search(sub_q):
-                key = (meta.get("local_path", ""), meta.get("page", ""), text[:80])
-                if key in seen:
-                    continue
-                seen.add(key)
-                chunks.append({
-                    "text": text,
-                    "company": meta.get("company") or meta.get("ticker", "?"),
-                    "year": meta.get("year", "?"),
-                    "page": meta.get("page", "?"),
-                    "source": self._citation_tag(meta),
-                    "sub_query": sub_q,
-                })
+            for hyb in hybrids:
+                for text, meta in hyb.search(sub_q):
+                    key = (meta.get("local_path", ""), meta.get("page", ""), text[:80])
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    chunks.append({
+                        "text": text,
+                        "company": meta.get("company") or meta.get("ticker", "?"),
+                        "year": meta.get("year", "?"),
+                        "page": meta.get("page", "?"),
+                        "source": self._citation_tag(meta),
+                        "sub_query": sub_q,
+                    })
         return {"retrieved_chunks": chunks}
 
     def grader_node(self, state: AgentState) -> dict:

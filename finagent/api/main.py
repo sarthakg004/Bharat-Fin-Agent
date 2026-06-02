@@ -234,12 +234,23 @@ async def _stream_answer(request: QueryRequest) -> AsyncGenerator[str, None]:
     try:
         result = await _run_rag(request, agent_history)
     except Exception as e:
+        from finagent.llm import is_rate_limit_error
+
+        rate_limited = is_rate_limit_error(e)
+        if rate_limited:
+            code = "rate_limit"
+            message = ("We've hit today's usage limit on the available API keys. "
+                       "Please try again tomorrow — or add your own API key from the "
+                       "model picker to keep going now.")
+        else:
+            code = "error"
+            message = f"{type(e).__name__}: {e}"
         if not STATELESS:
             history.add_message(
                 chat_id, role="assistant", content="",
-                metadata={"error": f"{type(e).__name__}: {e}"},
+                metadata={"error": message},
             )
-        yield _sse({"type": "error", "message": f"{type(e).__name__}: {e}"})
+        yield _sse({"type": "error", "code": code, "message": message})
         yield _sse({"type": "done"})
         return
 

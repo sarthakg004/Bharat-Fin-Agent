@@ -71,20 +71,22 @@ Use Yahoo ticker format: AAPL, MSFT (US listings have no suffix); for India use
 .NS (NSE) like RELIANCE.NS or TCS.NS. Common aliases (TCS, INFY, RELIANCE,
 HDFC, etc.) are auto-normalised — pass either form.
 
-Pick the minimum set of calls that fully answers the question. If the user
-asks for a chart, history, "show me", "1-year", "5-year", "ytd", etc. → use
-get_history. For "what is X trading at" → get_quote. For "compare X and Y" →
-compare. Use multiple calls when one isn't enough (e.g. quote + history).
-Return an empty list if the question genuinely isn't about market data.
+Prefer get_history for almost anything stock-related — it returns a candlestick
+CHART plus the latest price, so it answers "how is X doing", "how has X
+performed", "is X a good stock", "show me X", "1-year/5-year/ytd", and bare
+"X stock" alike. Default to a 1-year daily history when no period is given.
+Only use get_quote for a bare "what is X trading at right now" with no interest
+in the trend. Use compare (put tickers in `symbols`) for "X vs Y". get_news for
+"latest news on X". Resolve follow-ups from the conversation: "show me its
+chart" / "the last one" refers to the company discussed just before. Set
+tool='none' only if the question genuinely isn't about a listed company's stock.
 """
 
 MARKET_PLANNER_PROMPT = """\
 Question: {question}
 
-Sub-queries routed to `market`:
-{market_subs}
-
-Return a list of MarketToolCall objects.
+Resolve the ticker (using the conversation above if the question is a follow-up),
+then return a single MarketIntent (tool + symbol/symbols + period/interval).
 """
 
 
@@ -225,26 +227,45 @@ class AgenticRAGv4(AgenticRAGv3):
         """
         from langchain_core.messages import HumanMessage, SystemMessage
 
-        sub_queries = state.get("sub_queries") or [state["question"]]
-        routes = state.get("query_routes") or ["narrative"] * len(sub_queries)
-        market_subs = [s for s, r in zip(sub_queries, routes) if r == "market"]
-        if not market_subs:
+        # Fire the market lane if the router flagged ANY sub-query as `market`.
+        # (We gate on the route list, not zip(sub_queries, routes): a rewrite can
+        # shrink sub_queries while query_routes still reflects the original plan,
+        # which previously dropped the market intent entirely.)
+        routes = state.get("query_routes") or []
+        if "market" not in routes:
             return {"market_data": [], "charts": []}
 
-        market_q = " | ".join(market_subs) if len(market_subs) > 1 else market_subs[0]
+        # Give the market planner the conversation so follow-ups like
+        # "show me the chart for the last year" resolve to the right ticker.
+        question = state["question"]
+        history = state.get("chat_history") or []
+        history_block = ""
+        if history:
+            lines = [
+                f"{('User' if t.get('role') == 'user' else 'Assistant')}: "
+                f"{(t.get('content') or '')[:400]}"
+                for t in history[-6:]
+            ]
+            history_block = (
+                "Recent conversation (most recent last):\n" + "\n".join(lines) + "\n\n"
+            )
+
+        market_q = question
         planner = self._get_market_planner_llm().with_structured_output(MarketIntent)
         try:
             intent: MarketIntent = planner.invoke([
                 SystemMessage(content=MARKET_PLANNER_SYSTEM),
-                HumanMessage(content=MARKET_PLANNER_PROMPT.format(
-                    question=state["question"],
-                    market_subs="\n".join(f"- {s}" for s in market_subs),
+                HumanMessage(content=history_block + MARKET_PLANNER_PROMPT.format(
+                    question=question,
                 )),
             ])
-            calls = intent.calls[:6]
         except Exception as e:
             self._log(state, f"market planner failed ({e}); skipping market lane")
             return {"market_data": [], "charts": []}
+
+        if intent.tool == "none" or not (intent.symbol or intent.symbols):
+            return {"market_data": [], "charts": []}
+        calls = [intent]   # flat schema → exactly one call
 
         market_data: list[dict] = []
         charts: list[dict] = []
@@ -610,7 +631,7 @@ single item is irrelevant."""
         # verifier overrides a complaining critic.
         if out_of_retries and verify_failed and claims:
             return "refuse"
-        return "translate_out"
+        return "end"
 
     # ------------------------------------------------------------------ #
     # Graph
@@ -620,8 +641,6 @@ single item is irrelevant."""
         from langgraph.graph import END, START, StateGraph
 
         g = StateGraph(AgentState)
-        g.add_node("detect_lang", self.detect_language_node)
-        g.add_node("translate_in", self.translate_in_node)
         g.add_node("planner", self.planner_node)
         g.add_node("router", self.router_node)
         g.add_node("retrieve", self.hybrid_retrieve_node)
@@ -634,11 +653,9 @@ single item is irrelevant."""
         g.add_node("critic", self.critic_node)
         g.add_node("verify_numbers", self.verify_numbers_node)
         g.add_node("refuse", self.refuse_node)
-        g.add_node("translate_out", self.translate_out_node)
 
-        g.add_edge(START, "detect_lang")
-        g.add_edge("detect_lang", "translate_in")
-        g.add_edge("translate_in", "planner")
+        # English-only: no language detection / translation nodes.
+        g.add_edge(START, "planner")
         g.add_edge("planner", "router")
         g.add_edge("router", "retrieve")
         g.add_edge("retrieve", "grader")
@@ -646,7 +663,10 @@ single item is irrelevant."""
             "grader", self._grade_router,
             {"rewrite": "rewrite", "table_agent": "table_agent"},
         )
-        g.add_edge("rewrite", "retrieve")
+        # Re-route after a rewrite: the rewritten query replaces sub_queries, so
+        # it must be re-classified or query_routes goes stale (which silently
+        # dropped the table/market lanes on the retry pass).
+        g.add_edge("rewrite", "router")
         g.add_edge("table_agent", "market_data")
         g.add_edge("market_data", "web_search")
         g.add_edge("web_search", "synthesize")
@@ -654,10 +674,9 @@ single item is irrelevant."""
         g.add_edge("critic", "verify_numbers")
         g.add_conditional_edges(
             "verify_numbers", self._verify_router,
-            {"retrieve": "retrieve", "refuse": "refuse", "translate_out": "translate_out"},
+            {"retrieve": "retrieve", "refuse": "refuse", "end": END},
         )
-        g.add_edge("refuse", "translate_out")
-        g.add_edge("translate_out", END)
+        g.add_edge("refuse", END)
         return g.compile()
 
     # ------------------------------------------------------------------ #

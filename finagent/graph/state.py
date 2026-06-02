@@ -202,11 +202,18 @@ class NumericVerification(BaseModel):
 # Market-data tool selection
 # --------------------------------------------------------------------------- #
 
-class MarketToolCall(BaseModel):
-    """One call into the market-data toolbelt (yfinance-backed)."""
+class MarketIntent(BaseModel):
+    """The market-data node's plan — a SINGLE tool call.
 
-    tool: Literal["get_quote", "get_history", "get_company_info", "get_news", "compare"] = Field(
-        description="Which market-data tool to invoke.",
+    Deliberately a FLAT schema (no nested list of objects): small models like
+    gpt-oss reliably emit a flat object but choke on `list[NestedModel]`,
+    failing the function call. One call covers virtually every market question
+    (`compare` itself takes a list of tickers).
+    """
+
+    tool: Literal["none", "get_quote", "get_history", "get_company_info", "get_news", "compare"] = Field(
+        default="none",
+        description="Market tool to invoke; 'none' if the question isn't about market data.",
     )
     symbol: str = Field(
         default="",
@@ -214,7 +221,7 @@ class MarketToolCall(BaseModel):
     )
     symbols: list[str] = Field(
         default_factory=list,
-        description="Multiple tickers for `compare`; ignored by other tools.",
+        description="Tickers for `compare` (2-6); ignored by other tools.",
     )
     period: str = Field(
         default="1y",
@@ -222,18 +229,5 @@ class MarketToolCall(BaseModel):
     )
     interval: str = Field(
         default="1d",
-        description="History interval: 1m, 5m, 15m, 30m, 1h, 1d, 1wk, 1mo.",
-    )
-
-
-class MarketIntent(BaseModel):
-    """The market-data node's plan: 0+ tool calls to execute for this question."""
-
-    calls: list[MarketToolCall] = Field(
-        default_factory=list,
-        description=(
-            "Tool calls in order. Use multiple when the question needs combined "
-            "data (e.g. quote + history for a chart). Return an empty list if "
-            "the question isn't about market data at all."
-        ),
+        description="History interval: 1d, 1wk, 1mo.",
     )

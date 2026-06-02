@@ -69,7 +69,11 @@ You route financial-QA sub-queries to one of FOUR retrievers:
   reported in a 10-K or annual report.
 - market:    live market-data tools (yfinance). Anything about a listed
   company's MARKET BEHAVIOUR — current/premarket/intraday price, OHLC
-  history, 52-week range, charts, ticker-level news headlines.
+  history, 52-week range, charts, ticker-level news headlines. Lean `market`
+  whenever the question is *in the direction of* the stock: "how is X doing",
+  "how has X performed", "is X a good stock", "X stock", "X share price",
+  recent returns/trend. When in doubt between market and narrative for a
+  stock-flavoured question, pick `market` (a price chart is shown).
 - external:  general web search. Macro news, corporate events, post-cutoff
   developments that aren't specifically about market data.
 
@@ -87,6 +91,8 @@ Examples:
   - "EBITDA margin growth from FY21 to FY23?"                    → numeric
   - "What is Wipro's current share price?"                       → market
   - "Show me Apple's 1-year stock chart"                         → market
+  - "How is Tesla doing as a stock?"                             → market
+  - "Has Apple stock done well recently?"                        → market
   - "ServiceNow premarket figures today?"                        → market
   - "Compare AAPL and MSFT YoY return"                           → market
   - "Latest macro headlines from India today"                    → external
@@ -288,15 +294,15 @@ class AgenticRAGv3(AgenticRAGv2):
         return {"query_routes": verdicts}
 
     def hybrid_retrieve_node(self, state: AgentState) -> dict:
-        """v2 hybrid retrieval, but only over narrative (non-numeric) sub-queries."""
-        sub_queries = state.get("sub_queries") or [state["question"]]
-        routes = state.get("query_routes") or ["narrative"] * len(sub_queries)
-        narrative_subs = [s for s, r in zip(sub_queries, routes) if r != "numeric"]
-        if not narrative_subs:
-            return {"retrieved_chunks": []}
-        proxy = dict(state)
-        proxy["sub_queries"] = narrative_subs
-        return super().hybrid_retrieve_node(proxy)
+        """Always retrieve from the filings for EVERY sub-query.
+
+        Earlier this skipped 'numeric' sub-queries and left them to the table
+        agent — but the 10-K / annual-report prose contains the figures too, and
+        when the tables collection is empty that left numeric questions with no
+        grounding at all (→ "I don't have information"). The table agent now
+        supplements retrieval, it does not replace it.
+        """
+        return super().hybrid_retrieve_node(state)
 
     def table_agent_node(self, state: AgentState) -> dict:
         """Run the table agent once per numeric sub-query."""
