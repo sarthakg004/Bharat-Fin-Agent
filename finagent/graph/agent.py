@@ -44,6 +44,7 @@ from typing import Optional
 from finagent.graph.full import (
     AgenticRAGv3,
     SYNTH_V3_SYSTEM,
+    _MARKET_MARKERS,
     append_comparison_row,  # noqa: F401  re-export
 )
 from finagent.graph.market_tools import call_tool as call_market_tool
@@ -231,14 +232,28 @@ class AgenticRAGv4(AgenticRAGv3):
         # (We gate on the route list, not zip(sub_queries, routes): a rewrite can
         # shrink sub_queries while query_routes still reflects the original plan,
         # which previously dropped the market intent entirely.)
+        question = state["question"]
+        history = state.get("chat_history") or []
+
+        # Deterministic safety net: chart/price questions ("show me the chart")
+        # must reach the market planner even if the LLM router mislabels them —
+        # otherwise a follow-up like "show me the chart" falls through to web
+        # search and returns generic index links instead of the ticker's chart.
+        # The market planner resolves the ticker from history and returns
+        # tool='none' when the question genuinely isn't market-related, so firing
+        # on a false positive is cheap.
         routes = state.get("query_routes") or []
-        if "market" not in routes:
+        sub_queries = state.get("sub_queries") or []
+        market_keyword_hit = any(
+            m in (text or "").lower()
+            for text in [question, *sub_queries]
+            for m in _MARKET_MARKERS
+        )
+        if "market" not in routes and not market_keyword_hit:
             return {"market_data": [], "charts": []}
 
         # Give the market planner the conversation so follow-ups like
         # "show me the chart for the last year" resolve to the right ticker.
-        question = state["question"]
-        history = state.get("chat_history") or []
         history_block = ""
         if history:
             lines = [

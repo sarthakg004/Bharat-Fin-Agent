@@ -77,6 +77,11 @@ Rules:
 - Comparison or multi-hop questions (e.g. "compare X and Y", "growth from A to B")
   → split into one sub-query per entity or fact so each can be retrieved separately.
 - Each sub-query must stand on its own (no pronouns referring to the question).
+- FOLLOW-UPS: if the question relies on the conversation above (e.g. "show me the
+  chart", "what about last year", "how is it doing"), rewrite it into a
+  self-contained sub-query that names the company/ticker discussed just before.
+  Example — prior turn about DPRO, then "show me the chart" → "DPRO stock price
+  chart".
 
 Question: {question}
 """

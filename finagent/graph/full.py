@@ -279,11 +279,26 @@ class AgenticRAGv3(AgenticRAGv2):
 
         sub_queries = state.get("sub_queries") or [state["question"]]
         numbered = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(sub_queries))
+
+        # Conversation context so follow-ups ("show me the chart") route to the
+        # same lane the discussed company would — e.g. `market` for a chart.
+        history = state.get("chat_history") or []
+        history_block = ""
+        if history:
+            lines = [
+                f"{('User' if t.get('role') == 'user' else 'Assistant')}: "
+                f"{(t.get('content') or '')[:400]}"
+                for t in history[-6:]
+            ]
+            history_block = (
+                "Recent conversation (most recent last):\n" + "\n".join(lines) + "\n\n"
+            )
+
         llm = self._get_router_llm().with_structured_output(RouterReport)
         try:
             out: RouterReport = llm.invoke([
                 SystemMessage(content=ROUTER_SYSTEM),
-                HumanMessage(content=ROUTER_PROMPT.format(sub_queries=numbered)),
+                HumanMessage(content=history_block + ROUTER_PROMPT.format(sub_queries=numbered)),
             ])
             verdicts = [v.route for v in out.routes][: len(sub_queries)]
             while len(verdicts) < len(sub_queries):
