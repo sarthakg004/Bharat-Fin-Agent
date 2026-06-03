@@ -1,13 +1,12 @@
 import { useState } from "react";
 import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
 import { Toaster } from "react-hot-toast";
-import { useQuery } from "@tanstack/react-query";
 
-import { api } from "@/lib/api";
 import { useConfigStore } from "@/store/configStore";
 import { useThreadStore } from "@/store/threadStore";
 import { useChatStore } from "@/store/chatStore";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
+import { useBackendStatus } from "@/hooks/useBackendStatus";
 
 import { Header } from "@/components/Header";
 import { Sidebar } from "@/components/Sidebar";
@@ -21,14 +20,7 @@ import { PanelOpenButton } from "@/components/PanelOpenButton";
 
 export function App() {
   const reduce = useReducedMotion();
-  const health = useQuery({
-    queryKey: ["health"],
-    queryFn: api.health,
-    refetchInterval: 30_000,
-    refetchOnWindowFocus: false,
-    retry: 1,
-  });
-  const backendOnline = health.isSuccess;
+  const { status: backendStatus } = useBackendStatus();
 
   const {
     market, sidebarOpen, citationsOpen,
@@ -100,7 +92,7 @@ export function App() {
           initial={reduce ? false : { y: 12, opacity: 0 }}
           animate={{ y: 0, opacity: 1, transition: { delay: stagger * 1, duration: 0.35 } }}
         >
-          <ChatPanel backendOnline={backendOnline} />
+          <ChatPanel backendStatus={backendStatus} />
         </motion.div>
 
         {citationsOpen ? (

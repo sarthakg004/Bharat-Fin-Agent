@@ -21,7 +21,7 @@ export function useRAGQuery(market: Market) {
   const { send } = useSSE();
   const {
     appendMessage, patchMessage, appendChunkToMessage,
-    appendChartToMessage, setStreaming,
+    appendStepToMessage, appendChartToMessage, setStreaming,
   } = useChatStore();
 
   // Build chat_history from the messages BEFORE index `upto`.
@@ -36,6 +36,8 @@ export function useRAGQuery(market: Market) {
   const runStream = useCallback(
     async (question: string, assistantId: string, history: ChatTurn[]) => {
       setStreaming(assistantId);
+      const startedAt = Date.now();
+      let firstChunk = true;
       try {
         await send(
           { question, market, top_k: 5, chat_history: history,
@@ -43,7 +45,7 @@ export function useRAGQuery(market: Market) {
           (e: SSEEvent) => {
             switch (e.type) {
               case "status":
-                patchMessage(assistantId, { status: { stage: e.stage, label: e.label } });
+                appendStepToMessage(assistantId, { stage: e.stage, label: e.label });
                 break;
               case "sources":
                 patchMessage(assistantId, { chunks: e.chunks, metadata: { ...(e.metadata || {}) } });
@@ -52,6 +54,14 @@ export function useRAGQuery(market: Market) {
                 appendChartToMessage(assistantId, e.chart);
                 break;
               case "chunk":
+                if (firstChunk) {
+                  // Answer is starting — freeze the "thought for Ns" timer and
+                  // clear the live spinner.
+                  firstChunk = false;
+                  patchMessage(assistantId, {
+                    thoughtMs: Date.now() - startedAt, status: undefined,
+                  });
+                }
                 appendChunkToMessage(assistantId, e.content);
                 break;
               case "metrics":
@@ -92,7 +102,7 @@ export function useRAGQuery(market: Market) {
         toast.error(msg);
       }
     },
-    [send, market, patchMessage, appendChunkToMessage, appendChartToMessage, setStreaming],
+    [send, market, patchMessage, appendChunkToMessage, appendStepToMessage, appendChartToMessage, setStreaming],
   );
 
   const ask = useCallback(

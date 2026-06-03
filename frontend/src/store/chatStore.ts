@@ -8,6 +8,10 @@ export interface ChatMessage {
   role: MessageRole;
   content: string;
   status?: { stage: string; label: string };
+  /** Accumulated "thinking" trace — one entry per graph node as it runs. */
+  steps?: { stage: string; label: string }[];
+  /** Wall-clock ms the agent spent thinking before the answer streamed. */
+  thoughtMs?: number;
   chunks?: Chunk[];
   charts?: ChartSpec[];
   metadata?: QueryMetadata;
@@ -35,6 +39,8 @@ interface ChatState {
   appendMessage: (m: Omit<ChatMessage, "id" | "createdAt">) => string;
   patchMessage: (id: string, patch: Partial<ChatMessage>) => void;
   appendChunkToMessage: (id: string, text: string) => void;
+  /** Append a thinking step (skips consecutive duplicate labels). */
+  appendStepToMessage: (id: string, step: { stage: string; label: string }) => void;
   appendChartToMessage: (id: string, chart: ChartSpec) => void;
   clear: () => void;
   setHighlight: (id: number | null) => void;
@@ -71,6 +77,16 @@ export const useChatStore = create<ChatState>((set) => ({
       messages: s.messages.map((msg) =>
         msg.id === id ? { ...msg, content: (msg.content || "") + text } : msg,
       ),
+    })),
+  appendStepToMessage: (id, step) =>
+    set((s) => ({
+      messages: s.messages.map((msg) => {
+        if (msg.id !== id) return msg;
+        const steps = msg.steps || [];
+        // Skip a consecutive duplicate label (e.g. retrieve→grade looping).
+        if (steps.length && steps[steps.length - 1].label === step.label) return msg;
+        return { ...msg, steps: [...steps, step], status: step };
+      }),
     })),
   appendChartToMessage: (id, chart) =>
     set((s) => ({

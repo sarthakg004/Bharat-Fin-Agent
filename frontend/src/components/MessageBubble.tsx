@@ -1,5 +1,6 @@
-import { motion } from "framer-motion";
-import { ExternalLink, RotateCcw } from "lucide-react";
+import { useState } from "react";
+import { AnimatePresence, motion } from "framer-motion";
+import { Check, ChevronRight, ExternalLink, RotateCcw } from "lucide-react";
 
 import type { ChatMessage } from "@/store/chatStore";
 import { MarkdownAnswer } from "@/lib/markdown";
@@ -41,15 +42,15 @@ function AssistantBubble({ msg, onRetry }: BubbleProps) {
       transition={{ duration: 0.2 }}
       className="flex flex-col gap-2"
     >
-      {msg.status && <ProgressRow stage={msg.status.stage} label={msg.status.label} />}
+      <ThinkingTrace msg={msg} />
 
       {msg.error ? (
         <div className="border border-err bg-err-dim px-4 py-3 font-mono text-[12px] text-err">
           {msg.error}
         </div>
-      ) : showStatus && !msg.content ? (
+      ) : showStatus && !msg.content && !(msg.steps?.length) ? (
         <span className="font-mono text-[12px] text-text-muted">…</span>
-      ) : (
+      ) : showStatus && !msg.content ? null : (
         // The MarkdownAnswer handles headings / bullets / tables / inline
         // citation chips (`[N]` and `[N, M]`) end-to-end. The streaming
         // cursor is appended outside so the markdown parser doesn't try to
@@ -86,17 +87,86 @@ function AssistantBubble({ msg, onRetry }: BubbleProps) {
   );
 }
 
-function ProgressRow({ label }: { stage: string; label: string }) {
+/**
+ * ChatGPT-style "thinking" trace. While the agent works we show each step as it
+ * happens (current one spinning, finished ones checked). Once the answer starts
+ * streaming we collapse the trace into a compact "Thought for Ns" row that the
+ * user can expand to review what the agent did.
+ */
+function ThinkingTrace({ msg }: { msg: ChatMessage }) {
+  const [open, setOpen] = useState(false);
+  const steps = msg.steps || [];
+  const thinking = msg.streaming && !msg.content;
+
+  if (steps.length === 0 && !msg.status) return null;
+
+  // Live view — the agent is still working, no answer text yet.
+  if (thinking) {
+    const current = msg.status || steps[steps.length - 1];
+    return (
+      <div className="flex flex-col gap-1.5">
+        <AnimatePresence initial={false}>
+          {steps.map((s, i) => {
+            const isLast = i === steps.length - 1;
+            return (
+              <motion.div
+                key={`${s.stage}-${i}`}
+                initial={{ opacity: 0, x: -4 }}
+                animate={{ opacity: isLast ? 1 : 0.5, x: 0 }}
+                transition={{ duration: 0.2 }}
+                className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-wider text-text-secondary"
+              >
+                {isLast ? (
+                  <span className="inline-block h-[10px] w-[10px] animate-spin rounded-full border border-text-muted border-t-accent" />
+                ) : (
+                  <Check size={11} className="text-accent" />
+                )}
+                <span>{isLast ? current?.label ?? s.label : s.label}</span>
+              </motion.div>
+            );
+          })}
+        </AnimatePresence>
+      </div>
+    );
+  }
+
+  // Collapsed view — answer is present; offer the trace on demand.
+  if (steps.length === 0) return null;
+  const secs = msg.thoughtMs ? Math.max(1, Math.round(msg.thoughtMs / 1000)) : null;
   return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      transition={{ delay: 0.15 }}
-      className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-wider text-text-secondary"
-    >
-      <span className="inline-block h-[10px] w-[10px] animate-spin rounded-full border border-text-muted border-t-accent" />
-      <span>{label}</span>
-    </motion.div>
+    <div className="flex flex-col gap-1">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="inline-flex w-fit items-center gap-1 font-mono text-[10px] uppercase tracking-wider text-text-muted transition-colors hover:text-text-secondary"
+      >
+        <ChevronRight
+          size={11}
+          className={"transition-transform " + (open ? "rotate-90" : "")}
+        />
+        {secs ? `Thought for ${secs}s` : "Thinking trace"}
+      </button>
+      <AnimatePresence initial={false}>
+        {open && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="overflow-hidden border-l border-border-subtle pl-3"
+          >
+            {steps.map((s, i) => (
+              <div
+                key={`${s.stage}-${i}`}
+                className="flex items-center gap-2 py-0.5 font-mono text-[10px] uppercase tracking-wider text-text-muted"
+              >
+                <Check size={10} className="shrink-0 text-accent/70" />
+                <span>{s.label}</span>
+              </div>
+            ))}
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
   );
 }
 

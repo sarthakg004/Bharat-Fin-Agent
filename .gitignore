@@ -25,3 +25,5 @@ frontend/dist/
 logs/
 
 tests/
+# Firebase deploy cache
+.firebase/

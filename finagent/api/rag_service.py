@@ -17,7 +17,7 @@ quick; swap to `bge-reranker-large` once you don't mind the download.
 from __future__ import annotations
 
 from threading import Lock
-from typing import Optional
+from typing import Callable, Optional
 
 from finagent.graph.agent import AgenticRAGv4
 
@@ -107,7 +107,8 @@ def run_agentic(market: str, question: str, top_k: int = 5,
                 chat_history: Optional[list[dict]] = None,
                 provider: str = "groq",
                 synth_model: Optional[str] = None,
-                api_key: Optional[str] = None) -> dict:
+                api_key: Optional[str] = None,
+                on_step: Optional[Callable[[str], None]] = None) -> dict:
     """Synchronous v4 agentic run with optional conversation memory + per-request
     LLM overrides.
 
@@ -117,6 +118,10 @@ def run_agentic(market: str, question: str, top_k: int = 5,
 
     `chat_history` is the last few (role, content) turns of the active chat —
     the agent uses it to resolve pronouns and follow-ups.
+
+    `on_step(node_name)` — optional callback invoked as each graph node runs, so
+    the API layer can stream live "thinking" progress to the UI. When omitted we
+    fall back to a single blocking `invoke`.
     """
     rag = get_agentic(market, provider=provider, synth_model=synth_model, api_key=api_key)
     if top_k:
@@ -124,15 +129,34 @@ def run_agentic(market: str, question: str, top_k: int = 5,
 
     # `chat_history` lives directly on AgentState (TypedDict, total=False) so
     # nodes can read it without changing graph signatures.
-    initial_state: dict[str, object] = {"question": question}
+    initial_state: dict[str, object] = {
+        "question": question,
+        "iteration_count": 0, "errors": [],
+        "table_results": [], "web_results": [],
+    }
     if chat_history:
         initial_state["chat_history"] = chat_history
 
-    state = rag.run(question) if not chat_history else rag.graph.invoke({
-        **initial_state,
-        "iteration_count": 0, "errors": [],
-        "table_results": [], "web_results": [],
-    })
+    # A hard recursion cap so a pathological retrieve→grade→rewrite or
+    # critic→retrieve loop can never spin forever — it terminates with whatever
+    # we have instead of hanging the request.
+    config = {"recursion_limit": 50}
+
+    if on_step is None:
+        state = rag.graph.invoke(initial_state, config=config)
+    else:
+        # stream_mode=["updates","values"] yields ("updates", {node: delta})
+        # for live progress and ("values", full_state) so we keep the final
+        # accumulated state to build the response from.
+        state: dict = {}
+        for mode, data in rag.graph.stream(
+            initial_state, stream_mode=["updates", "values"], config=config
+        ):
+            if mode == "values":
+                state = data
+            elif mode == "updates" and isinstance(data, dict):
+                for node_name in data:
+                    on_step(node_name)
 
     chunks: list[dict] = []
     next_id = 0

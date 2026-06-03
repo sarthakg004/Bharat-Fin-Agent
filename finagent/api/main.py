@@ -210,7 +210,23 @@ def _build_history_for_agent(chat_id: int) -> list[dict]:
     ]
 
 
-async def _run_rag(request: QueryRequest, hist: list[dict]) -> dict:
+# Friendly, market-neutral labels for each graph node, surfaced live as the
+# agent "thinks". Repeated nodes (retrieve/grade across rewrite loops) reuse the
+# same label; the UI de-dupes consecutive repeats.
+_STEP_LABELS = {
+    "planner":     "Planning the approach…",
+    "router":      "Routing the sub-questions…",
+    "retrieve":    "Searching the filings…",
+    "grader":      "Weighing the evidence…",
+    "rewrite":     "Refining the search…",
+    "table_agent": "Crunching the numbers…",
+    "synthesize":  "Writing the answer…",
+    "critic":      "Fact-checking the draft…",
+}
+
+
+async def _run_rag(request: QueryRequest, hist: list[dict],
+                   on_step=None) -> dict:
     loop = asyncio.get_event_loop()
     pc = request.provider_config
     provider = (pc.provider if pc else "groq")
@@ -221,7 +237,7 @@ async def _run_rag(request: QueryRequest, hist: list[dict]) -> dict:
         _executor,
         lambda: rag_service.run_agentic(
             request.market, request.question, request.top_k, None, hist,
-            provider, synth_model, api_key,
+            provider, synth_model, api_key, on_step=on_step,
         ),
     )
 
@@ -245,13 +261,31 @@ async def _stream_answer(request: QueryRequest) -> AsyncGenerator[str, None]:
         agent_history = _build_history_for_agent(chat_id)
     yield _sse({"type": "chat", "chat_id": chat_id})
 
-    yield _sse({
-        "type": "status", "stage": "retrieving",
-        "label": f"Retrieving from {request.market.upper()} filings...",
-    })
+    # Bridge the (synchronous, thread-pool) graph run to this async generator:
+    # the graph pushes node names onto a thread-safe queue as it runs, and we
+    # drain them here into live "status" events so the UI shows real progress
+    # instead of a single static spinner.
+    loop = asyncio.get_event_loop()
+    step_queue: asyncio.Queue = asyncio.Queue()
+
+    def _on_step(node: str) -> None:
+        label = _STEP_LABELS.get(node)
+        if label:
+            loop.call_soon_threadsafe(
+                step_queue.put_nowait,
+                {"type": "status", "stage": node, "label": label},
+            )
+
+    rag_task = asyncio.ensure_future(_run_rag(request, agent_history, on_step=_on_step))
 
     try:
-        result = await _run_rag(request, agent_history)
+        while not (rag_task.done() and step_queue.empty()):
+            try:
+                evt = await asyncio.wait_for(step_queue.get(), timeout=0.1)
+            except asyncio.TimeoutError:
+                continue
+            yield _sse(evt)
+        result = rag_task.result()
     except Exception as e:
         from finagent.llm import is_rate_limit_error
 
@@ -287,11 +321,6 @@ async def _stream_answer(request: QueryRequest) -> AsyncGenerator[str, None]:
     # Charts go on their own channel so the UI attaches them to the message.
     for chart in charts:
         yield _sse({"type": "chart", "chart": chart})
-
-    yield _sse({
-        "type": "status", "stage": "generating",
-        "label": f"Generating answer ({meta.get('model','')})...",
-    })
 
     # Word-piece pseudo-stream — gives the UI the live feel without a deep
     # token-streaming refactor on the LLM side.

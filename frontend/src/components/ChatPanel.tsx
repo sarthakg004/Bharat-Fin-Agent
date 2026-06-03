@@ -8,6 +8,7 @@ import { useThreadStore } from "@/store/threadStore";
 import { MessageBubble } from "./MessageBubble";
 import { InputBar } from "./InputBar";
 import { cls } from "@/lib/utils";
+import type { BackendStatus } from "@/hooks/useBackendStatus";
 
 // Keep these to companies actually in the corpus (us_filings + india_filings):
 // US (Apple, …) and India (Reliance, Wipro, ICICI, Axis, SBI, ITC, HCLTech,
@@ -20,15 +21,16 @@ const EXAMPLE_QUERIES = [
 ];
 
 interface Props {
-  backendOnline: boolean;
+  backendStatus: BackendStatus;
 }
 
-export function ChatPanel({ backendOnline }: Props) {
+export function ChatPanel({ backendStatus }: Props) {
   const messages = useChatStore((s) => s.messages);
   const streamingId = useChatStore((s) => s.streamingId);
   const market = useConfigStore((s) => s.market);
   const createChat = useThreadStore((s) => s.createChat);
   const { ask, regenerate } = useRAGQuery(market);
+  const backendOnline = backendStatus === "online";
 
   const lastAssistantId = (() => {
     for (let i = messages.length - 1; i >= 0; i--) {
@@ -52,7 +54,7 @@ export function ChatPanel({ backendOnline }: Props) {
   return (
     <section className="relative flex h-full min-w-0 flex-1 flex-col bg-bg-base">
       {empty ? (
-        <EmptyState onAsk={ask} backendOnline={backendOnline} />
+        <EmptyState onAsk={ask} backendStatus={backendStatus} />
       ) : (
         <div
           ref={scrollerRef}
@@ -86,11 +88,12 @@ export function ChatPanel({ backendOnline }: Props) {
 
 function EmptyState({
   onAsk,
-  backendOnline,
+  backendStatus,
 }: {
   onAsk: (q: string) => void;
-  backendOnline: boolean;
+  backendStatus: BackendStatus;
 }) {
+  const backendOnline = backendStatus === "online";
   return (
     <div className="flex flex-1 items-center justify-center px-6 py-10">
       <motion.div
@@ -110,17 +113,29 @@ function EmptyState({
           SEC 10-K · Indian annual reports · multi-agent RAG
         </p>
 
-        {!backendOnline && (
+        {backendStatus === "warming" && (
+          <div className="mt-6 flex items-center gap-3 border border-warning bg-warning-dim px-4 py-3 text-left">
+            <span className="inline-block h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-warning border-t-transparent" />
+            <div>
+              <p className="font-mono text-[11px] uppercase tracking-wider text-warning">
+                Waking up the agent…
+              </p>
+              <p className="mt-1 font-ui text-[12px] text-text-secondary">
+                The server scales to zero to save cost, so the first request can take
+                up to a minute to cold-start. This page will connect automatically.
+              </p>
+            </div>
+          </div>
+        )}
+        {backendStatus === "down" && (
           <div className="mt-6 border border-err bg-err-dim px-4 py-3 text-left">
             <p className="font-mono text-[11px] uppercase tracking-wider text-err">
-              Backend offline
+              Backend unreachable
             </p>
             <p className="mt-1 font-ui text-[12px] text-text-secondary">
-              Start the FastAPI server with:
+              Couldn't reach the API after a while. It may be redeploying — this page
+              keeps retrying, so leave it open.
             </p>
-            <pre className="mt-1 overflow-x-auto bg-bg-elevated px-2 py-1 font-mono text-[11px] text-text-primary">
-              uvicorn backend.main:app --reload --port 8000
-            </pre>
           </div>
         )}
 
