@@ -9,11 +9,14 @@ import { MessageBubble } from "./MessageBubble";
 import { InputBar } from "./InputBar";
 import { cls } from "@/lib/utils";
 
+// Keep these to companies actually in the corpus (us_filings + india_filings):
+// US (Apple, …) and India (Reliance, Wipro, ICICI, Axis, SBI, ITC, HCLTech,
+// Tata Motors, NTPC, L&T, BajajAuto, Maruti, SunPharma, TechMahindra).
 const EXAMPLE_QUERIES = [
   "What was Apple's R&D spend in FY2023?",
-  "Compare TCS and Infosys revenue growth 2022–2024",
-  "Which segment dragged 3M's organic growth in FY2022?",
-  "HDFC Bank net interest margin FY24",
+  "Compare Reliance and Wipro revenue growth",
+  "What was ICICI Bank's net interest margin?",
+  "How has Tesla performed as a stock this year?",
 ];
 
 interface Props {

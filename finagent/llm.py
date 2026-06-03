@@ -44,7 +44,9 @@ def resolve_api_key(provider: str, api_key: Optional[str] = None) -> str:
         raise ValueError(
             f"Unknown provider {provider!r}. Choose one of {list(API_KEY_ENV)}."
         )
-    key = api_key or os.getenv(API_KEY_ENV[provider])
+    # .strip() guards against a stray newline/space on the key (e.g. a secret
+    # created with `echo`), which would make an illegal HTTP Authorization header.
+    key = (api_key or os.getenv(API_KEY_ENV[provider]) or "").strip()
     if not key:
         raise ValueError(
             f"{API_KEY_ENV[provider]} not found. Set it in your .env file or "
@@ -67,12 +69,12 @@ def collect_provider_keys(provider: str) -> list[str]:
         )
     base = API_KEY_ENV[provider]
     keys: list[str] = []
-    first = os.getenv(base)
+    first = (os.getenv(base) or "").strip()      # strip stray newline/space
     if first:
         keys.append(first)
     i = 2
     while True:
-        k = os.getenv(f"{base}{i}")
+        k = (os.getenv(f"{base}{i}") or "").strip()
         if not k:
             break
         keys.append(k)
@@ -296,7 +298,7 @@ def build_llm(
         )
 
     if api_key:
-        keys = [api_key]
+        keys = [api_key.strip()]
     else:
         keys = collect_provider_keys(provider)
         if not keys:

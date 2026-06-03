@@ -144,10 +144,19 @@ questions — premarket prices, "today's", "current", "this week's" — you must
   were equivalent. If you mention historical context, label it explicitly
   ("Earlier, on <date>, the stock had moved ...").
 
-If the evidence does NOT contain enough information to answer:
-- Say so in one short sentence.
-- Do NOT include any citation numbers in that sentence.
-- Do NOT invent figures, companies, page numbers, or table titles.
+When the evidence is thin or only partially answers the question:
+- STILL give the most useful answer you can from what IS provided, and cite each
+  fact with [N]. Web / news items are valid evidence — use them. A partial,
+  caveated answer is far better than a flat refusal.
+- Then add a short caveat in italics noting the limitation, e.g.
+  *"Note: this is drawn from news coverage, not the company's filings, and the
+  figures should be verified."* or *"The available sources only cover FY2023, so
+  the 2022→2024 trend is incomplete."*
+- Only when there is genuinely NO relevant evidence at all (nothing on the
+  companies/topic asked) should you say so — in one short sentence, with no
+  citations.
+- Never invent figures, companies, page numbers, or table titles. Use only what
+  the evidence supports.
 """
 
 SYNTH_V3_PROMPT = """\

@@ -37,6 +37,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import os
 
+# Cloud Run egress is IPv4-only. Some API hosts (e.g. api.groq.com behind
+# Cloudflare) resolve to an IPv6 address first, and httpx then fails to connect
+# → groq.APIConnectionError. When FORCE_IPV4 is set we make DNS return only
+# IPv4 addresses, so every outbound call (Groq, Tavily, yfinance) uses IPv4.
+if os.getenv("FORCE_IPV4", "").strip().lower() in ("1", "true", "yes"):
+    import socket as _socket
+
+    _orig_getaddrinfo = _socket.getaddrinfo
+
+    def _getaddrinfo_ipv4(host, port, family=0, *args, **kwargs):
+        return _orig_getaddrinfo(host, port, _socket.AF_INET, *args, **kwargs)
+
+    _socket.getaddrinfo = _getaddrinfo_ipv4
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
@@ -60,11 +74,16 @@ from finagent.api.models import (
 
 app = FastAPI(title="FinAgent API", version="2.0.0")
 
+# CORS — the SPA is hosted on Firebase (a different origin) and calls this API
+# directly. Set ALLOWED_ORIGINS on Cloud Run to your Firebase URL(s),
+# comma-separated. Local dev origins are always allowed.
+_ALLOWED_ORIGINS = [
+    "http://localhost:5173", "http://127.0.0.1:5173",
+    *[o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()],
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173", "http://127.0.0.1:5173", "https://*.hf.space",
-    ],
+    allow_origins=_ALLOWED_ORIGINS,
     allow_methods=["*"], allow_headers=["*"],
 )
 
@@ -235,6 +254,10 @@ async def _stream_answer(request: QueryRequest) -> AsyncGenerator[str, None]:
         result = await _run_rag(request, agent_history)
     except Exception as e:
         from finagent.llm import is_rate_limit_error
+
+        # Log the error type for debugging, but NOT the full exception value —
+        # provider auth errors can echo the API key into logs.
+        print(f"[query error] {type(e).__name__}", flush=True)
 
         rate_limited = is_rate_limit_error(e)
         if rate_limited:
