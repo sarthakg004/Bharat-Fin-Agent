@@ -5,6 +5,7 @@
 
 # Local data (corpus, PDFs, Chroma store, SQLite DB) — never committed.
 data/
+chroma.tar.gz
 
 # Python
 __pycache__/

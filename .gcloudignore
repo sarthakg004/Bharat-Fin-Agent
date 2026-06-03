@@ -35,3 +35,8 @@ data/tables/
 data/*.db
 data/*.csv
 data/*.txt
+
+# The Chroma tarball CI downloads from GCS and unpacks into data/chroma/.
+# The build only needs the unpacked data/chroma/ — uploading the tarball too
+# would ship the Chroma store TWICE in the source zip (~360 MB wasted).
+chroma.tar.gz
