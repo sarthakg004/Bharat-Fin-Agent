@@ -16,6 +16,7 @@ quick; swap to `bge-reranker-large` once you don't mind the download.
 
 from __future__ import annotations
 
+import os
 from threading import Lock
 from typing import Callable, Optional
 
@@ -44,8 +45,10 @@ def _build_agent(market: str, provider: str, synth_model: Optional[str],
         provider=provider,
         synth_model=synth_model,                # None → AgenticRAG picks per-provider default
         api_key=api_key,                        # None → reads env via build_llm()
-        # Small reranker by default — large is great but downloads 1.3 GB.
-        reranker_model="BAAI/bge-reranker-base",
+        # Reranker is env-configurable so we can A/B smaller models without a
+        # code change (default kept at bge-reranker-base). The image bakes
+        # whatever this resolves to at build time.
+        reranker_model=os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-base"),
         bm25_top_k=8, dense_top_k=8, final_top_k=5,
         max_rewrites=2, max_critic_retries=1,
         table_collection="tables",

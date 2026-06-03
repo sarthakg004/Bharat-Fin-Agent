@@ -60,6 +60,7 @@ jobs:
             --source . \
             --project "${PROJECT_ID}" \
             --region "${REGION}" \
+            --cpu-boost \
             --quiet
 
       - name: Set up Node

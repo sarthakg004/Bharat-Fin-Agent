@@ -4,6 +4,13 @@
 # Serves the React SPA + FastAPI API on one origin. The prebuilt Chroma vector
 # store is baked into the image, so full hybrid retrieval (BM25 + dense + rerank)
 # works without any external vector DB.
+#
+# Three stages: (1) build the SPA, (2) a builder that compiles/installs the
+# Python deps + bakes the models with build tools present, (3) a slim runtime
+# that copies only the finished venv + model cache — no compilers in the final
+# image. This trims the runtime image (smaller pull = faster cold start) and
+# guarantees deps that need a C/C++ toolchain (e.g. chromadb/hnswlib) still
+# build, because the toolchain lives in the throwaway builder stage.
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -19,46 +26,68 @@ RUN npm run build
 
 
 # -----------------------------------------------------------------------------
-# Stage 2 — Python runtime
+# Stage 2 — Python builder (has compilers; produces /opt/venv + /app/.hf)
 # -----------------------------------------------------------------------------
-FROM python:3.11-slim AS runtime
+FROM python:3.11-slim AS builder
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
+ENV PIP_NO_CACHE_DIR=1 \
     HF_HOME=/app/.hf \
     SENTENCE_TRANSFORMERS_HOME=/app/.hf \
-    STATIC_DIR=/app/static \
-    CHROMA_DIR=/app/data/chroma \
-    PYTHONPATH=/app \
-    # Per-session memory: the client carries history, nothing persisted server-side.
-    STATELESS=1 \
-    PORT=8080
+    PATH="/opt/venv/bin:$PATH"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential curl ca-certificates libgomp1 \
+        build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /app
+# Isolated venv so we can copy exactly the installed packages into the runtime.
+RUN python -m venv /opt/venv
 
 # CPU-only torch first (Cloud Run has no GPU) so sentence-transformers reuses it
-# instead of pulling the multi-GB CUDA build — smaller image, faster cold start.
+# instead of pulling the multi-GB CUDA build.
 RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
 
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Bake the bge models into the image so a cold start loads from local disk.
+# Bake the bge models into the venv-side HF cache so cold start loads from disk.
 RUN python -c "from sentence_transformers import SentenceTransformer, CrossEncoder; \
 SentenceTransformer('BAAI/bge-small-en-v1.5'); \
 CrossEncoder('BAAI/bge-reranker-base')"
 
-# Now that the models are cached, force offline loading at runtime: no network
-# call to the HF Hub on cold start (faster + robust if HF is down/rate-limits).
-# These MUST come AFTER the bake step above, which needs to download.
-ENV HF_HUB_OFFLINE=1 \
+
+# -----------------------------------------------------------------------------
+# Stage 3 — slim runtime (no compilers, no pip caches)
+# -----------------------------------------------------------------------------
+FROM python:3.11-slim AS runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    HF_HOME=/app/.hf \
+    SENTENCE_TRANSFORMERS_HOME=/app/.hf \
+    STATIC_DIR=/app/static \
+    CHROMA_DIR=/app/data/chroma \
+    PYTHONPATH=/app \
+    PATH="/opt/venv/bin:$PATH" \
+    # Per-session memory: the client carries history, nothing persisted server-side.
+    STATELESS=1 \
+    PORT=8080 \
+    # Models are baked above — force offline loading so cold start makes no HF
+    # Hub network call (faster + robust if HF is down/rate-limits).
+    HF_HUB_OFFLINE=1 \
     TRANSFORMERS_OFFLINE=1 \
     HF_HUB_DISABLE_TELEMETRY=1
+
+# Runtime-only system libs (no build-essential): libgomp1 for torch/onnx,
+# ca-certificates for outbound HTTPS (Groq/Tavily), curl for debugging.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl ca-certificates libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# The finished Python environment + model cache from the builder.
+COPY --from=builder /opt/venv /opt/venv
+COPY --from=builder /app/.hf  /app/.hf
 
 # App code + built SPA + the prebuilt Chroma store (read at $CHROMA_DIR).
 COPY finagent/      ./finagent/
