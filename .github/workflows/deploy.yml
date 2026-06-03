@@ -1,0 +1,88 @@
+name: Deploy
+
+# CI/CD: on every push to main, deploy the backend to Cloud Run and the
+# frontend to Firebase Hosting. Authentication is keyless (Workload Identity
+# Federation) — no service-account JSON is ever stored in GitHub.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}        # lets you trigger a deploy by hand from the Actions tab
+
+# Never run two deploys at once; cancel an in-flight one if a newer push lands.
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PROJECT_ID: fin-agent-498211
+  REGION: asia-south1
+  SERVICE: finagent
+  DATA_BUCKET: gs://fin-agent-498211-data
+  # Public Cloud Run URL — baked into the frontend bundle so the SPA calls the API.
+  BACKEND_URL: https://finagent-237355589454.asia-south1.run.app
+
+permissions:
+  contents: read
+  id-token: write              # REQUIRED for Workload Identity Federation
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Keyless auth to GCP. The provider + SA are not secrets — access is
+      # gated by the repo binding we created with gcloud.
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/237355589454/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+          service_account: github-deployer@fin-agent-498211.iam.gserviceaccount.com
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      # The repo doesn't carry the 360 MB Chroma DB — pull it from the private
+      # GCS bucket and unpack it so the Docker build's `COPY data/chroma/` works.
+      - name: Fetch Chroma DB from GCS
+        run: |
+          gcloud storage cp "${DATA_BUCKET}/chroma.tar.gz" chroma.tar.gz
+          tar xzf chroma.tar.gz
+          echo "Chroma files:" && ls -1 data/chroma | head
+
+      # Backend → Cloud Run. `--source .` builds the Dockerfile via Cloud Build.
+      # Not passing --set-env-vars / --set-secrets PRESERVES the existing API
+      # keys + ALLOWED_ORIGINS already configured on the service.
+      - name: Deploy backend to Cloud Run
+        run: |
+          gcloud run deploy "${SERVICE}" \
+            --source . \
+            --project "${PROJECT_ID}" \
+            --region "${REGION}" \
+            --quiet
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # Frontend → build with the Cloud Run URL baked in, then deploy to Firebase.
+      - name: Build frontend
+        working-directory: frontend
+        env:
+          VITE_API_URL: ${{ env.BACKEND_URL }}
+        run: |
+          npm ci
+          npm run build
+
+      # firebase-tools picks up the credentials from the auth step above
+      # (GOOGLE_APPLICATION_CREDENTIALS), so no FIREBASE_TOKEN is needed.
+      - name: Deploy frontend to Firebase Hosting
+        run: |
+          npx --yes firebase-tools@latest deploy \
+            --only hosting \
+            --project "${PROJECT_ID}" \
+            --non-interactive
