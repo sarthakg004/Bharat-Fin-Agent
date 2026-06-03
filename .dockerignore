@@ -2,6 +2,7 @@
 # Ignore data/ EXCEPT the prebuilt Chroma store, which is baked into the image.
 data/*
 !data/chroma
+!data/chroma/**
 
 results/
 notebooks/

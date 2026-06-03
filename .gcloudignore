@@ -26,5 +26,8 @@ tests/
 .ruff_cache/
 
 # Data: ignore everything except the prebuilt Chroma store.
+# NOTE: gcloud needs the directory CONTENTS re-included (`/**`), not just the
+# directory entry — otherwise data/chroma is dropped from the Cloud Build upload.
 data/*
 !data/chroma
+!data/chroma/**
