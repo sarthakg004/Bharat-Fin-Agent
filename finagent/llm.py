@@ -105,12 +105,26 @@ def is_rate_limit_error(exc: BaseException) -> bool:
     Covers groq.RateLimitError, openai.RateLimitError, anthropic.RateLimitError,
     google.api_core.exceptions.ResourceExhausted, and any wrapped variant that
     mentions a 429 or "rate limit" in the message.
+
+    Walks the exception chain (``__cause__`` / ``__context__``) because by the
+    time the error bubbles up through LangGraph + the thread executor the
+    provider's RateLimitError is usually *wrapped* — the original check only saw
+    the generic outer wrapper and so showed users a raw traceback instead of the
+    friendly "limit reached" message.
     """
-    name = type(exc).__name__.lower()
-    if "ratelimit" in name or "resourceexhausted" in name:
-        return True
-    msg = (str(exc) or "").lower()
-    return any(hint in msg for hint in _RATE_LIMIT_HINTS)
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    depth = 0
+    while cur is not None and id(cur) not in seen and depth < 10:
+        seen.add(id(cur))
+        name = type(cur).__name__.lower()
+        if "ratelimit" in name or "resourceexhausted" in name:
+            return True
+        if any(hint in (str(cur) or "").lower() for hint in _RATE_LIMIT_HINTS):
+            return True
+        cur = cur.__cause__ or cur.__context__
+        depth += 1
+    return False
 
 
 def is_daily_quota_error(exc: BaseException) -> bool:
@@ -123,7 +137,16 @@ def is_daily_quota_error(exc: BaseException) -> bool:
     """
     if not is_rate_limit_error(exc):
         return False
-    return any(hint in (str(exc) or "").lower() for hint in _DAILY_QUOTA_HINTS)
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    depth = 0
+    while cur is not None and id(cur) not in seen and depth < 10:
+        seen.add(id(cur))
+        if any(hint in (str(cur) or "").lower() for hint in _DAILY_QUOTA_HINTS):
+            return True
+        cur = cur.__cause__ or cur.__context__
+        depth += 1
+    return False
 
 
 # --------------------------------------------------------------------------- #

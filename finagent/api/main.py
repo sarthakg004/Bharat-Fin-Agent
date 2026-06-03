@@ -287,7 +287,7 @@ async def _stream_answer(request: QueryRequest) -> AsyncGenerator[str, None]:
             yield _sse(evt)
         result = rag_task.result()
     except Exception as e:
-        from finagent.llm import is_rate_limit_error
+        from finagent.llm import is_daily_quota_error, is_rate_limit_error
 
         # Log the error type for debugging, but NOT the full exception value —
         # provider auth errors can echo the API key into logs.
@@ -296,9 +296,17 @@ async def _stream_answer(request: QueryRequest) -> AsyncGenerator[str, None]:
         rate_limited = is_rate_limit_error(e)
         if rate_limited:
             code = "rate_limit"
-            message = ("We've hit today's usage limit on the available API keys. "
-                       "Please try again tomorrow — or add your own API key from the "
-                       "model picker to keep going now.")
+            if is_daily_quota_error(e):
+                # Daily token/request quota drained on every key — only a 24h
+                # wait (or the user's own key) recovers.
+                message = ("We've hit today's usage limit on the shared API keys. "
+                           "Please try again tomorrow — or add your own API key "
+                           "from the model picker to keep going now.")
+            else:
+                # Per-minute burst limit across all keys — recovers in moments.
+                message = ("The shared API keys are rate-limited right now. "
+                           "Please wait a minute and try again — or add your own "
+                           "API key from the model picker to keep going now.")
         else:
             code = "error"
             message = f"{type(e).__name__}: {e}"
