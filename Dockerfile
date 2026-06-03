@@ -53,6 +53,13 @@ RUN python -c "from sentence_transformers import SentenceTransformer, CrossEncod
 SentenceTransformer('BAAI/bge-small-en-v1.5'); \
 CrossEncoder('BAAI/bge-reranker-base')"
 
+# Now that the models are cached, force offline loading at runtime: no network
+# call to the HF Hub on cold start (faster + robust if HF is down/rate-limits).
+# These MUST come AFTER the bake step above, which needs to download.
+ENV HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1 \
+    HF_HUB_DISABLE_TELEMETRY=1
+
 # App code + built SPA + the prebuilt Chroma store (read at $CHROMA_DIR).
 COPY finagent/      ./finagent/
 COPY pyproject.toml ./
