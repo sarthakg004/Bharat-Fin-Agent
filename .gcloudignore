@@ -25,9 +25,13 @@ tests/
 .pytest_cache/
 .ruff_cache/
 
-# Data: ignore everything except the prebuilt Chroma store.
-# NOTE: gcloud needs the directory CONTENTS re-included (`/**`), not just the
-# directory entry — otherwise data/chroma is dropped from the Cloud Build upload.
-data/*
-!data/chroma
-!data/chroma/**
+# Keep ONLY data/chroma (baked into the image); exclude the rest of data/.
+# We list the non-chroma items EXPLICITLY rather than `data/*` + `!data/chroma`,
+# because that re-include is unreliable in gcloud's ignore parser and was
+# silently dropping data/chroma from the upload.
+data/us/
+data/India/
+data/tables/
+data/*.db
+data/*.csv
+data/*.txt

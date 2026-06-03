@@ -1,8 +1,12 @@
 # Build context for the Cloud Run image.
-# Ignore data/ EXCEPT the prebuilt Chroma store, which is baked into the image.
-data/*
-!data/chroma
-!data/chroma/**
+# Keep ONLY data/chroma (baked into the image); exclude the rest of data/
+# explicitly (no fragile `data/*` + `!data/chroma` re-include).
+data/us/
+data/India/
+data/tables/
+data/*.db
+data/*.csv
+data/*.txt
 
 results/
 notebooks/
