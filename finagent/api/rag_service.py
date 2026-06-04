@@ -24,9 +24,13 @@ from typing import Callable, Optional
 # re-exported through finagent.agents during the layout restructure).
 from finagent.agents import AgenticRAGv4
 
+# Phase 1 (US-only): active retrieval searches the US filings corpus exclusively.
+# `india_filings` was dropped from the live pool — the eval is US-only and any
+# non-US / non-corpus company now falls through to the web-search branch (the
+# agent's web_search_node escalates automatically on empty/weak retrieval) with
+# a graceful "searched the web instead" answer rather than off-market noise.
 _COLLECTIONS = {
     "us": "us_filings",
-    "india": "india_filings",
 }
 
 # Each (market, provider, synth_model) combo gets its own instance. Most
@@ -39,11 +43,11 @@ _agentic_cache: dict[tuple, AgenticRAGv4] = {}
 def _build_agent(market: str, provider: str, synth_model: Optional[str],
                  api_key: Optional[str]) -> AgenticRAGv4:
     return AgenticRAGv4(
-        collection_name=_COLLECTIONS.get(market, "us_filings"),
-        # Search BOTH filings corpora — the question decides what's relevant
-        # (the grader drops the off-topic market). No US/India toggle needed.
-        collections=list(_COLLECTIONS.values()),
-        market=market,
+        collection_name="us_filings",
+        # Phase 1: US-only active retrieval. Non-US / non-corpus questions get
+        # empty/weak filing retrieval and escalate to web_search automatically.
+        collections=["us_filings"],
+        market="us",
         provider=provider,
         synth_model=synth_model,                # None → AgenticRAG picks per-provider default
         api_key=api_key,                        # None → reads env via build_llm()
