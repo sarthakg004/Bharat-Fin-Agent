@@ -109,46 +109,75 @@ class SecFilingFetcher(BaseTool):
 
     # --- fetch + ingest ------------------------------------------------------
 
-    def fetch_and_ingest(self, ticker: str, company: str = "",
-                         filing_type: str = "10-K", n: int = 1) -> dict:
-        """Download the latest `n` filings for `ticker` and ingest into the live
-        collection. Returns counts + the source URLs added.
-
-        Tries the annual-report forms in order: domestic issuers file **10-K**,
-        but foreign private issuers file **20-F** and Canadian issuers **40-F**
-        (e.g. Draganfly/DPRO). So a ticker that resolves to a CIK but has no
-        10-K is fetched from its actual annual form instead of returning empty.
-        """
+    def _download(self, ticker: str, company: str, filing_type: str, n: int) -> tuple[list[dict], Optional[str]]:
+        """Download the latest `n` filings, sweeping the annual forms
+        (10-K → 20-F → 40-F) since foreign private issuers (20-F) and Canadian
+        issuers (40-F, e.g. Draganfly/DPRO) don't file 10-Ks. Returns the OK
+        records (enriched with company/market) and the form that worked."""
         from finagent.ingestion.fetchPDFs import FetchPDFs
-        from finagent.ingestion.ingest import CorpusIngester
 
         name, email = _sec_identity()
-        fetcher = FetchPDFs(
-            output_dir=self.corpus_dir,
-            sec_user_agent_name=name, sec_user_agent_email=email,
-        )
-        # Honour an explicit non-default filing_type; otherwise sweep the annual
-        # forms (10-K → 20-F → 40-F) and take the first that returns a filing.
+        fetcher = FetchPDFs(output_dir=self.corpus_dir,
+                            sec_user_agent_name=name, sec_user_agent_email=email)
         forms = [filing_type] if filing_type != "10-K" else ["10-K", "20-F", "40-F"]
-        ok: list[dict] = []
-        used_form = None
         for form in forms:
             records = fetcher.from_sec(ticker, filing_type=form, num_filings=n)
             ok = [r for r in records if r.get("status") == "ok"]
             if ok:
-                used_form = form
                 for r in ok:
                     r.setdefault("filing_type", form)
-                break
+                    r.setdefault("company", company or ticker)
+                    r.setdefault("market", self.market)
+                return ok, form
+        return [], None
+
+    def fetch_chunks(self, ticker: str, company: str = "",
+                     filing_type: str = "10-K", n: int = 1) -> dict:
+        """Fetch a filing and parse+chunk it **in memory** — NO embedding, NO
+        Chroma write. For the cloud / per-session path: the chunks are ranked
+        in-memory against the question and fed to synthesis, so we never grow or
+        persist the index. Returns ``{"ok", "ticker", "form", "chunks": [...]}``
+        where each chunk is ``{text, company, ticker, year, source, ...}``.
+        """
+        from finagent.ingestion.ingest import CorpusIngester
+
+        ok, used_form = self._download(ticker, company, filing_type, n)
+        if not ok:
+            return {"ok": False, "ticker": ticker, "chunks": [],
+                    "error": "no filing downloaded"}
+
+        ingester = CorpusIngester(
+            corpus_dir=self.corpus_dir, chroma_dir=self.chroma_dir,
+            collection_name=self.collection_name, market=self.market,
+            embedding_model=self.embedding_model,
+        )
+        chunks: list[dict] = []
+        for rec in ok:
+            for doc in ingester.documents_from_record(rec):
+                m = doc.metadata
+                chunks.append({
+                    "text": doc.page_content,
+                    "company": m.get("company") or m.get("ticker", ticker),
+                    "ticker": m.get("ticker", ticker),
+                    "year": m.get("year", ""),
+                    "page": m.get("page", "—"),
+                    "source_url": m.get("source_url", ""),
+                })
+        return {"ok": bool(chunks), "ticker": ticker, "company": company or ticker,
+                "form": used_form, "chunks": chunks, "filings": len(ok)}
+
+    def fetch_and_ingest(self, ticker: str, company: str = "",
+                         filing_type: str = "10-K", n: int = 1) -> dict:
+        """Download the latest `n` filings for `ticker` and ingest into the live
+        collection (persistent path). Returns counts + the source URLs added."""
+        from finagent.ingestion.ingest import CorpusIngester
+
+        ok, used_form = self._download(ticker, company, filing_type, n)
         if not ok:
             return {"ok": False, "ticker": ticker, "chunks_added": 0,
-                    "error": f"no filing downloaded (tried {forms})", "source_urls": []}
+                    "error": "no filing downloaded", "source_urls": []}
 
-        # Enrich with a readable company name (citations) + market, then write a
-        # dedicated manifest so we never clobber the baseline sec_manifest.json.
-        for r in ok:
-            r.setdefault("company", company or ticker)
-            r.setdefault("market", self.market)
+        # Write a dedicated manifest so we never clobber the baseline sec_manifest.
         manifest_path = self.corpus_dir / f"dynamic_fetch_{ticker}.json"
         manifest_path.write_text(json.dumps(ok, indent=2))
 

@@ -118,16 +118,12 @@ function ThinkingTrace({ msg }: { msg: ChatMessage }) {
     const startedAt = msg.startedAt ?? msg.createdAt;
     const elapsedS = Math.max(0, (now - startedAt) / 1000);
 
-    // Monotonic progress from the furthest pipeline stage reached.
+    // Monotonic progress from the furthest pipeline stage reached. (We show
+    // elapsed time + a progress bar, but NOT an ETA — the agent loops and skips
+    // stages unpredictably, so any "time left" estimate would be misleading.)
     const total = msg.progressTotal ?? 0;
     const reached = (msg.progressIndex ?? 0) + 1;
     const progress = total > 0 ? Math.min(0.99, reached / total) : 0;
-    // ETA projects the total from the observed pace; only show it once there's
-    // enough signal so it isn't wildly off at the very start.
-    const eta =
-      progress > 0.12 && elapsedS > 1.5
-        ? Math.max(0, Math.round(elapsedS * (1 / progress - 1)))
-        : null;
 
     // De-duplicated completed stages (skip the current one), most recent last.
     const seen = new Set<string>();
@@ -148,7 +144,7 @@ function ThinkingTrace({ msg }: { msg: ChatMessage }) {
             <span>{current?.label ?? "Thinking…"}</span>
           </div>
           <span className="shrink-0 font-mono text-[10px] uppercase tracking-wider text-text-muted">
-            {elapsedS.toFixed(0)}s{eta != null && ` · ~${eta}s left`}
+            {elapsedS.toFixed(0)}s
           </span>
         </div>
 

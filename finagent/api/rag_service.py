@@ -23,6 +23,7 @@ from typing import Callable, Optional
 # Canonical agent namespace (the class chain itself lives in finagent.graph.*,
 # re-exported through finagent.agents during the layout restructure).
 from finagent.agents import AgenticRAGv4
+from finagent.config import settings
 
 # Phase 1 (US-only): active retrieval searches the US filings corpus exclusively.
 # `india_filings` was dropped from the live pool — the eval is US-only and any
@@ -57,6 +58,9 @@ def _build_agent(market: str, provider: str, synth_model: Optional[str],
         reranker_model=os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-base"),
         bm25_top_k=8, dense_top_k=8, final_top_k=5,
         max_rewrites=2, max_critic_retries=1,
+        # Cloud: PERSIST_DYNAMIC_FETCH=false → fetched filings are used in-memory
+        # for the session and never grow the baked index.
+        persist_fetch=settings.persist_dynamic_fetch,
         table_collection="tables",
         news_collection="news",
         web_top_k=10,
@@ -142,7 +146,7 @@ def run_agentic(market: str, question: str, top_k: int = 5,
         "question": question,
         "iteration_count": 0, "errors": [],
         "table_results": [], "web_results": [], "xbrl_facts": [], "calc_results": [],
-        "fetch_status": {}, "edgar_results": [],
+        "fetch_status": {}, "edgar_results": [], "fetched_chunks": [],
     }
     if chat_history:
         initial_state["chat_history"] = chat_history

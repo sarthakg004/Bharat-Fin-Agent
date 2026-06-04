@@ -319,6 +319,7 @@ class AgenticRAGv4(AgenticRAGv3):
         dedupe: bool = True,
         dedupe_threshold: float = 0.93,
         strict_numeric: bool = True,
+        persist_fetch: bool = True,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -340,6 +341,9 @@ class AgenticRAGv4(AgenticRAGv3):
         # ungrounded figure re-routes then refuses. Set False to A/B against the
         # prior LLM-only numeric check.
         self.strict_numeric = strict_numeric
+        # Dynamic fetch: persist the fetched filing into the on-disk index (True,
+        # local) or use it ephemerally in memory for this session (False, cloud).
+        self.persist_fetch = persist_fetch
         # Translation is sensitive to model quality (especially Indian languages
         # with their digit grouping and proper-noun handling). Default to the
         # strong tier; override via translator_model for cheap-tier runs.
@@ -526,8 +530,31 @@ class AgenticRAGv4(AgenticRAGv3):
             # already_indexed → retrieval handles it; not_us_listed → web branch.
             return {"fetch_status": gate}
 
-        # US-listed but not indexed → fetch + ingest, then make it searchable now.
-        self._log(state, f"dynamic fetch: pulling latest 10-K for {gate['ticker']}…")
+        self._log(state, f"dynamic fetch: pulling latest filing for {gate['ticker']}…")
+
+        # Ephemeral path (cloud / per-session): parse + chunk the filing in
+        # memory and rank it against the question later — NOTHING is written to
+        # the persistent index, so the corpus never grows and there's no
+        # scale-to-zero persistence problem.
+        if not self.persist_fetch:
+            try:
+                res = self.fetcher.fetch_chunks(
+                    gate["ticker"], company=gate.get("company") or "")
+            except Exception as e:
+                self._log(state, f"ephemeral fetch failed for {gate['ticker']}: {e}")
+                return {"fetch_status": {**gate, "status": "error", "error": str(e)}}
+            chunks = res.get("chunks", []) if res.get("ok") else []
+            if chunks:
+                self._log(state, f"fetched {len(chunks)} in-memory chunks for {gate['ticker']} "
+                                 f"({res.get('form')})")
+            return {
+                "fetched_chunks": chunks,
+                "fetch_status": {**gate, "status": "fetched" if chunks else "error",
+                                 "ephemeral": True, "form": res.get("form"),
+                                 "chunks_fetched": len(chunks)},
+            }
+
+        # Persistent path (local): fetch + ingest into the live collection.
         try:
             res = self.fetcher.fetch_and_ingest(
                 gate["ticker"], company=gate.get("company") or "")
@@ -540,6 +567,71 @@ class AgenticRAGv4(AgenticRAGv3):
             self._log(state, f"ingested {res['chunks_added']} chunks for {gate['ticker']}")
         return {"fetch_status": {**gate, "status": "fetched" if res.get("ok") else "error",
                                  **res}}
+
+    def hybrid_retrieve_node(self, state: AgentState) -> dict:
+        """Persistent-corpus retrieval, plus in-memory ranking of an ephemerally
+        fetched filing (cloud path) so its chunks are usable without ever being
+        indexed."""
+        out = super().hybrid_retrieve_node(state)
+        fetched = state.get("fetched_chunks") or []
+        if fetched:
+            ranked = self._rank_fetched_chunks(state, fetched)
+            # Fetched filing is the authoritative source for an out-of-corpus
+            # company → put its chunks first.
+            out["retrieved_chunks"] = ranked + (out.get("retrieved_chunks") or [])
+        return out
+
+    def _rank_fetched_chunks(self, state: AgentState, fetched: list[dict]) -> list[dict]:
+        """Rank ephemerally-fetched chunks against the question IN MEMORY (BGE
+        cosine pre-filter → cross-encoder rerank), returning the top few per
+        sub-query — the same two-stage quality as the persistent retriever, but
+        over a single filing and with nothing written to disk."""
+        import numpy as np
+
+        from finagent.retrieval.reranker import _get_shared_reranker
+        from finagent.vectorstore import get_embeddings
+
+        texts = [c.get("text", "") for c in fetched]
+        if not texts:
+            return []
+        sub_queries = state.get("sub_queries") or [state["question"]]
+        routes = state.get("query_routes") or []
+        if routes and len(routes) == len(sub_queries):
+            subs = [s for s, r in zip(sub_queries, routes) if r in ("narrative", "numeric")] \
+                or [state["question"]]
+        else:
+            subs = sub_queries
+
+        try:
+            embedder = get_embeddings(self.embedding_model)
+            mat = np.asarray(embedder.embed_documents(texts))          # (N, d), normalized
+            reranker = _get_shared_reranker(self.reranker_model)
+        except Exception as e:
+            self._log(state, f"ephemeral rank failed ({e}); using fetch order")
+            return [{**c, "source": self._fetched_source(c), "sub_query": subs[0]}
+                    for c in fetched[: self.final_top_k]]
+
+        pre_k = max(self.final_top_k * 4, 20)
+        out: list[dict] = []
+        seen: set = set()
+        for sq in subs:
+            qv = np.asarray(embedder.embed_query(sq))
+            sims = mat @ qv
+            cand = list(np.argsort(-sims)[:pre_k])
+            scores = reranker.predict([(sq, texts[i]) for i in cand])
+            order = [cand[j] for j in np.argsort(-np.asarray(scores))][: self.final_top_k]
+            for i in order:
+                key = texts[i][:80]
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append({**fetched[i], "source": self._fetched_source(fetched[i]),
+                            "sub_query": sq})
+        return out
+
+    @staticmethod
+    def _fetched_source(c: dict) -> str:
+        return f"[{c.get('company', c.get('ticker', '?'))} filing {c.get('year', '?')}]"
 
     def xbrl_node(self, state: AgentState) -> dict:
         """Answer numeric sub-queries from SEC XBRL structured facts (Phase 3).

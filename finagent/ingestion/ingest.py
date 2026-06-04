@@ -275,26 +275,7 @@ class CorpusIngester:
             "filing_type": record.get("filing_type", "annual_report"),
         }
 
-        # Branch by format. HTML (US SEC filings) uses structure-aware chunking
-        # that keeps tables intact and preserves their rows/columns; PDFs
-        # (India ARs, FinanceBench) use per-page pypdf text + char chunking.
-        # HTML has no real pages, so we do NOT attach a (fake) page number.
-        suffix = file_path.suffix.lower()
-        if suffix in (".htm", ".html"):
-            docs = self._html_documents(file_path, base_meta)
-        else:
-            page_texts = self._extract_pages(file_path)
-            if not page_texts:
-                return 0
-            splitter = self._get_splitter()
-            docs = []
-            for page_num, text in page_texts.items():
-                for chunk in splitter.split_text(text):
-                    docs.append(
-                        Document(page_content=chunk,
-                                 metadata={**base_meta, "page": page_num})
-                    )
-
+        docs = self._documents_for(file_path, base_meta)
         if not docs:
             return 0
 
@@ -303,6 +284,49 @@ class CorpusIngester:
         store.add_documents(docs)
 
         return len(docs)
+
+    def _documents_for(self, file_path: Path, base_meta: dict) -> list:
+        """Parse + chunk one file into LangChain Documents (no embedding / no
+        Chroma write). Shared by `ingest_file` and by the ephemeral dynamic-fetch
+        path that ranks a freshly-fetched filing in memory without indexing it.
+
+        Branch by format. HTML (US SEC filings) uses structure-aware chunking
+        that keeps tables intact; PDFs use per-page pypdf text + char chunking.
+        """
+        from langchain_core.documents import Document
+
+        suffix = file_path.suffix.lower()
+        if suffix in (".htm", ".html"):
+            return self._html_documents(file_path, base_meta)
+
+        page_texts = self._extract_pages(file_path)
+        if not page_texts:
+            return []
+        splitter = self._get_splitter()
+        docs: list = []
+        for page_num, text in page_texts.items():
+            for chunk in splitter.split_text(text):
+                docs.append(Document(page_content=chunk,
+                                     metadata={**base_meta, "page": page_num}))
+        return docs
+
+    def documents_from_record(self, record: dict) -> list:
+        """Public: parse + chunk a single manifest record into Documents,
+        without touching Chroma. Used by the ephemeral fetch path."""
+        file_path = Path(record["local_path"])
+        if not file_path.exists():
+            return []
+        base_meta = {
+            "market": self.market,
+            "source_url": record.get("source_url", ""),
+            "local_path": str(file_path),
+            "company": record.get("company", record.get("ticker", "")),
+            "ticker": record.get("ticker", record.get("nse_symbol", "")),
+            "year": str(record.get("year", "")),
+            "sector": record.get("sector", ""),
+            "filing_type": record.get("filing_type", "annual_report"),
+        }
+        return self._documents_for(file_path, base_meta)
 
     # ------------------------------------------------------------------ #
     # HTML (US SEC filings) — structure-aware extraction

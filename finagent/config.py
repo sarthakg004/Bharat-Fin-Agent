@@ -56,6 +56,12 @@ class Settings(BaseModel):
     stateless: bool = Field(default=False, description="STATELESS")
     allowed_origins: List[str] = Field(default_factory=list, description="ALLOWED_ORIGINS (CSV)")
     force_ipv4: bool = Field(default=False, description="FORCE_IPV4")
+    # Dynamic SEC fetch: persist the fetched filing into the on-disk corpus
+    # (True, good locally — a self-expanding index) or use it ephemerally in
+    # memory for this session only (False, for Cloud Run — no index growth, no
+    # persistence, no scale-to-zero problem). Set PERSIST_DYNAMIC_FETCH=false on
+    # the cloud.
+    persist_dynamic_fetch: bool = Field(default=True, description="PERSIST_DYNAMIC_FETCH")
 
     # --- Models --------------------------------------------------------------
     reranker_model: str = Field(default="BAAI/bge-reranker-base", description="RERANKER_MODEL")
@@ -80,6 +86,7 @@ class Settings(BaseModel):
             stateless=_as_bool(os.getenv("STATELESS")),
             allowed_origins=_as_list(os.getenv("ALLOWED_ORIGINS")),
             force_ipv4=_as_bool(os.getenv("FORCE_IPV4")),
+            persist_dynamic_fetch=_as_bool(os.getenv("PERSIST_DYNAMIC_FETCH"), default=True),
             reranker_model=os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-base"),
             chroma_dir=os.getenv("CHROMA_DIR", "data/chroma"),
             static_dir=os.getenv("STATIC_DIR", "static"),

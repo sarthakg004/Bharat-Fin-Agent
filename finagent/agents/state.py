@@ -68,6 +68,7 @@ class AgentState(TypedDict, total=False):
 
     # --- Dynamic SEC fetch (Phase 5) -------------------------------------- #
     fetch_status: dict                 # {"decision","ticker","chunks_added",...} or {}
+    fetched_chunks: list[dict]         # ephemeral fetch: in-memory chunks (not indexed)
 
     # --- EDGAR full-text search (Phase 6) --------------------------------- #
     edgar_results: list[dict]          # one cross-document search result per sub-query
