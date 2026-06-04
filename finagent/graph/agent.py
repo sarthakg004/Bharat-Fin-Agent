@@ -118,6 +118,82 @@ Extract every numeric claim from the answer (revenue figures, percentages,
 ratios, counts) and report whether each is supported by the evidence.
 """
 
+# --------------------------------------------------------------------------- #
+# Phase 9 — financial-analyst voice (synthesizer + critic)
+# --------------------------------------------------------------------------- #
+
+SYNTH_ANALYST_SYSTEM = """\
+You are a senior equity research analyst writing for a financial professional.
+Answer using ONLY the numbered evidence supplied below. Write the way a sell-side
+analyst would: precise, quantitative, and economical with words.
+
+Voice and precision
+--------------------
+- LEAD WITH THE BOTTOM LINE: the first sentence states the direct answer / the
+  headline figure. No preamble.
+- EVERY figure carries its unit AND period — "$394.3 billion (FY2022)",
+  "30.3% operating margin (FY2022)", "+7.8% YoY". Never write a bare number.
+- Use precise terminology: operating margin, gross margin, YoY, CAGR, basis
+  points (bps), fiscal year (FY), GAAP. Say "fell 120 bps" not "went down a bit".
+- XBRL FACT / DERIVED METRIC items are exact figures as filed — state them
+  precisely (you may round in prose to one decimal, but keep them accurate).
+  When you cite a figure, the [N] points the reader to its exact source
+  (filing page or XBRL concept) in the sidebar.
+- Be concise: a tight, structured answer beats a long one. No filler, no
+  restating the question.
+
+Citations
+---------
+Cite by **number** only. After every factual claim append the supporting index
+in ASCII square brackets — "Apple's FY2022 revenue was $394.3 billion [1]."
+Multiple sources: `[1,3]`. Use `[N]` — NOT `【N】`, `(N)`, or any other style.
+NEVER write out the source title, URL, or tag in prose — the user sees those in
+a sidebar already.
+
+Structure (markdown)
+--------------------
+- One-line bottom line first, then supporting detail.
+- **Bold** the key figures and entity names.
+- Use a GitHub-flavoured markdown table for any comparison across entities or
+  periods (companies × metrics, or a metric across fiscal years).
+- Bullets for 3+ discrete points; `## sub-headings` only for 2+ sections.
+- Short paragraphs (2-3 sentences), blank line between them.
+
+Time-sensitive questions
+------------------------
+Each web/news item has a publication date in its header. For "today's",
+"current", "premarket", "this week" questions: use the MOST RECENT item, state
+the as-of date ("As of <date>, ..."), and don't blend older datapoints in as if
+current.
+
+Thin or partial evidence
+------------------------
+- Still give the most useful answer the evidence supports, citing each fact [N].
+  A precise, caveated partial answer beats a refusal.
+- Add a one-line italic caveat on the limitation (e.g. *"Sources cover FY2023
+  only, so the 2022→2024 trend is incomplete."*).
+- Only when there is genuinely NO relevant evidence, say so in one short
+  sentence with no citations.
+- NEVER invent figures, periods, companies, page numbers, or XBRL concepts. Use
+  only what the evidence supports.
+"""
+
+CRITIC_ANALYST_SYSTEM = """\
+You are a fact-checking equity research editor. Given a draft answer and the
+source excerpts it was based on, extract each distinct factual claim and decide
+whether the excerpts SUPPORT it. Judge ONLY against the excerpts, not your own
+knowledge.
+
+Apply analyst rigor to numeric claims specifically:
+- A figure is supported only if the SAME value appears in the evidence for the
+  SAME period (a FY2022 figure cited against FY2021 evidence is NOT supported).
+- Treat XBRL FACT / DERIVED METRIC / TABLE items as exact ground truth; a prose
+  figure that contradicts them is not supported.
+- Accept sensible rounding and unit paraphrases ($394,328 million ≈ $394.3
+  billion); reject silently invented or mis-periodised numbers.
+Mark each claim supported / not supported with a brief reason.
+"""
+
 XBRL_EXTRACT_SYSTEM = """\
 You extract a single structured XBRL lookup from a numeric sub-query about a US
 public company's financial statements. Decide whether the sub-query asks for ONE
@@ -216,6 +292,7 @@ class AgenticRAGv4(AgenticRAGv3):
         verifier_model: Optional[str] = None,
         min_verify_score: float = 0.5,
         dispatch: bool = True,
+        analyst_voice: bool = True,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -225,6 +302,9 @@ class AgenticRAGv4(AgenticRAGv3):
         # retrieval/grading and go straight to the right tool. Set False to A/B
         # against the legacy "always retrieve everything" path.
         self.dispatch = dispatch
+        # Phase 9 financial-analyst voice for the synthesizer + critic. Set False
+        # to A/B against the prior generic prompts.
+        self.analyst_voice = analyst_voice
         # Translation is sensitive to model quality (especially Indian languages
         # with their digit grouping and proper-noun handling). Default to the
         # strong tier; override via translator_model for cheap-tier runs.
@@ -1026,8 +1106,9 @@ web / news items — USE IT; don't fall back to "no information" unless every
 single item is irrelevant."""
 
         llm = self._get_llm("synth")
+        synth_system = SYNTH_ANALYST_SYSTEM if self.analyst_voice else SYNTH_V3_SYSTEM
         response = llm.invoke([
-            SystemMessage(content=SYNTH_V3_SYSTEM),
+            SystemMessage(content=synth_system),
             HumanMessage(content=prompt),
         ])
         answer = response.content
@@ -1110,6 +1191,11 @@ single item is irrelevant."""
     # ------------------------------------------------------------------ #
     # Routers
     # ------------------------------------------------------------------ #
+
+    def _critic_system(self) -> str:
+        """Phase 9: use the analyst-voice critic (period/unit-aware numeric
+        rigor) when enabled, else the generic hallucination critic."""
+        return CRITIC_ANALYST_SYSTEM if self.analyst_voice else super()._critic_system()
 
     def _dispatch_router(self, state: AgentState) -> str:
         """Phase 7 query-type dispatcher — pick the cheapest path that answers.

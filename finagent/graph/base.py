@@ -81,6 +81,10 @@ Rules:
   2020, Microsoft 2021, Microsoft 2022 — each naming the company, the metric
   (R&D as % of revenue), and the exact fiscal year.
 - Each sub-query must stand on its own (no pronouns referring to the question).
+- Write sub-queries in precise analyst terms: name the exact line item or metric
+  (e.g. "operating margin", "R&D as % of revenue", "diluted EPS") and the exact
+  fiscal period ("FY2022"), so each can be answered from a single XBRL concept
+  or a single derived calculation.
 - FOLLOW-UPS: if the question relies on the conversation above (e.g. "show me the
   chart", "what about last year", "how is it doing"), rewrite it into a
   self-contained sub-query that names the company/ticker discussed just before.
@@ -414,6 +418,11 @@ class AgenticRAG:
             "iteration_count": state.get("iteration_count", 0) + 1,
         }
 
+    def _critic_system(self) -> str:
+        """The critic's system prompt. Subclasses override to swap in the
+        analyst-voice critic (Phase 9) behind a flag."""
+        return CRITIC_SYSTEM
+
     def critic_node(self, state: AgentState) -> dict:
         """Check each claim in the draft against the context. Logs failures.
 
@@ -430,7 +439,7 @@ class AgenticRAG:
         prompt = CRITIC_PROMPT.format(context=context, answer=answer)
         try:
             report: CriticReport = llm.invoke(
-                [SystemMessage(content=CRITIC_SYSTEM), HumanMessage(content=prompt)]
+                [SystemMessage(content=self._critic_system()), HumanMessage(content=prompt)]
             )
             verdicts = report.verdicts
         except Exception as e:
