@@ -46,6 +46,7 @@ class HybridRetriever(BaseRetriever):
         self.fetch_batch_size = fetch_batch_size
 
         self._bm25 = None
+        self._bm25_empty = False          # True once we've seen an empty collection
         self._all_docs: Optional[list[tuple[str, dict]]] = None
         self._reranker = None
 
@@ -84,6 +85,8 @@ class HybridRetriever(BaseRetriever):
     def bm25_search(self, query: str, k: int = 5) -> list[tuple[str, dict, float]]:
         """Top-k lexical (BM25) hits as (text, metadata, score)."""
         bm25, docs = self._ensure_bm25()
+        if not docs:
+            return []
         scores = bm25.get_scores(self._tokenize(query))
         top = sorted(range(len(scores)), key=lambda i: -scores[i])[:k]
         return [(docs[i][0], docs[i][1], float(scores[i])) for i in top]
@@ -116,6 +119,11 @@ class HybridRetriever(BaseRetriever):
 
     def _bm25_then_dense(self, query: str) -> list[tuple[str, dict]]:
         bm25, docs = self._ensure_bm25()
+        # Empty collection (e.g. a not-yet-ingested corpus): nothing to retrieve.
+        # Guard here so BM25Okapi is never built over an empty corpus (which
+        # divides by zero) and downstream merges just see no candidates.
+        if not docs:
+            return []
 
         scores = bm25.get_scores(self._tokenize(query))
         # argsort descending for top-k
@@ -146,13 +154,18 @@ class HybridRetriever(BaseRetriever):
         return [c for c, _ in ranked]
 
     def _ensure_bm25(self):
-        if self._bm25 is None:
+        if self._bm25 is None and not self._bm25_empty:
             from rank_bm25 import BM25Okapi
 
             self._all_docs = self._fetch_all_chunks()
+            if not self._all_docs:
+                # Empty collection — don't build BM25 (BM25Okapi([]) raises
+                # ZeroDivisionError). Mark it so we don't re-fetch every query.
+                self._bm25_empty = True
+                return None, []
             tokenized = [self._tokenize(t) for t, _ in self._all_docs]
             self._bm25 = BM25Okapi(tokenized)
-        return self._bm25, self._all_docs
+        return self._bm25, (self._all_docs or [])
 
     def _ensure_reranker(self):
         if self._reranker is None:

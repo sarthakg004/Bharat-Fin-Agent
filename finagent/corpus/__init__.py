@@ -14,6 +14,9 @@ Depends on: config, the low-level `finagent.chroma_client` / `finagent.vectorsto
 
 from finagent.corpus.client import ChromaClient
 from finagent.corpus.stats import corpus_summary, corpus_by_company
-from finagent.corpus.inspect import get_sample_chunk
+from finagent.corpus.inspect import get_sample_chunk, sample_filing
 
-__all__ = ["ChromaClient", "corpus_summary", "corpus_by_company", "get_sample_chunk"]
+__all__ = [
+    "ChromaClient", "corpus_summary", "corpus_by_company",
+    "get_sample_chunk", "sample_filing",
+]

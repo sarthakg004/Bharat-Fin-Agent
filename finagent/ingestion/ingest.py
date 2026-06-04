@@ -117,6 +117,10 @@ class CorpusIngester:
         chunk_size: int = DEFAULT_CHUNK_SIZE,
         chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
         unstructured_strategy: str = "fast",
+        html_max_chars: int = 1500,
+        html_new_after: int = 1200,
+        html_combine_under: int = 400,
+        html_overlap: int = 200,
     ):
         """
         Args:
@@ -143,6 +147,13 @@ class CorpusIngester:
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self.unstructured_strategy = unstructured_strategy
+        # HTML (US SEC filings) section-aware chunking. Sizes are in characters;
+        # html_max_chars stays well under the bge-small 512-token (~2048 char)
+        # window so chunks are never silently truncated at embed time.
+        self.html_max_chars = html_max_chars
+        self.html_new_after = html_new_after
+        self.html_combine_under = html_combine_under
+        self.html_overlap = html_overlap
 
         self.chroma_dir.mkdir(parents=True, exist_ok=True)
 
@@ -246,19 +257,6 @@ class CorpusIngester:
         Returns:
             Number of chunks added to Chroma.
         """
-        # 1. Extract text grouped by page. PDFs go through pypdf (reliable on
-        # born-digital annual reports where unstructured's fast strategy
-        # silently returns zero elements); HTML goes through unstructured.
-        # We keep page numbers so the retriever can cite "Reliance AR 2023,
-        # page 102". Raises on unreadable/corrupt files.
-        page_texts = self._extract_pages(file_path)
-        if not page_texts:
-            return 0
-
-        # 3. Chunk each page's text.
-        splitter = self._get_splitter()
-
-        # 4. Build LangChain Documents with rich metadata.
         from langchain_core.documents import Document
 
         # Metadata fields that exist for both markets. Some are empty depending
@@ -277,20 +275,109 @@ class CorpusIngester:
             "filing_type": record.get("filing_type", "annual_report"),
         }
 
-        docs: list[Document] = []
-        for page_num, text in page_texts.items():
-            for chunk in splitter.split_text(text):
-                meta = {**base_meta, "page": page_num}
-                docs.append(Document(page_content=chunk, metadata=meta))
+        # Branch by format. HTML (US SEC filings) uses structure-aware chunking
+        # that keeps tables intact and preserves their rows/columns; PDFs
+        # (India ARs, FinanceBench) use per-page pypdf text + char chunking.
+        # HTML has no real pages, so we do NOT attach a (fake) page number.
+        suffix = file_path.suffix.lower()
+        if suffix in (".htm", ".html"):
+            docs = self._html_documents(file_path, base_meta)
+        else:
+            page_texts = self._extract_pages(file_path)
+            if not page_texts:
+                return 0
+            splitter = self._get_splitter()
+            docs = []
+            for page_num, text in page_texts.items():
+                for chunk in splitter.split_text(text):
+                    docs.append(
+                        Document(page_content=chunk,
+                                 metadata={**base_meta, "page": page_num})
+                    )
 
         if not docs:
             return 0
 
-        # 5. Push to Chroma. add_documents handles embedding internally.
+        # Push to Chroma. add_documents handles embedding internally.
         store = self._get_vector_store()
         store.add_documents(docs)
 
         return len(docs)
+
+    # ------------------------------------------------------------------ #
+    # HTML (US SEC filings) — structure-aware extraction
+    # ------------------------------------------------------------------ #
+
+    def _html_documents(self, file_path: Path, base_meta: dict) -> list:
+        """Build section-aware Documents for one HTML filing.
+
+        Uses unstructured's ``chunk_by_title`` so chunks respect section
+        boundaries and keep tables intact (instead of a fixed-character splitter
+        slicing through them). For table chunks we render ``text_as_html`` into
+        pipe-delimited rows so the row/column structure survives into the
+        embedded text, and stash the raw HTML in metadata for downstream use.
+
+        Page numbers are meaningless for a single HTML document, so each chunk
+        carries ``element_index`` + ``element_type`` instead of a fake page.
+        """
+        from langchain_core.documents import Document
+        from unstructured.chunking.title import chunk_by_title
+        from unstructured.partition.html import partition_html
+
+        elements = partition_html(filename=str(file_path))
+        chunks = chunk_by_title(
+            elements,
+            max_characters=self.html_max_chars,
+            new_after_n_chars=self.html_new_after,
+            combine_text_under_n_chars=self.html_combine_under,
+            overlap=self.html_overlap,
+        )
+
+        docs: list = []
+        for idx, ch in enumerate(chunks):
+            is_table = type(ch).__name__ in ("Table", "TableChunk")
+            table_html = getattr(getattr(ch, "metadata", None), "text_as_html", None)
+            if is_table and table_html:
+                content = self._html_table_to_text(table_html)
+                element_type = "table"
+            else:
+                content = ch.text or ""
+                element_type = "text"
+
+            content = content.strip()
+            if not content:
+                continue
+            # Stay within the embedder's 512-token (~2048 char) window so a long
+            # rendered table is never silently truncated mid-content.
+            content = content[:1900]
+
+            meta = {**base_meta, "element_type": element_type, "element_index": idx}
+            if is_table and table_html:
+                meta["text_as_html"] = table_html[:6000]
+            docs.append(Document(page_content=content, metadata=meta))
+        return docs
+
+    @staticmethod
+    def _html_table_to_text(table_html: str) -> str:
+        """Render an HTML ``<table>`` as pipe-delimited rows, one row per line.
+
+        Keeps cell adjacency (and therefore row/column relationships) that a flat
+        ``element.text`` rendering destroys — far better for both embedding and
+        for an LLM reading the chunk.
+        """
+        import html as _html
+        import re
+
+        rows: list[str] = []
+        for tr in re.findall(r"<tr[^>]*>(.*?)</tr>", table_html, flags=re.S | re.I):
+            cells = [
+                _html.unescape(re.sub(r"<[^>]+>", "", c)).strip()
+                for c in re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", tr, flags=re.S | re.I)
+            ]
+            cells = [c for c in cells if c]
+            if cells:
+                rows.append(" | ".join(cells))
+        return "\n".join(rows)
 
     def reset_collection(self) -> None:
         """Delete the collection. Useful when re-ingesting from scratch."""
