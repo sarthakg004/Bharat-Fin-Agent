@@ -50,11 +50,12 @@ from finagent.graph.full import (
 from finagent.graph.market_tools import call_tool as call_market_tool
 from finagent.graph.state import (
     AgentState, MarketIntent, NumericVerification, XBRLQuery, CalcQuery,
-    CorpusGateQuery,
+    CorpusGateQuery, EdgarQuery,
 )
 from finagent.graph.translate import detect_language, language_name, translate_text
 from finagent.graph.web_search import WebSearcher
 from finagent.tools.calculator import FinancialCalculator
+from finagent.tools.edgar_search import EdgarFullTextSearch
 from finagent.tools.sec_fetch import SecFilingFetcher
 from finagent.tools.xbrl import XBRLClient
 
@@ -173,6 +174,21 @@ Question: {question}
 Return the one company this is about (ticker or name), or '' if none/many.
 """
 
+EDGAR_EXTRACT_SYSTEM = """\
+You turn a cross-document question ("which companies disclosed X") into an EDGAR
+full-text search. Extract the distinctive PHRASE to search for across filings —
+the specific concept, not the whole question and not generic words like
+"companies"/"disclosed". Prefer the exact phrase a filing would use. Also pick
+the SEC form (default '10-K'). E.g. "Which companies warned about a going-concern
+doubt?" -> phrase="going concern", forms="10-K".
+"""
+
+EDGAR_EXTRACT_PROMPT = """\
+Cross-document sub-query: {sub_query}
+
+Return the EDGAR full-text search (phrase, forms).
+"""
+
 REFUSAL_TEMPLATE = (
     "I don't have enough information to answer this from the available "
     "filings{web_clause}. The retrieval and numeric verification steps could "
@@ -213,6 +229,7 @@ class AgenticRAGv4(AgenticRAGv3):
         self._xbrl: Optional[XBRLClient] = None
         self._calc: Optional[FinancialCalculator] = None
         self._fetcher: Optional[SecFilingFetcher] = None
+        self._edgar: Optional[EdgarFullTextSearch] = None
 
     # ------------------------------------------------------------------ #
     # Resources
@@ -244,6 +261,13 @@ class AgenticRAGv4(AgenticRAGv3):
         if self._calc is None:
             self._calc = FinancialCalculator(xbrl=self.xbrl)
         return self._calc
+
+    @property
+    def edgar(self) -> EdgarFullTextSearch:
+        """EDGAR full-text search client (Phase 6) for cross-document questions."""
+        if self._edgar is None:
+            self._edgar = EdgarFullTextSearch()
+        return self._edgar
 
     @property
     def fetcher(self) -> SecFilingFetcher:
@@ -656,6 +680,64 @@ class AgenticRAGv4(AgenticRAGv3):
                 self._log(state, f"web_search failed for {sub_q!r}: {e}")
         return {"web_results": hits}
 
+    def edgar_search_node(self, state: AgentState) -> dict:
+        """Answer cross-document sub-queries via EDGAR full-text search (Phase 6).
+
+        For each sub-query the router flagged `cross_document` ("which companies
+        disclosed X"), extract the search phrase and run it across every
+        company's filings on EDGAR, returning the distinct companies that match —
+        something single-company chunk retrieval structurally cannot do.
+        """
+        from langchain_core.messages import HumanMessage, SystemMessage
+
+        sub_queries = state.get("sub_queries") or [state["question"]]
+        routes = state.get("query_routes") or ["narrative"] * len(sub_queries)
+        cross_subs = [s for s, r in zip(sub_queries, routes) if r == "cross_document"]
+        if not cross_subs:
+            return {"edgar_results": []}
+
+        extractor = self._get_router_llm().with_structured_output(EdgarQuery)
+        results: list[dict] = []
+        for sub_q in cross_subs:
+            try:
+                eq: EdgarQuery = extractor.invoke([
+                    SystemMessage(content=EDGAR_EXTRACT_SYSTEM),
+                    HumanMessage(content=EDGAR_EXTRACT_PROMPT.format(sub_query=sub_q)),
+                ])
+                phrase = (eq.phrase or "").strip()
+            except Exception as e:
+                self._log(state, f"edgar extract failed for {sub_q!r}: {e}")
+                continue
+            if not phrase:
+                continue
+            # Default to a recent window so "which companies disclose X" surfaces
+            # current filers, not arbitrary decade-old matches (EDGAR's default
+            # sort is by relevance, which for common phrases returns stale hits).
+            from datetime import date, timedelta
+            today = date.today()
+            startdt = (today - timedelta(days=3 * 365)).isoformat()
+            quoted = f'"{phrase}"' if " " in phrase and '"' not in phrase else phrase
+            # Try an exact-phrase match first; if the LLM over-qualified the
+            # phrase (e.g. "quantum computing as a risk" → 0 hits) fall back to an
+            # unquoted all-words search so we still surface the relevant filers.
+            res = None
+            for q in ([quoted, phrase] if quoted != phrase else [phrase]):
+                try:
+                    r = self.edgar.run(q, forms=eq.forms or "10-K", n=10,
+                                       startdt=startdt, enddt=today.isoformat())
+                except Exception as e:
+                    self._log(state, f"edgar search failed for {q!r}: {e}")
+                    continue
+                if r.get("ok") and r.get("companies"):
+                    res = r
+                    break
+            if res is None:
+                self._log(state, f"edgar no hits for {phrase!r}")
+                continue
+            res["sub_query"] = sub_q
+            results.append(res)
+        return {"edgar_results": results}
+
     def critic_node(self, state: AgentState) -> dict:
         """v3 critic with web-search hits AND market-data tool results added to
         the evidence pool. Without this, a claim grounded in a Tavily hit or
@@ -684,6 +766,17 @@ class AgenticRAGv4(AgenticRAGv3):
                 "source": f"<Calc: {r.get('metric','')} from XBRL>",
                 "company": r.get("ticker", "?"),
                 "year": str(r.get("fy", r.get("end_period", "?"))),
+                "page": "—",
+                "sub_query": r.get("sub_query", ""),
+            })
+
+        # EDGAR cross-document results → pseudo chunks (the matching companies).
+        for r in state.get("edgar_results", []) or []:
+            pseudo_chunks.append({
+                "text": self._format_edgar_result(r),
+                "source": f"<EDGAR FTS: {r.get('query','')}>",
+                "company": "EDGAR",
+                "year": "—",
                 "page": "—",
                 "sub_query": r.get("sub_query", ""),
             })
@@ -742,6 +835,7 @@ class AgenticRAGv4(AgenticRAGv3):
         market_data = state.get("market_data", []) or []
         xbrl_facts = state.get("xbrl_facts", []) or []
         calc_res = state.get("calc_results", []) or []
+        edgar_res = state.get("edgar_results", []) or []
 
         evidence_items: list[str] = []
         idx = 1
@@ -846,6 +940,14 @@ class AgenticRAGv4(AgenticRAGv3):
                 f"({first.get('company','?')} {first.get('year','?')}, "
                 f"p. {first.get('page','?')})\n"
                 f"Computed: {t.get('answer','')[:600]}"
+            )
+            idx += 1
+
+        # 4. EDGAR full-text cross-document results — the set of companies whose
+        # filings match, which single-company retrieval can't produce.
+        for r in edgar_res:
+            evidence_items.append(
+                f"[{idx}] EDGAR CROSS-DOCUMENT SEARCH — {self._format_edgar_result(r)}"
             )
             idx += 1
 
@@ -1018,6 +1120,7 @@ single item is irrelevant."""
         g.add_node("table_agent", self.table_agent_node)
         g.add_node("market_data", self.market_data_node)
         g.add_node("web_search", self.web_search_node)
+        g.add_node("edgar_search", self.edgar_search_node)
         g.add_node("synthesize", self.synthesize_node)
         g.add_node("critic", self.critic_node)
         g.add_node("verify_numbers", self.verify_numbers_node)
@@ -1048,7 +1151,9 @@ single item is irrelevant."""
         g.add_edge("calculator", "table_agent")
         g.add_edge("table_agent", "market_data")
         g.add_edge("market_data", "web_search")
-        g.add_edge("web_search", "synthesize")
+        # Phase 6: cross-document sub-queries fan out to EDGAR full-text search.
+        g.add_edge("web_search", "edgar_search")
+        g.add_edge("edgar_search", "synthesize")
         g.add_edge("synthesize", "critic")
         g.add_edge("critic", "verify_numbers")
         g.add_conditional_edges(
@@ -1093,6 +1198,22 @@ single item is irrelevant."""
         # scalar (ratio / margin / growth / cagr)
         head = f"{ticker} {metric} = {r.get('value_str', '')}"
         return f"{head}\n{r.get('source', '')}"
+
+    @staticmethod
+    def _format_edgar_result(r: dict) -> str:
+        """A readable cross-document result: the matching companies + filing links."""
+        lines = [
+            f"  - {c.get('company', '?')}"
+            f"{(' (' + c['ticker'] + ')') if c.get('ticker') else ''} — "
+            f"{c.get('form', '')} {c.get('date', '')}  {c.get('url', '')}"
+            for c in r.get("companies", [])
+        ]
+        total = r.get("total")
+        head = (f"EDGAR full-text search {r.get('query','')} "
+                f"({total:,} matching filings; showing {len(lines)} companies):"
+                if isinstance(total, int) else
+                f"EDGAR full-text search {r.get('query','')}:")
+        return head + "\n" + "\n".join(lines)
 
     @staticmethod
     def _build_evidence_block(state: AgentState) -> str:

@@ -142,7 +142,7 @@ def run_agentic(market: str, question: str, top_k: int = 5,
         "question": question,
         "iteration_count": 0, "errors": [],
         "table_results": [], "web_results": [], "xbrl_facts": [], "calc_results": [],
-        "fetch_status": {},
+        "fetch_status": {}, "edgar_results": [],
     }
     if chat_history:
         initial_state["chat_history"] = chat_history
@@ -236,6 +236,30 @@ def run_agentic(market: str, question: str, top_k: int = 5,
             "kind": "text",
         })
         next_id += 1
+
+    # 1c. EDGAR cross-document search — one chunk per matching company so the
+    # user can click straight through to each filing.
+    for r in state.get("edgar_results", []) or []:
+        if not r.get("ok"):
+            continue
+        for comp in r.get("companies", []):
+            chunks.append({
+                "id": next_id,
+                "text": (f"{comp.get('company','?')}"
+                         f"{(' (' + comp['ticker'] + ')') if comp.get('ticker') else ''} — "
+                         f"{comp.get('form','')} filed {comp.get('date','')} matches "
+                         f"{r.get('query','')}."),
+                "company": comp.get("company", "?"),
+                "ticker": comp.get("ticker", ""),
+                "year": str(comp.get("date", ""))[:4] or "?",
+                "page": "—",
+                "market": market,
+                "source_url": comp.get("url", ""),
+                "citation": f"<EDGAR: {comp.get('company','?')} {comp.get('form','')} {comp.get('date','')}>",
+                "sub_query": r.get("sub_query", ""),
+                "kind": "edgar",
+            })
+            next_id += 1
 
     # 2. Web search hits — appear in the same Citations panel alongside text.
     for h in state.get("web_results", []) or []:
@@ -334,6 +358,8 @@ def run_agentic(market: str, question: str, top_k: int = 5,
             "numeric_verification_score": nv.get("score"),
             "unverified_count": len(nv.get("unverified", [])) if isinstance(nv, dict) else 0,
             "web_hits": len(state.get("web_results", []) or []),
+            "edgar_companies": sum(len(r.get("companies", []))
+                                   for r in (state.get("edgar_results", []) or [])),
             "xbrl_facts": len(state.get("xbrl_facts", []) or []),
             "calc_results": len(state.get("calc_results", []) or []),
             "fetch_status": state.get("fetch_status") or {},

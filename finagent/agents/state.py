@@ -68,6 +68,9 @@ class AgentState(TypedDict, total=False):
     # --- Dynamic SEC fetch (Phase 5) -------------------------------------- #
     fetch_status: dict                 # {"decision","ticker","chunks_added",...} or {}
 
+    # --- EDGAR full-text search (Phase 6) --------------------------------- #
+    edgar_results: list[dict]          # one cross-document search result per sub-query
+
     # --- Conversation memory ---------------------------------------------- #
     chat_history: list[dict]           # last K turns: [{role: "user"|"assistant", content}]
 
@@ -149,7 +152,7 @@ class QueryRoute(BaseModel):
     """Per-sub-query routing verdict."""
 
     sub_query: str = Field(description="The sub-query being classified, copied verbatim.")
-    route: Literal["narrative", "numeric", "market", "external"] = Field(
+    route: Literal["narrative", "numeric", "market", "external", "cross_document"] = Field(
         description=(
             "narrative = text retrieval over filings (default for prose-y questions); "
             "numeric   = table agent over extracted filing tables (ratios from 10-Ks, "
@@ -157,6 +160,9 @@ class QueryRoute(BaseModel):
             "market    = live market data via yfinance (current price, intraday move, "
             "premarket, historical OHLC, charts, news headlines — anything about a "
             "listed company's market behaviour, not about its filings); "
+            "cross_document = EDGAR full-text search across MANY companies' filings — "
+            "'which companies disclosed/mentioned X', 'list firms that report Y'; the "
+            "answer is a SET of companies, not facts about one named company; "
             "external  = web search (general news, events, post-cutoff)."
         )
     )
@@ -273,6 +279,27 @@ class CalcQuery(BaseModel):
         default_factory=list,
         description="Fiscal periods involved, e.g. ['FY2020','FY2021','FY2022']. "
                     "Two periods for growth/cagr (earliest first); 2-5 for a trend.",
+    )
+
+
+class EdgarQuery(BaseModel):
+    """Extraction of an EDGAR full-text search from a cross-document sub-query (Phase 6).
+
+    Turns "Which companies disclosed a material weakness in internal controls?"
+    into (phrase='material weakness in internal controls', forms='10-K'). The
+    phrase is what gets full-text-searched across every company's filings.
+    """
+
+    phrase: str = Field(
+        default="",
+        description="The exact concept to full-text search across filings — the "
+                    "distinctive words/phrase, NOT the whole question. e.g. "
+                    "'material weakness in internal controls', 'going concern'.",
+    )
+    forms: str = Field(
+        default="10-K",
+        description="SEC form to restrict to (e.g. '10-K', '10-Q', '8-K'). "
+                    "Default '10-K' for annual-report disclosures.",
     )
 
 

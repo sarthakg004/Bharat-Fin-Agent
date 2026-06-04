@@ -223,6 +223,7 @@ _STEP_LABELS = {
     "xbrl":         "Looking up exact figures…",
     "calculator":   "Computing the metrics…",
     "table_agent":  "Crunching the numbers…",
+    "edgar_search": "Searching EDGAR across companies…",
     "synthesize":   "Writing the answer…",
     "critic":       "Fact-checking the draft…",
 }

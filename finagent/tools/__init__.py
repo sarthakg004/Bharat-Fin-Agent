@@ -14,8 +14,8 @@ Structured-data tools:
 Corpus-expansion tools:
     SecFilingFetcher (Phase 5)  — fetch + ingest a missing US 10-K on demand.
 
-Roadmap tools (stubs — `BaseTool` subclasses, implemented in later phases):
-    EdgarFullTextSearch (Phase 6).
+Cross-document tools:
+    EdgarFullTextSearch (Phase 6) — full-text search across many companies' filings.
 
 Infrastructure:
     BaseTool, ToolRegistry — interface + name→tool registry.

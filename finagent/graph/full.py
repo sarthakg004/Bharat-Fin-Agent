@@ -60,10 +60,10 @@ from finagent.graph.table_agent import TableAgent
 # --------------------------------------------------------------------------- #
 
 ROUTER_SYSTEM = """\
-You route financial-QA sub-queries to one of FOUR retrievers:
+You route financial-QA sub-queries to one of FIVE retrievers:
 
 - narrative: text retrieval over filings. Prose-style questions (strategy,
-  risks, segment overviews, MD&A commentary).
+  risks, segment overviews, MD&A commentary) about ONE named company.
 - numeric:   table-based answer FROM THE FILINGS. Specific figures, ratios,
   margins, growth %, multi-year financial comparisons that the company has
   reported in a 10-K or annual report.
@@ -74,6 +74,10 @@ You route financial-QA sub-queries to one of FOUR retrievers:
   "how has X performed", "is X a good stock", "X stock", "X share price",
   recent returns/trend. When in doubt between market and narrative for a
   stock-flavoured question, pick `market` (a price chart is shown).
+- cross_document: EDGAR full-text search across MANY companies' filings. Use
+  when the answer is a SET OF COMPANIES rather than facts about one named
+  company: "which companies disclosed/mentioned X", "list firms that report Y",
+  "how many 10-Ks discuss Z". The defining signal is no single subject company.
 - external:  general web search. Macro news, corporate events, post-cutoff
   developments that aren't specifically about market data.
 
@@ -82,6 +86,9 @@ specific fiscal years (FY23, FY2024), currency amounts (₹, $), "crore", "billi
 
 Market markers: "current price", "premarket", "intraday", "today's move",
 "stock chart", "52-week", "OHLC", "candlestick", "compare X and Y stock".
+
+Cross-document markers: "which companies", "what companies", "list companies/firms",
+"how many filings/companies", "across filings" — when no single company is the subject.
 
 Examples:
   - "What is HDFC Bank's net interest margin in FY23?"           → numeric
@@ -92,9 +99,8 @@ Examples:
   - "What is Wipro's current share price?"                       → market
   - "Show me Apple's 1-year stock chart"                         → market
   - "How is Tesla doing as a stock?"                             → market
-  - "Has Apple stock done well recently?"                        → market
-  - "ServiceNow premarket figures today?"                        → market
-  - "Compare AAPL and MSFT YoY return"                           → market
+  - "Which companies disclosed a material weakness in FY2023?"   → cross_document
+  - "List firms that mention quantum computing in their 10-K"    → cross_document
   - "Latest macro headlines from India today"                    → external
 """
 
@@ -204,8 +210,20 @@ _EXTERNAL_MARKERS = (
 )
 
 
+# Cross-document: the answer is a SET of companies, not facts about one.
+_CROSSDOC_MARKERS = (
+    "which companies", "what companies", "which firms", "what firms",
+    "list companies", "list of companies", "list firms", "companies that",
+    "firms that", "how many companies", "how many filings", "across filings",
+    "companies disclos", "companies mention", "companies report",
+)
+
+
 def _heuristic_route(query: str) -> str:
     q = (query or "").lower()
+    # Cross-document is unambiguous when its markers appear ("which companies…").
+    if any(m in q for m in _CROSSDOC_MARKERS):
+        return "cross_document"
     # Market beats external when both keywords appear — "today's stock chart"
     # is market, not news.
     if any(m in q for m in _MARKET_MARKERS):
