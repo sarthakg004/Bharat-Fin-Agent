@@ -20,7 +20,9 @@ import os
 from threading import Lock
 from typing import Callable, Optional
 
-from finagent.graph.agent import AgenticRAGv4
+# Canonical agent namespace (the class chain itself lives in finagent.graph.*,
+# re-exported through finagent.agents during the layout restructure).
+from finagent.agents import AgenticRAGv4
 
 _COLLECTIONS = {
     "us": "us_filings",
