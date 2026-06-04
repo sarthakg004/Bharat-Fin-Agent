@@ -150,6 +150,19 @@ Multiple sources: `[1,3]`. Use `[N]` — NOT `【N】`, `(N)`, or any other styl
 NEVER write out the source title, URL, or tag in prose — the user sees those in
 a sidebar already.
 
+Source priority and reconciliation
+----------------------------------
+When sources disagree on a figure, do NOT list both values. Use the most
+authoritative one and state the figure ONCE, following this priority:
+  XBRL FACT / DERIVED METRIC  >  filing excerpt / table  >  newer web/press  >  older web.
+- If a number exists in an XBRL FACT or DERIVED METRIC item, use THAT exact value
+  and ignore any conflicting web snippet entirely — the filing is ground truth.
+- Among web/press sources, prefer the most recent by publication date.
+- State each figure once. Only flag a discrepancy explicitly (one short italic
+  note) when sources of *comparable* authority genuinely conflict and it matters;
+  never silently present "44%… then 42%" for the same metric and period.
+- Do not repeat the same point in multiple bullets/sentences.
+
 Structure (markdown)
 --------------------
 - One-line bottom line first, then supporting detail.
@@ -293,6 +306,8 @@ class AgenticRAGv4(AgenticRAGv3):
         min_verify_score: float = 0.5,
         dispatch: bool = True,
         analyst_voice: bool = True,
+        dedupe: bool = True,
+        dedupe_threshold: float = 0.93,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -305,6 +320,10 @@ class AgenticRAGv4(AgenticRAGv3):
         # Phase 9 financial-analyst voice for the synthesizer + critic. Set False
         # to A/B against the prior generic prompts.
         self.analyst_voice = analyst_voice
+        # Phase 10 near-duplicate filter: drop passages that are ~the same point
+        # before synthesis so the answer doesn't repeat itself. Set False to A/B.
+        self.dedupe = dedupe
+        self.dedupe_threshold = dedupe_threshold
         # Translation is sensitive to model quality (especially Indian languages
         # with their digit grouping and proper-noun handling). Default to the
         # strong tier; override via translator_model for cheap-tier runs.
@@ -953,6 +972,19 @@ class AgenticRAGv4(AgenticRAGv3):
         calc_res = state.get("calc_results", []) or []
         edgar_res = state.get("edgar_results", []) or []
 
+        # Phase 10 — kill redundancy before synthesis. Cluster near-identical
+        # passages and keep one representative each, separately within filing
+        # excerpts and within web hits (so a filing and a web page making the
+        # same point both survive — source prioritisation, below, reconciles
+        # them). Then order web hits newest-first so "newer wins" is the default.
+        chunks = self._dedupe_evidence(chunks, "text")
+        web_res = self._dedupe_evidence(web_res, "content")
+        web_res = sorted(
+            web_res,
+            key=lambda h: (h.get("published_date") or h.get("date") or ""),
+            reverse=True,
+        )
+
         evidence_items: list[str] = []
         idx = 1
 
@@ -1345,6 +1377,37 @@ single item is irrelevant."""
         # scalar (ratio / margin / growth / cagr)
         head = f"{ticker} {metric} = {r.get('value_str', '')}"
         return f"{head}\n{r.get('source', '')}"
+
+    def _dedupe_evidence(self, items: list[dict], text_key: str) -> list[dict]:
+        """Phase 10 near-duplicate filter: keep one representative per cluster of
+        passages that say ~the same thing.
+
+        Embeds each item's text with the shared (lru_cached) BGE model and
+        greedily keeps an item only if its cosine similarity to every
+        already-kept item is below `dedupe_threshold`. Order is preserved, so the
+        highest-ranked passage in each cluster wins. This kills "five
+        near-identical web snippets" before they reach the synthesizer.
+        """
+        if not self.dedupe or len(items) < 2:
+            return items
+        texts = [(it.get(text_key) or "").strip() for it in items]
+        try:
+            import numpy as np
+            from finagent.vectorstore import get_embeddings
+            vecs = np.asarray(get_embeddings(self.embedding_model).embed_documents(texts))
+            # BGE embeddings are L2-normalized, so dot product is cosine sim.
+            norms = np.linalg.norm(vecs, axis=1, keepdims=True)
+            vecs = vecs / np.clip(norms, 1e-9, None)
+        except Exception:
+            return items   # never let dedup break synthesis
+
+        kept_idx: list[int] = []
+        for i in range(len(items)):
+            if not texts[i]:
+                continue
+            if all(float(vecs[i] @ vecs[j]) < self.dedupe_threshold for j in kept_idx):
+                kept_idx.append(i)
+        return [items[i] for i in kept_idx]
 
     @staticmethod
     def _format_edgar_result(r: dict) -> str:

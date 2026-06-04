@@ -37,6 +37,7 @@ class HybridRetriever(BaseRetriever):
         dense_top_k: int = 10,
         final_top_k: int = 5,
         fetch_batch_size: int = 1000,
+        use_mmr: bool = True,
     ):
         self.store = chroma_store
         self.reranker_model = reranker_model
@@ -44,6 +45,10 @@ class HybridRetriever(BaseRetriever):
         self.dense_top_k = dense_top_k
         self.final_top_k = final_top_k
         self.fetch_batch_size = fetch_batch_size
+        # Phase 10: select dense candidates with Maximal Marginal Relevance so
+        # the pool is diverse, not five near-identical passages. Falls back to
+        # plain similarity if the store doesn't support MMR.
+        self.use_mmr = use_mmr
 
         self._bm25 = None
         self._bm25_empty = False          # True once we've seen an empty collection
@@ -131,8 +136,7 @@ class HybridRetriever(BaseRetriever):
         bm25_hits = [docs[i] for i in top_idx]
 
         dense_hits = [
-            (d.page_content, d.metadata)
-            for d in self.store.similarity_search(query, k=self.dense_top_k)
+            (d.page_content, d.metadata) for d in self._dense_docs(query)
         ]
 
         # Dedupe by (local_path, page, prefix) — same key the rest of the
@@ -145,6 +149,23 @@ class HybridRetriever(BaseRetriever):
             seen.add(key)
             union.append((text, meta))
         return union
+
+    def _dense_docs(self, query: str):
+        """Dense candidates — MMR (diverse) when enabled, else plain similarity.
+
+        MMR over-fetches `fetch_k` and greedily picks `dense_top_k` that balance
+        relevance with novelty, so the pool isn't five paraphrases of one
+        passage. Any error (older Chroma, embedding quirk) falls back cleanly.
+        """
+        if self.use_mmr:
+            try:
+                return self.store.max_marginal_relevance_search(
+                    query, k=self.dense_top_k,
+                    fetch_k=max(20, self.dense_top_k * 4), lambda_mult=0.5,
+                )
+            except Exception:
+                pass
+        return self.store.similarity_search(query, k=self.dense_top_k)
 
     def _rerank(self, query: str, candidates: list[tuple[str, dict]]):
         reranker = self._ensure_reranker()
