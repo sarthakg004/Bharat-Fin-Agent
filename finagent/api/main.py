@@ -214,14 +214,17 @@ def _build_history_for_agent(chat_id: int) -> list[dict]:
 # agent "thinks". Repeated nodes (retrieve/grade across rewrite loops) reuse the
 # same label; the UI de-dupes consecutive repeats.
 _STEP_LABELS = {
-    "planner":     "Planning the approach…",
-    "router":      "Routing the sub-questions…",
-    "retrieve":    "Searching the filings…",
-    "grader":      "Weighing the evidence…",
-    "rewrite":     "Refining the search…",
-    "table_agent": "Crunching the numbers…",
-    "synthesize":  "Writing the answer…",
-    "critic":      "Fact-checking the draft…",
+    "planner":      "Planning the approach…",
+    "router":       "Routing the sub-questions…",
+    "fetch_filing": "Fetching latest 10-K…",
+    "retrieve":     "Searching the filings…",
+    "grader":       "Weighing the evidence…",
+    "rewrite":      "Refining the search…",
+    "xbrl":         "Looking up exact figures…",
+    "calculator":   "Computing the metrics…",
+    "table_agent":  "Crunching the numbers…",
+    "synthesize":   "Writing the answer…",
+    "critic":       "Fact-checking the draft…",
 }
 
 

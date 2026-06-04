@@ -50,10 +50,12 @@ from finagent.graph.full import (
 from finagent.graph.market_tools import call_tool as call_market_tool
 from finagent.graph.state import (
     AgentState, MarketIntent, NumericVerification, XBRLQuery, CalcQuery,
+    CorpusGateQuery,
 )
 from finagent.graph.translate import detect_language, language_name, translate_text
 from finagent.graph.web_search import WebSearcher
 from finagent.tools.calculator import FinancialCalculator
+from finagent.tools.sec_fetch import SecFilingFetcher
 from finagent.tools.xbrl import XBRLClient
 
 
@@ -157,6 +159,20 @@ Numeric sub-query: {sub_query}
 Return the derived-metric computation (is_derived, ticker, metric, concept, periods).
 """
 
+GATE_EXTRACT_SYSTEM = """\
+You identify the single US public company a question is primarily about, so the
+system can fetch its SEC filing if it isn't indexed yet. Return the company as a
+ticker or name (e.g. 'CRM' or 'Salesforce'). Return an empty string if the
+question names no specific company, spans many companies, or is a macro/market
+question. Resolve follow-ups from the conversation context.
+"""
+
+GATE_EXTRACT_PROMPT = """\
+Question: {question}
+
+Return the one company this is about (ticker or name), or '' if none/many.
+"""
+
 REFUSAL_TEMPLATE = (
     "I don't have enough information to answer this from the available "
     "filings{web_clause}. The retrieval and numeric verification steps could "
@@ -196,6 +212,7 @@ class AgenticRAGv4(AgenticRAGv3):
         self._web: Optional[WebSearcher] = None
         self._xbrl: Optional[XBRLClient] = None
         self._calc: Optional[FinancialCalculator] = None
+        self._fetcher: Optional[SecFilingFetcher] = None
 
     # ------------------------------------------------------------------ #
     # Resources
@@ -227,6 +244,20 @@ class AgenticRAGv4(AgenticRAGv3):
         if self._calc is None:
             self._calc = FinancialCalculator(xbrl=self.xbrl)
         return self._calc
+
+    @property
+    def fetcher(self) -> SecFilingFetcher:
+        """Dynamic SEC filing fetcher (Phase 5). Targets the *first* configured
+        filings collection — the live US corpus we expand at runtime."""
+        if self._fetcher is None:
+            self._fetcher = SecFilingFetcher(
+                resolver=self.xbrl.resolver,        # reuse the cached resolver
+                collection_name=self.collections[0],
+                chroma_dir=self.chroma_dir,
+                embedding_model=self.embedding_model,
+                market=self.market,
+            )
+        return self._fetcher
 
     def _xbrl_pick_tag(self, concept: str, available_tags: list[str]):
         """LLM fallback for the XBRL client: pick the best US-GAAP tag for a
@@ -296,6 +327,74 @@ class AgenticRAGv4(AgenticRAGv3):
                 self.provider, self.planner_model, self.api_key, temperature=0.0,
             )
         return self._llms["market_planner"]
+
+    def fetch_filing_node(self, state: AgentState) -> dict:
+        """Corpus-membership gate + on-demand SEC fetch (Phase 5).
+
+        Runs between routing and retrieval. It identifies the company the
+        question is about and consults the gate:
+          * already indexed   → nothing to do;
+          * US-listed, missing → fetch the latest 10-K, ingest it into the live
+            collection, and invalidate the cached hybrid retrievers so the new
+            chunks are searchable on this very turn;
+          * not US-listed      → leave it for the web-search branch.
+
+        The result lands in `state["fetch_status"]` so the API/UX can show the
+        "Fetching latest 10-K…" state and report what was added.
+        """
+        from langchain_core.messages import HumanMessage, SystemMessage
+
+        question = state.get("query_original") or state["question"]
+
+        # Resolve the company (with conversation context for follow-ups).
+        history = state.get("chat_history") or []
+        history_block = ""
+        if history:
+            lines = [
+                f"{('User' if t.get('role') == 'user' else 'Assistant')}: "
+                f"{(t.get('content') or '')[:300]}"
+                for t in history[-4:]
+            ]
+            history_block = "Recent conversation:\n" + "\n".join(lines) + "\n\n"
+
+        try:
+            extractor = self._get_router_llm().with_structured_output(CorpusGateQuery)
+            gq: CorpusGateQuery = extractor.invoke([
+                SystemMessage(content=GATE_EXTRACT_SYSTEM),
+                HumanMessage(content=history_block + GATE_EXTRACT_PROMPT.format(question=question)),
+            ])
+            company = (gq.company or "").strip()
+        except Exception as e:
+            self._log(state, f"corpus-gate extract failed: {e}")
+            return {"fetch_status": {}}
+
+        if not company:
+            return {"fetch_status": {}}
+
+        try:
+            gate = self.fetcher.gate(company)
+        except Exception as e:
+            self._log(state, f"corpus gate failed for {company!r}: {e}")
+            return {"fetch_status": {}}
+
+        if gate["decision"] != "fetch":
+            # already_indexed → retrieval handles it; not_us_listed → web branch.
+            return {"fetch_status": gate}
+
+        # US-listed but not indexed → fetch + ingest, then make it searchable now.
+        self._log(state, f"dynamic fetch: pulling latest 10-K for {gate['ticker']}…")
+        try:
+            res = self.fetcher.fetch_and_ingest(
+                gate["ticker"], company=gate.get("company") or "")
+        except Exception as e:
+            self._log(state, f"dynamic fetch failed for {gate['ticker']}: {e}")
+            return {"fetch_status": {**gate, "status": "error", "error": str(e)}}
+
+        if res.get("ok"):
+            self._hybrids = None       # invalidate cached BM25/dense over old corpus
+            self._log(state, f"ingested {res['chunks_added']} chunks for {gate['ticker']}")
+        return {"fetch_status": {**gate, "status": "fetched" if res.get("ok") else "error",
+                                 **res}}
 
     def xbrl_node(self, state: AgentState) -> dict:
         """Answer numeric sub-queries from SEC XBRL structured facts (Phase 3).
@@ -910,6 +1009,7 @@ single item is irrelevant."""
         g = StateGraph(AgentState)
         g.add_node("planner", self.planner_node)
         g.add_node("router", self.router_node)
+        g.add_node("fetch_filing", self.fetch_filing_node)
         g.add_node("retrieve", self.hybrid_retrieve_node)
         g.add_node("grader", self.grader_node)
         g.add_node("rewrite", self.rewrite_node)
@@ -926,7 +1026,10 @@ single item is irrelevant."""
         # English-only: no language detection / translation nodes.
         g.add_edge(START, "planner")
         g.add_edge("planner", "router")
-        g.add_edge("router", "retrieve")
+        # Phase 5: corpus-membership gate before retrieval — fetch + ingest a
+        # missing US company's 10-K so retrieval can find it on this turn.
+        g.add_edge("router", "fetch_filing")
+        g.add_edge("fetch_filing", "retrieve")
         g.add_edge("retrieve", "grader")
         # Phase 3-4: numeric sub-queries hit XBRL first (exact structured facts),
         # then the calculator (derived metrics over those facts), then the table

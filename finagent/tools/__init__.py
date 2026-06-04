@@ -11,8 +11,11 @@ Structured-data tools:
     XBRLClient (Phase 3)        — exact reported figures from SEC XBRL company-facts.
     FinancialCalculator (Phase 4) — margins/ratios/growth/CAGR/trends over XBRL inputs.
 
+Corpus-expansion tools:
+    SecFilingFetcher (Phase 5)  — fetch + ingest a missing US 10-K on demand.
+
 Roadmap tools (stubs — `BaseTool` subclasses, implemented in later phases):
-    SecFilingFetcher (Phase 5), EdgarFullTextSearch (Phase 6).
+    EdgarFullTextSearch (Phase 6).
 
 Infrastructure:
     BaseTool, ToolRegistry — interface + name→tool registry.

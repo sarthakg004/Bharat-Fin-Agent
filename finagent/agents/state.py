@@ -65,6 +65,9 @@ class AgentState(TypedDict, total=False):
     # --- Derived metrics computed over XBRL (Phase 4) --------------------- #
     calc_results: list[dict]           # margins/ratios/growth/CAGR/trends from XBRL inputs
 
+    # --- Dynamic SEC fetch (Phase 5) -------------------------------------- #
+    fetch_status: dict                 # {"decision","ticker","chunks_added",...} or {}
+
     # --- Conversation memory ---------------------------------------------- #
     chat_history: list[dict]           # last K turns: [{role: "user"|"assistant", content}]
 
@@ -270,6 +273,21 @@ class CalcQuery(BaseModel):
         default_factory=list,
         description="Fiscal periods involved, e.g. ['FY2020','FY2021','FY2022']. "
                     "Two periods for growth/cagr (earliest first); 2-5 for a trend.",
+    )
+
+
+class CorpusGateQuery(BaseModel):
+    """The primary company a question is about, for the dynamic-fetch gate (Phase 5).
+
+    Extracts the single company/ticker the question concerns so the gate can
+    decide whether to fetch its 10-K. Empty when the question names no specific
+    company or spans many (e.g. a macro/market-wide question).
+    """
+
+    company: str = Field(
+        default="",
+        description="The one company the question is primarily about — a ticker "
+                    "('CRM') or name ('Salesforce'). Empty if none or many.",
     )
 
 

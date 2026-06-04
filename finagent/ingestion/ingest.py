@@ -498,13 +498,12 @@ class CorpusIngester:
                 from langchain_openai import OpenAIEmbeddings
                 self._embeddings = OpenAIEmbeddings(model=self.embedding_model)
             else:
-                # HuggingFace sentence-transformers, runs locally.
-                from langchain_huggingface import HuggingFaceEmbeddings
-                self._embeddings = HuggingFaceEmbeddings(
-                    model_name=self.embedding_model,
-                    # Normalize for cosine similarity.
-                    encode_kwargs={"normalize_embeddings": True},
-                )
+                # Reuse the process-wide, lru_cached HuggingFace embedder so a
+                # dynamic fetch (Phase 5) ingesting inside the running agent does
+                # NOT load a second ~130MB copy of the BGE model. Same config
+                # (normalized, device-aware) as the retrieval path.
+                from finagent.vectorstore import get_embeddings
+                self._embeddings = get_embeddings(self.embedding_model)
         return self._embeddings
 
     def _get_vector_store(self):

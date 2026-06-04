@@ -142,6 +142,7 @@ def run_agentic(market: str, question: str, top_k: int = 5,
         "question": question,
         "iteration_count": 0, "errors": [],
         "table_results": [], "web_results": [], "xbrl_facts": [], "calc_results": [],
+        "fetch_status": {},
     }
     if chat_history:
         initial_state["chat_history"] = chat_history
@@ -335,6 +336,7 @@ def run_agentic(market: str, question: str, top_k: int = 5,
             "web_hits": len(state.get("web_results", []) or []),
             "xbrl_facts": len(state.get("xbrl_facts", []) or []),
             "calc_results": len(state.get("calc_results", []) or []),
+            "fetch_status": state.get("fetch_status") or {},
             "table_computations": len(state.get("table_results", []) or []),
             "market_calls": len(state.get("market_data", []) or []),
             "citations": state.get("citations", []),
