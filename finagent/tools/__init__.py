@@ -4,9 +4,12 @@ Live tools (migrated here, re-exported from old `finagent.graph` paths):
     market.*      — yfinance market data (get_quote, get_history, …, call_tool).
     web_search.*  — Tavily web search with local-news fallback (WebSearcher).
 
+Shared infrastructure:
+    TickerCIKResolver (Phase 2) — ticker/name → SEC CIK; backs XBRL, fetch, FTS.
+
 Roadmap tools (stubs — `BaseTool` subclasses, implemented in later phases):
-    TickerCIKResolver (Phase 2), XBRLClient (Phase 3), FinancialCalculator
-    (Phase 4), SecFilingFetcher (Phase 5), EdgarFullTextSearch (Phase 6).
+    XBRLClient (Phase 3), FinancialCalculator (Phase 4), SecFilingFetcher
+    (Phase 5), EdgarFullTextSearch (Phase 6).
 
 Infrastructure:
     BaseTool, ToolRegistry — interface + name→tool registry.
