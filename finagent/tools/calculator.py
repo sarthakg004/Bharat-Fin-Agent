@@ -40,6 +40,10 @@ RATIOS: dict[str, tuple[str, str, bool]] = {
     "return_on_assets": ("net_income", "total_assets", True),
     "asset_turnover": ("revenue", "total_assets", False),
     "interest_coverage": ("operating_income", "interest_expense", False),
+    # "% of revenue" intensity ratios analysts compare across companies/years.
+    "rd_to_revenue": ("rd_expense", "revenue", True),
+    "sga_to_revenue": ("sga_expense", "revenue", True),
+    "capex_to_revenue": ("capex", "revenue", True),
 }
 
 # Friendly synonyms → canonical metric name.
@@ -56,6 +60,14 @@ ALIASES: dict[str, str] = {
     "liquidity_ratio": "current_ratio", "current ratio": "current_ratio",
     "asset turnover": "asset_turnover", "times_interest_earned": "interest_coverage",
     "interest coverage": "interest_coverage",
+    "r&d as % of revenue": "rd_to_revenue", "r&d as a percentage of revenue": "rd_to_revenue",
+    "r&d intensity": "rd_to_revenue", "rd as % of revenue": "rd_to_revenue",
+    "research and development as % of revenue": "rd_to_revenue",
+    "research and development as a percentage of revenue": "rd_to_revenue",
+    "r&d to revenue": "rd_to_revenue", "rd revenue ratio": "rd_to_revenue",
+    "sg&a as % of revenue": "sga_to_revenue", "sga as % of revenue": "sga_to_revenue",
+    "capex as % of revenue": "capex_to_revenue",
+    "capital expenditure as % of revenue": "capex_to_revenue",
 }
 
 

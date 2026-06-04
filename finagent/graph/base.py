@@ -70,12 +70,16 @@ load_dotenv()
 
 PLANNER_PROMPT = """\
 You are a query planner for a financial-filings question-answering system.
-Decompose the user's question into 1-3 focused, self-contained sub-queries.
+Decompose the user's question into 1-8 focused, self-contained sub-queries.
 
 Rules:
 - Simple, single-fact questions → return ONE sub-query (often the original).
 - Comparison or multi-hop questions (e.g. "compare X and Y", "growth from A to B")
-  → split into one sub-query per entity or fact so each can be retrieved separately.
+  → FULLY ENUMERATE one sub-query per (entity × period × metric) combination so
+  nothing is dropped. "Compare Apple and Microsoft R&D as % of revenue over
+  2020-2022" → SIX sub-queries: Apple 2020, Apple 2021, Apple 2022, Microsoft
+  2020, Microsoft 2021, Microsoft 2022 — each naming the company, the metric
+  (R&D as % of revenue), and the exact fiscal year.
 - Each sub-query must stand on its own (no pronouns referring to the question).
 - FOLLOW-UPS: if the question relies on the conversation above (e.g. "show me the
   chart", "what about last year", "how is it doing"), rewrite it into a
@@ -349,7 +353,7 @@ class AgenticRAG:
             out: SubQueries = llm.invoke(
                 history_block + PLANNER_PROMPT.format(question=question)
             )
-            queries = [q.strip() for q in out.queries if q.strip()][:3]
+            queries = [q.strip() for q in out.queries if q.strip()][:8]
         except Exception as e:
             queries = []
             self._log(state, f"planner failed ({e}); falling back to original question")

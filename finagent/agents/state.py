@@ -84,9 +84,12 @@ class SubQueries(BaseModel):
 
     queries: list[str] = Field(
         description=(
-            "1 to 3 self-contained sub-queries. Use a single query for simple "
-            "questions; split multi-hop or comparison questions (e.g. comparing "
-            "two companies) into one query per entity/fact."
+            "1 to 8 self-contained sub-queries. Use a SINGLE query for simple "
+            "questions. For comparison / multi-hop questions, FULLY enumerate one "
+            "query per (entity × period × metric) combination so nothing is "
+            "dropped — e.g. 'compare Apple and Microsoft R&D % of revenue over "
+            "2020-2022' becomes SIX queries (each company × each of the 3 years). "
+            "Each sub-query must name its company, metric, and period explicitly."
         )
     )
 

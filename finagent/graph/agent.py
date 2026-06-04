@@ -146,10 +146,11 @@ CALC_EXTRACT_SYSTEM = """\
 You extract a derived-metric computation from a numeric sub-query about a US
 public company. A DERIVED metric is one computed from reported figures: a margin
 (gross/operating/net), a ratio (current ratio, debt-to-equity, ROE, ROA, asset
-turnover, interest coverage), period-over-period GROWTH, a CAGR, or a multi-year
-TREND of any of those. Set is_derived=true and fill ticker, the canonical metric
-name, periods (fiscal years, earliest first), and — for growth/cagr only — the
-underlying concept. Set is_derived=false for a single reported figure (revenue,
+turnover, interest coverage), an intensity ratio (rd_to_revenue = R&D as % of
+revenue, sga_to_revenue, capex_to_revenue), period-over-period GROWTH, a CAGR,
+or a multi-year TREND of any of those. Set is_derived=true and fill ticker, the
+canonical metric name, periods (fiscal years, earliest first), and — for
+growth/cagr only — the underlying concept. Set is_derived=false for a single reported figure (revenue,
 net income, total assets, …); those are handled by the XBRL facts tool, not here.
 Use the conversation context to resolve a follow-up's company/periods.
 """
