@@ -49,6 +49,7 @@ CLI
 from __future__ import annotations
 
 import argparse
+import re
 from typing import Optional, Union
 
 from finagent.graph.base import AgenticRAG, append_comparison_row
@@ -112,6 +113,27 @@ Return only the rewritten question.
 #     from finagent.graph.corrective import HybridRetriever, _get_shared_reranker
 # Remove this shim once every consumer imports from finagent.retrieval directly.
 # --------------------------------------------------------------------------- #
+# Codepoint ranges for scripts a US English filing should not be written in
+# (Cyrillic, Hebrew, Arabic, Devanagari, Hiragana/Katakana, CJK, Hangul).
+_NON_LATIN_RE = re.compile(
+    r"[Ѐ-ӿ֐-׿؀-ۿऀ-ॿ"
+    r"぀-ヿ㐀-鿿가-힯]"
+)
+
+
+def _mostly_non_english(text: str) -> bool:
+    """True if a chunk is predominantly non-Latin script — i.e. foreign-language
+    noise that has no place in an English US-filings answer. Deterministic and
+    cheap (no langdetect call); ignores stray foreign words in otherwise-English
+    text by requiring non-Latin to exceed 30% of the alphabetic characters."""
+    if not text:
+        return False
+    letters = sum(c.isalpha() for c in text)
+    if letters < 20:                     # too short to judge confidently
+        return False
+    return len(_NON_LATIN_RE.findall(text)) / letters > 0.30
+
+
 from finagent.retrieval.hybrid import HybridRetriever  # noqa: E402,F401
 from finagent.retrieval.reranker import (  # noqa: E402,F401
     CrossEncoderReranker,
@@ -216,13 +238,33 @@ class AgenticRAGv2(AgenticRAG):
         hybrids = self._get_hybrids()
         seen: set = set()
         chunks: list[dict] = []
-        for sub_q in state.get("sub_queries") or [state["question"]]:
+        dropped_lang = 0
+        # Per-sub-query routing: filing retrieval is for `narrative` sub-queries
+        # (and `numeric`, since the 10-K prose is a useful fallback when XBRL
+        # lacks a metric). A `market` / `external` / `cross_document` sub-query is
+        # answered by its own tool (yfinance / web / EDGAR), so retrieving the
+        # filings for it only injects off-topic chunks — skip those. When routes
+        # are unknown (older graph, or a single bare question) retrieve for all.
+        sub_queries = state.get("sub_queries") or [state["question"]]
+        routes = state.get("query_routes") or []
+        if routes and len(routes) == len(sub_queries):
+            retrieve_subs = [s for s, r in zip(sub_queries, routes)
+                             if r in ("narrative", "numeric")]
+        else:
+            retrieve_subs = sub_queries
+        for sub_q in retrieve_subs:
             for hyb in hybrids:
                 for text, meta in hyb.search(sub_q):
                     key = (meta.get("local_path", ""), meta.get("page", ""), text[:80])
                     if key in seen:
                         continue
                     seen.add(key)
+                    # The corpus is English US filings — drop any chunk that's
+                    # predominantly non-Latin script (stray foreign-language
+                    # exhibits, OCR noise) so it never reaches the synthesizer.
+                    if _mostly_non_english(text):
+                        dropped_lang += 1
+                        continue
                     chunks.append({
                         "text": text,
                         "company": meta.get("company") or meta.get("ticker", "?"),
@@ -231,6 +273,8 @@ class AgenticRAGv2(AgenticRAG):
                         "source": self._citation_tag(meta),
                         "sub_query": sub_q,
                     })
+        if dropped_lang:
+            self._log(state, f"dropped {dropped_lang} non-English chunk(s) from retrieval")
         return {"retrieved_chunks": chunks}
 
     def grader_node(self, state: AgentState) -> dict:

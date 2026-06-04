@@ -45,7 +45,9 @@ export function useRAGQuery(market: Market) {
           (e: SSEEvent) => {
             switch (e.type) {
               case "status":
-                appendStepToMessage(assistantId, { stage: e.stage, label: e.label });
+                appendStepToMessage(assistantId, {
+                  stage: e.stage, label: e.label, index: e.index, total: e.total,
+                });
                 break;
               case "sources":
                 patchMessage(assistantId, { chunks: e.chunks, metadata: { ...(e.metadata || {}) } });
@@ -115,7 +117,7 @@ export function useRAGQuery(market: Market) {
 
       const history = historyBefore(useChatStore.getState().messages.length);
       appendMessage({ role: "user", content: question, market });
-      const assistantId = appendMessage({ role: "assistant", content: "", market, streaming: true });
+      const assistantId = appendMessage({ role: "assistant", content: "", market, streaming: true, startedAt: Date.now() });
       useThreadStore.getState().saveActive();   // capture the user turn immediately
 
       await runStream(question, assistantId, history);
@@ -133,7 +135,7 @@ export function useRAGQuery(market: Market) {
 
       const history = historyBefore(userIdx);     // memory excludes the question itself
       useChatStore.getState().dropLastAssistant(); // remove the stale answer
-      const assistantId = appendMessage({ role: "assistant", content: "", market, streaming: true });
+      const assistantId = appendMessage({ role: "assistant", content: "", market, streaming: true, startedAt: Date.now() });
 
       await runStream(question, assistantId, history);
     },

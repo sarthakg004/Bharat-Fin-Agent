@@ -59,6 +59,16 @@ from finagent.tools.edgar_search import EdgarFullTextSearch
 from finagent.tools.sec_fetch import SecFilingFetcher
 from finagent.tools.xbrl import XBRLClient
 
+# News / outlook intent that should reach the web even without an `external`
+# route. Kept news-specific (not bare "current"/"recent", which appear in
+# "current ratio" etc.) to avoid firing web on filing/numeric questions.
+_WEB_NEWS_MARKERS = (
+    "news", "latest", "headline", "press release", "announcement",
+    "outlook", "forecast", "guidance", "analyst", "expected to perform",
+    "upcoming month", "coming month", "next quarter", "this week", "today's",
+    "recently", "happening", "sentiment", "what's new",
+)
+
 
 # --------------------------------------------------------------------------- #
 # Prompts
@@ -742,7 +752,22 @@ class AgenticRAGv4(AgenticRAGv3):
 
         if intent.tool == "none" or not (intent.symbol or intent.symbols):
             return {"market_data": [], "charts": []}
-        calls = [intent]   # flat schema → exactly one call
+        calls = [intent]   # flat schema → the planner's primary call
+
+        # Volume / performance questions NEED OHLCV — only get_history carries
+        # volume and the price trend. The single-call planner may pick get_news
+        # for a multi-intent question ("news … how will it perform … volume"),
+        # so when a volume/performance intent is present we ALSO fire get_history
+        # for the resolved symbol, guaranteeing the data is there.
+        ql = (question + " " + " ".join(sub_queries)).lower()
+        wants_history = any(
+            m in ql for m in ("volume", "performance", "how has", "how is it doing",
+                              "how is it performing", "trend", "perform")
+        )
+        sym = intent.symbol or (intent.symbols[0] if intent.symbols else "")
+        if wants_history and sym and intent.tool not in ("get_history", "compare"):
+            calls.append(MarketIntent(tool="get_history", symbol=sym,
+                                      period="1y", interval="1d"))
 
         market_data: list[dict] = []
         charts: list[dict] = []
@@ -787,6 +812,20 @@ class AgenticRAGv4(AgenticRAGv3):
         sub_queries = state.get("sub_queries") or [state["question"]]
         routes = state.get("query_routes") or ["narrative"] * len(sub_queries)
         external_subs = [s for s, r in zip(sub_queries, routes) if r == "external"]
+
+        # Deterministic news net: a question with explicit news / outlook /
+        # forecast intent ("current market news", "expected to perform",
+        # "analyst outlook") should hit the web even when the router didn't mark
+        # any sub-query `external` — so multi-intent questions get web news
+        # alongside market data, not one or the other. Add the matching
+        # sub-queries (or the question) as external work.
+        news_subs = [
+            s for s in [*sub_queries, state["question"]]
+            if any(m in (s or "").lower() for m in _WEB_NEWS_MARKERS)
+        ]
+        for s in news_subs:
+            if s not in external_subs:
+                external_subs.append(s)
 
         # Corrective dispatch (CRAG): no explicit external sub-queries, but a
         # NARRATIVE retrieval was attempted and came back empty/poorly graded →
@@ -1034,6 +1073,15 @@ class AgenticRAGv4(AgenticRAGv3):
             data = m.get("data") or {}
             if tool == "get_history":
                 s = data.get("summary", {})
+                vol_line = ""
+                if s.get("avg_volume") is not None:
+                    vol_line = (
+                        f"\nVolume: last={s.get('last_volume'):,}, "
+                        f"avg={s.get('avg_volume'):,}, recent_avg={s.get('recent_avg_volume'):,} "
+                        f"vs prior_avg={s.get('prior_avg_volume'):,} "
+                        f"({s.get('volume_change_pct')}% change"
+                        f"{', SURGE' if s.get('volume_surge') else ''})."
+                    )
                 evidence_items.append(
                     f"[{idx}] LIVE MARKET (yfinance · get_history) — "
                     f"{s.get('symbol','?')} {s.get('period','?')} {s.get('interval','?')}\n"
@@ -1041,6 +1089,7 @@ class AgenticRAGv4(AgenticRAGv3):
                     f"first_close={s.get('first_close')}, last_close={s.get('last_close')}, "
                     f"high={s.get('high')}, low={s.get('low')}, "
                     f"pct_change={s.get('pct_change')}%."
+                    f"{vol_line}"
                 )
             elif tool == "compare":
                 rows = "\n".join(

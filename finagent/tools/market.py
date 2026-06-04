@@ -138,6 +138,25 @@ def get_history(symbol: str, period: str = "1y", interval: str = "1d") -> dict:
 
     first, last = df.iloc[0], df.iloc[-1]
     pct = float((last["Close"] - first["Close"]) / first["Close"] * 100) if first["Close"] else 0.0
+
+    # Volume stats so questions like "is there a rapid increase in volume?" can be
+    # answered from the summary (the synthesizer reads this, not the chart). We
+    # compare the most-recent window against the prior window to flag a surge.
+    vol = df["Volume"].astype(float) if "Volume" in df.columns else None
+    vol_stats: dict = {}
+    if vol is not None and len(vol) > 0:
+        win = min(5, len(vol))
+        recent = float(vol.iloc[-win:].mean())
+        prior = float(vol.iloc[-2 * win:-win].mean()) if len(vol) >= 2 * win else float(vol.iloc[:-win].mean() or 0)
+        vol_change = ((recent - prior) / prior * 100) if prior else 0.0
+        vol_stats = {
+            "last_volume": int(vol.iloc[-1]),
+            "avg_volume": int(vol.mean()),
+            "recent_avg_volume": int(recent),
+            "prior_avg_volume": int(prior),
+            "volume_change_pct": round(vol_change, 1),     # recent window vs prior window
+            "volume_surge": bool(vol_change >= 50),         # heuristic "rapid increase" flag
+        }
     summary = {
         "symbol": sym,
         "period": period,
@@ -150,6 +169,7 @@ def get_history(symbol: str, period: str = "1y", interval: str = "1d") -> dict:
         "low":   float(df["Low"].min()),
         "pct_change": round(pct, 2),
         "points": len(candles),
+        **vol_stats,
     }
     chart = {
         "type": "candlestick",

@@ -62,6 +62,29 @@ TRUSTED_FINANCIAL_DOMAINS: tuple[str, ...] = (
     "seekingalpha.com",
     "investopedia.com",
     "sec.gov",
+    # Market-data / screeners / analysis (Tavily extracts these server-side, so
+    # sites that block direct scraping are still searchable through it).
+    "investing.com",
+    "stockanalysis.com",
+    "finviz.com",
+    "benzinga.com",
+    "fool.com",
+    "simplywall.st",
+    "morningstar.com",
+    "zacks.com",
+    "moneyview.in",
+    "businesstoday.in",
+    "ndtvprofit.com",
+)
+
+
+# Social / UGC / video domains that are noise for a financial answer. The
+# general (untrusted) pass excludes these so we never surface an Instagram or
+# Reddit post as "market news".
+JUNK_DOMAINS: tuple[str, ...] = (
+    "instagram.com", "facebook.com", "tiktok.com", "twitter.com", "x.com",
+    "reddit.com", "pinterest.com", "youtube.com", "quora.com", "linkedin.com",
+    "threads.net", "medium.com",
 )
 
 
@@ -166,59 +189,58 @@ class WebSearcher:
     _ENOUGH_HITS = 4
 
     def _tavily_search(self, query: str, k: int) -> list[dict]:
-        """Two-pass search with progressive time-range fallback.
+        """Trusted-first search with progressive time-range fallback.
 
-        Each iteration runs the same two-pass (trusted then general); we add
-        only newly-seen URLs so widening the window can never down-rank an
-        earlier fresher hit. We stop as soon as we have `_ENOUGH_HITS`.
+        Pass 1 queries ONLY the trusted financial domains (Moneycontrol, ET,
+        TradingView, Reuters, Bloomberg, Yahoo Finance, …), widening the time
+        window day→week→month until it has enough hits. Pass 2 runs a general
+        web search **only to fill the remaining slots**, and EXCLUDES social /
+        UGC domains so an Instagram or Reddit post never shows up as market news.
+        Recency comes from `time_range`, inferred from the query, so the latest
+        coverage is preferred.
 
-        `topic` is left at Tavily's default (general) — combining `topic="news"`
-        with `include_domains` and a tight `time_range` over-filters and we
-        end up with generic market headlines instead of stock-specific ones.
+        `topic` is left at Tavily's default — combining `topic="news"` with
+        `include_domains` and a tight `time_range` over-filters into generic
+        headlines instead of stock-specific results.
         """
         client = self._tavily_client()
-        trusted_k = max(1, int(round(k * self.trusted_ratio)))
-        general_k = max(0, k - trusted_k)
-
         hits: list[dict] = []
         seen_urls: set[str] = set()
-        primary = infer_time_range(query)
+        ranges = self._TIME_RANGE_FALLBACK[infer_time_range(query)]
 
-        for time_range in self._TIME_RANGE_FALLBACK[primary]:
+        def _collect(resp, tier):
+            for r in (resp.get("results") or []):
+                norm = self._normalize_tavily(r, tier=tier)
+                if norm["url"] and norm["url"] not in seen_urls:
+                    seen_urls.add(norm["url"])
+                    hits.append(norm)
+
+        # --- Pass 1: trusted financial domains first ----------------------
+        for time_range in ranges:
             if len(hits) >= self._ENOUGH_HITS:
                 break
-            common = dict(search_depth="basic", time_range=time_range)
-
-            # --- Trusted financial domains ---------------------------------
             try:
-                resp = client.search(
-                    query=query, max_results=trusted_k,
-                    include_domains=list(self.TRUSTED_DOMAINS),
-                    **common,
-                )
-                for r in (resp.get("results") or []):
-                    norm = self._normalize_tavily(r, tier="trusted")
-                    if norm["url"] and norm["url"] not in seen_urls:
-                        seen_urls.add(norm["url"])
-                        hits.append(norm)
+                _collect(client.search(
+                    query=query, max_results=k, search_depth="basic",
+                    time_range=time_range, include_domains=list(self.TRUSTED_DOMAINS),
+                ), tier="trusted")
             except Exception as e:
-                print(f"[Tavily] trusted ({time_range}) failed "
-                      f"({type(e).__name__}: {e})")
+                print(f"[Tavily] trusted ({time_range}) failed ({type(e).__name__}: {e})")
 
-            # --- General web ----------------------------------------------
-            if general_k > 0:
+        # --- Pass 2: general web ONLY to fill the gap, excluding junk -------
+        if len(hits) < k:
+            for time_range in ranges:
+                if len(hits) >= k:
+                    break
                 try:
-                    resp = client.search(query=query, max_results=general_k, **common)
-                    for r in (resp.get("results") or []):
-                        norm = self._normalize_tavily(r, tier="web")
-                        if norm["url"] and norm["url"] not in seen_urls:
-                            seen_urls.add(norm["url"])
-                            hits.append(norm)
+                    _collect(client.search(
+                        query=query, max_results=k - len(hits), search_depth="basic",
+                        time_range=time_range, exclude_domains=list(JUNK_DOMAINS),
+                    ), tier="web")
                 except Exception as e:
-                    print(f"[Tavily] general ({time_range}) failed "
-                          f"({type(e).__name__}: {e})")
+                    print(f"[Tavily] general ({time_range}) failed ({type(e).__name__}: {e})")
 
-        return hits
+        return hits[:k]
 
     @staticmethod
     def _normalize_tavily(r: dict, tier: str) -> dict:

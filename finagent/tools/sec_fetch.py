@@ -112,7 +112,13 @@ class SecFilingFetcher(BaseTool):
     def fetch_and_ingest(self, ticker: str, company: str = "",
                          filing_type: str = "10-K", n: int = 1) -> dict:
         """Download the latest `n` filings for `ticker` and ingest into the live
-        collection. Returns counts + the source URLs added."""
+        collection. Returns counts + the source URLs added.
+
+        Tries the annual-report forms in order: domestic issuers file **10-K**,
+        but foreign private issuers file **20-F** and Canadian issuers **40-F**
+        (e.g. Draganfly/DPRO). So a ticker that resolves to a CIK but has no
+        10-K is fetched from its actual annual form instead of returning empty.
+        """
         from finagent.ingestion.fetchPDFs import FetchPDFs
         from finagent.ingestion.ingest import CorpusIngester
 
@@ -121,11 +127,22 @@ class SecFilingFetcher(BaseTool):
             output_dir=self.corpus_dir,
             sec_user_agent_name=name, sec_user_agent_email=email,
         )
-        records = fetcher.from_sec(ticker, filing_type=filing_type, num_filings=n)
-        ok = [r for r in records if r.get("status") == "ok"]
+        # Honour an explicit non-default filing_type; otherwise sweep the annual
+        # forms (10-K → 20-F → 40-F) and take the first that returns a filing.
+        forms = [filing_type] if filing_type != "10-K" else ["10-K", "20-F", "40-F"]
+        ok: list[dict] = []
+        used_form = None
+        for form in forms:
+            records = fetcher.from_sec(ticker, filing_type=form, num_filings=n)
+            ok = [r for r in records if r.get("status") == "ok"]
+            if ok:
+                used_form = form
+                for r in ok:
+                    r.setdefault("filing_type", form)
+                break
         if not ok:
             return {"ok": False, "ticker": ticker, "chunks_added": 0,
-                    "error": "no filing downloaded", "source_urls": []}
+                    "error": f"no filing downloaded (tried {forms})", "source_urls": []}
 
         # Enrich with a readable company name (citations) + market, then write a
         # dedicated manifest so we never clobber the baseline sec_manifest.json.
@@ -146,6 +163,7 @@ class SecFilingFetcher(BaseTool):
             "ok": stats.total_chunks > 0,
             "ticker": ticker,
             "company": company or ticker,
+            "form": used_form,
             "chunks_added": stats.total_chunks,
             "filings": len(ok),
             "source_urls": [r.get("source_url", "") for r in ok],

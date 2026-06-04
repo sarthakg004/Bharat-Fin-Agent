@@ -195,13 +195,20 @@ _NUMERIC_MARKERS = (
     "liability", "equity", "share", "dividend",
 )
 _NUMERIC_YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b|fy ?\d{2,4}", re.IGNORECASE)
-# Anything about live market behaviour goes to `market` (yfinance tools).
+# Anything about live market behaviour goes to `market` (yfinance tools). Volume
+# and price-performance/trend phrasing is included so a "rapid increase in
+# volume" or "how has the stock performed" question reliably reaches yfinance
+# (which is the only source with OHLCV + volume), even when the LLM router
+# mislabels it as narrative/external.
 _MARKET_MARKERS = (
     "current price", "share price", "stock price", "premarket", "pre-market",
     "intraday", "today's move", "today's price", "live price",
     "1-year", "5-year", "ytd", "52-week", "52 week",
     "ohlc", "candlestick", "chart", "stock chart",
     "compare stock", "vs stock", "stock comparison",
+    "volume", "trading volume", "share volume", "volume surge", "volume spike",
+    "how is it doing", "how has it performed", "how is it performing",
+    "stock performance", "price performance", "how has the stock",
 )
 # Fallback news/web markers.
 _EXTERNAL_MARKERS = (

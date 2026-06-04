@@ -7,9 +7,14 @@ export interface ChatMessage {
   id: string;
   role: MessageRole;
   content: string;
-  status?: { stage: string; label: string };
+  status?: { stage: string; label: string; index?: number; total?: number };
   /** Accumulated "thinking" trace — one entry per graph node as it runs. */
-  steps?: { stage: string; label: string }[];
+  steps?: { stage: string; label: string; index?: number; total?: number }[];
+  /** Furthest pipeline position reached (0..total) — drives the progress bar. */
+  progressIndex?: number;
+  progressTotal?: number;
+  /** Epoch ms the assistant turn started — drives the live elapsed timer/ETA. */
+  startedAt?: number;
   /** Wall-clock ms the agent spent thinking before the answer streamed. */
   thoughtMs?: number;
   chunks?: Chunk[];
@@ -40,7 +45,10 @@ interface ChatState {
   patchMessage: (id: string, patch: Partial<ChatMessage>) => void;
   appendChunkToMessage: (id: string, text: string) => void;
   /** Append a thinking step (skips consecutive duplicate labels). */
-  appendStepToMessage: (id: string, step: { stage: string; label: string }) => void;
+  appendStepToMessage: (
+    id: string,
+    step: { stage: string; label: string; index?: number; total?: number },
+  ) => void;
   appendChartToMessage: (id: string, chart: ChartSpec) => void;
   clear: () => void;
   setHighlight: (id: number | null) => void;
@@ -83,9 +91,19 @@ export const useChatStore = create<ChatState>((set) => ({
       messages: s.messages.map((msg) => {
         if (msg.id !== id) return msg;
         const steps = msg.steps || [];
-        // Skip a consecutive duplicate label (e.g. retrieve→grade looping).
-        if (steps.length && steps[steps.length - 1].label === step.label) return msg;
-        return { ...msg, steps: [...steps, step], status: step };
+        // Progress advances MONOTONICALLY — a corrective loop revisiting an
+        // earlier node must not make the bar jump backwards.
+        const progressIndex = Math.max(msg.progressIndex ?? 0, step.index ?? 0);
+        const progressTotal = step.total ?? msg.progressTotal ?? 0;
+        // Skip a consecutive duplicate label (e.g. retrieve→grade looping) — the
+        // trace list shows distinct activity, but `status`/progress still update.
+        if (steps.length && steps[steps.length - 1].label === step.label) {
+          return { ...msg, status: step, progressIndex, progressTotal };
+        }
+        return {
+          ...msg, steps: [...steps, step], status: step,
+          progressIndex, progressTotal,
+        };
       }),
     })),
   appendChartToMessage: (id, chart) =>

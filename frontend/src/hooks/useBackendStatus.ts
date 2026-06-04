@@ -11,14 +11,14 @@ export type BackendStatus = "warming" | "online" | "down";
  *   - "online"   → healthy
  *   - "down"     → still unreachable after a generous wait (~90s)
  *
- * While not online we poll every 3s (so the UI flips to "online" quickly once
- * the container finishes its cold start); once online we drop to every 30s.
+ * While not online we poll every 10s (enough to notice a cold start finishing
+ * without hammering an unreachable backend); once online we drop to every 30s.
  */
 export function useBackendStatus(): { status: BackendStatus; elapsedSec: number } {
   const q = useQuery({
     queryKey: ["health"],
     queryFn: api.health,
-    refetchInterval: (query) => (query.state.status === "success" ? 30_000 : 3_000),
+    refetchInterval: (query) => (query.state.status === "success" ? 30_000 : 10_000),
     refetchOnWindowFocus: false,
     retry: false,
   });

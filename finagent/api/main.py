@@ -230,19 +230,27 @@ def _build_history_for_agent(chat_id: int) -> list[dict]:
 # agent "thinks". Repeated nodes (retrieve/grade across rewrite loops) reuse the
 # same label; the UI de-dupes consecutive repeats.
 _STEP_LABELS = {
-    "planner":      "Planning the approach…",
-    "router":       "Routing the sub-questions…",
-    "fetch_filing": "Fetching latest 10-K…",
-    "retrieve":     "Searching the filings…",
-    "grader":       "Weighing the evidence…",
-    "rewrite":      "Refining the search…",
-    "xbrl":         "Looking up exact figures…",
-    "calculator":   "Computing the metrics…",
-    "table_agent":  "Crunching the numbers…",
-    "edgar_search": "Searching EDGAR across companies…",
-    "synthesize":   "Writing the answer…",
-    "critic":       "Fact-checking the draft…",
+    "planner":        "Planning the approach…",
+    "router":         "Routing the sub-questions…",
+    "fetch_filing":   "Fetching latest filing…",
+    "retrieve":       "Searching the filings…",
+    "grader":         "Weighing the evidence…",
+    "rewrite":        "Refining the search…",
+    "xbrl":           "Looking up exact figures…",
+    "calculator":     "Computing the metrics…",
+    "table_agent":    "Crunching the numbers…",
+    "market_data":    "Pulling market data…",
+    "web_search":     "Searching the web…",
+    "edgar_search":   "Searching EDGAR across companies…",
+    "synthesize":     "Writing the answer…",
+    "critic":         "Fact-checking the draft…",
+    "verify_numbers": "Verifying every figure…",
 }
+
+# Canonical pipeline order (for the UI progress bar). The agent skips most of
+# these per query (the dispatcher routes around them), but the position of the
+# furthest stage reached still maps cleanly to "how far along" the run is.
+PIPELINE_ORDER = list(_STEP_LABELS.keys())
 
 
 async def _run_rag(request: QueryRequest, hist: list[dict],
@@ -293,7 +301,10 @@ async def _stream_answer(request: QueryRequest) -> AsyncGenerator[str, None]:
         if label:
             loop.call_soon_threadsafe(
                 step_queue.put_nowait,
-                {"type": "status", "stage": node, "label": label},
+                {"type": "status", "stage": node, "label": label,
+                 # Position in the canonical pipeline + total, so the UI can show
+                 # a real progress bar / ETA instead of a static spinner.
+                 "index": PIPELINE_ORDER.index(node), "total": len(PIPELINE_ORDER)},
             )
 
     rag_task = asyncio.ensure_future(_run_rag(request, agent_history, on_step=_on_step))

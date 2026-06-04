@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { Check, ChevronRight, ExternalLink, RotateCcw } from "lucide-react";
 
@@ -93,39 +93,91 @@ function AssistantBubble({ msg, onRetry }: BubbleProps) {
  * streaming we collapse the trace into a compact "Thought for Ns" row that the
  * user can expand to review what the agent did.
  */
+/** Re-render every `ms` while `active` so elapsed time / ETA tick live. */
+function useNow(active: boolean, ms = 500): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    const id = setInterval(() => setNow(Date.now()), ms);
+    return () => clearInterval(id);
+  }, [active, ms]);
+  return now;
+}
+
 function ThinkingTrace({ msg }: { msg: ChatMessage }) {
   const [open, setOpen] = useState(false);
   const steps = msg.steps || [];
   const thinking = msg.streaming && !msg.content;
+  const now = useNow(!!thinking);
 
   if (steps.length === 0 && !msg.status) return null;
 
   // Live view — the agent is still working, no answer text yet.
   if (thinking) {
     const current = msg.status || steps[steps.length - 1];
+    const startedAt = msg.startedAt ?? msg.createdAt;
+    const elapsedS = Math.max(0, (now - startedAt) / 1000);
+
+    // Monotonic progress from the furthest pipeline stage reached.
+    const total = msg.progressTotal ?? 0;
+    const reached = (msg.progressIndex ?? 0) + 1;
+    const progress = total > 0 ? Math.min(0.99, reached / total) : 0;
+    // ETA projects the total from the observed pace; only show it once there's
+    // enough signal so it isn't wildly off at the very start.
+    const eta =
+      progress > 0.12 && elapsedS > 1.5
+        ? Math.max(0, Math.round(elapsedS * (1 / progress - 1)))
+        : null;
+
+    // De-duplicated completed stages (skip the current one), most recent last.
+    const seen = new Set<string>();
+    const done: string[] = [];
+    for (const s of steps) {
+      if (s.stage === current?.stage) continue;
+      if (seen.has(s.stage)) continue;
+      seen.add(s.stage);
+      done.push(s.label);
+    }
+
     return (
-      <div className="flex flex-col gap-1.5">
-        <AnimatePresence initial={false}>
-          {steps.map((s, i) => {
-            const isLast = i === steps.length - 1;
-            return (
-              <motion.div
-                key={`${s.stage}-${i}`}
-                initial={{ opacity: 0, x: -4 }}
-                animate={{ opacity: isLast ? 1 : 0.5, x: 0 }}
-                transition={{ duration: 0.2 }}
-                className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-wider text-text-secondary"
+      <div className="flex w-full max-w-[80%] flex-col gap-2">
+        {/* Current activity + live timer / ETA */}
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2 font-mono text-[12px] text-text-primary">
+            <span className="inline-block h-[11px] w-[11px] animate-spin rounded-full border border-text-muted border-t-accent" />
+            <span>{current?.label ?? "Thinking…"}</span>
+          </div>
+          <span className="shrink-0 font-mono text-[10px] uppercase tracking-wider text-text-muted">
+            {elapsedS.toFixed(0)}s{eta != null && ` · ~${eta}s left`}
+          </span>
+        </div>
+
+        {/* Progress bar — fills as the agent advances through the pipeline. */}
+        {total > 0 && (
+          <div className="h-[3px] w-full overflow-hidden rounded-full bg-border-subtle">
+            <motion.div
+              className="h-full bg-accent"
+              initial={false}
+              animate={{ width: `${Math.round(progress * 100)}%` }}
+              transition={{ duration: 0.4, ease: "easeOut" }}
+            />
+          </div>
+        )}
+
+        {/* Completed stages, de-duplicated and compact (no more repeats). */}
+        {done.length > 0 && (
+          <div className="flex flex-wrap gap-x-2.5 gap-y-1">
+            {done.map((label, i) => (
+              <span
+                key={`${label}-${i}`}
+                className="flex items-center gap-1 font-mono text-[10px] uppercase tracking-wider text-text-muted"
               >
-                {isLast ? (
-                  <span className="inline-block h-[10px] w-[10px] animate-spin rounded-full border border-text-muted border-t-accent" />
-                ) : (
-                  <Check size={11} className="text-accent" />
-                )}
-                <span>{isLast ? current?.label ?? s.label : s.label}</span>
-              </motion.div>
-            );
-          })}
-        </AnimatePresence>
+                <Check size={9} className="text-accent/70" />
+                {label}
+              </span>
+            ))}
+          </div>
+        )}
       </div>
     );
   }
