@@ -1179,11 +1179,17 @@ single item is irrelevant."""
         """
         from langchain_core.messages import HumanMessage, SystemMessage
 
+        # Count every verify pass so `_verify_router` can bound the re-route loop
+        # independently of the critic (the verifier may keep finding an
+        # ungrounded figure even when the critic is happy — without this counter
+        # that loops until LangGraph's recursion limit aborts the request).
+        vi = {"verify_iterations": state.get("verify_iterations", 0) + 1}
+
         answer = state.get("draft_answer", "")
         clean = {"claims": [], "unverified": [], "score": 1.0,
                  "numbers_total": 0, "numbers_grounded": 0, "hallucination_rate": 0.0}
         if not self._has_numbers(answer):
-            return {"numeric_verification": clean}
+            return {"numeric_verification": clean, **vi}
 
         evidence = self._build_evidence_block(state)
         llm = self._get_verifier_llm().with_structured_output(NumericVerification)
@@ -1205,12 +1211,12 @@ single item is irrelevant."""
                                              "score": round(score, 3),
                                              "numbers_total": len(claims),
                                              "numbers_grounded": len(claims) - len(llm_unverified),
-                                             "hallucination_rate": round(1 - score, 3)}}
+                                             "hallucination_rate": round(1 - score, 3)}, **vi}
 
         # Deterministic, exhaustive grounding.
         draft_nums = self._extract_numbers(answer)
         if not draft_nums:
-            return {"numeric_verification": {**clean, "claims": claims}}
+            return {"numeric_verification": {**clean, "claims": claims}, **vi}
 
         evidence_mags = self._evidence_numbers(state)
         # LLM rescue: figures the verifier matched count as grounded too — pull
@@ -1237,7 +1243,8 @@ single item is irrelevant."""
                 "numbers_total": total,
                 "numbers_grounded": grounded,
                 "hallucination_rate": round(len(ungrounded) / total, 3) if total else 0.0,
-            }
+            },
+            **vi,
         }
 
     def refuse_node(self, state: AgentState) -> dict:
@@ -1303,7 +1310,15 @@ single item is irrelevant."""
         nv = state.get("numeric_verification") or {}
         score = nv.get("score")
         ungrounded = nv.get("unverified") or []
-        out_of_retries = state.get("critic_iterations", 0) >= self.max_critic_retries
+        # Bound the loop on BOTH counters: the critic increments
+        # `critic_iterations` only when IT wants a retry, but the verifier can
+        # re-route on its own, so `verify_iterations` is what actually caps the
+        # verify→retrieve→…→verify cycle (otherwise it spins to the recursion
+        # limit and the request errors out).
+        out_of_retries = (
+            state.get("critic_iterations", 0) >= self.max_critic_retries
+            or state.get("verify_iterations", 0) > self.max_critic_retries
+        )
 
         # Phase 11: an ungrounded figure is a hallucination — every number must
         # trace to a source. Under strict numeric verification, re-route once to

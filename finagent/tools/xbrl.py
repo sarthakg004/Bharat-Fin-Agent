@@ -32,6 +32,7 @@ from __future__ import annotations
 import json
 import re
 import time
+from collections import OrderedDict
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -190,12 +191,18 @@ class XBRLClient(BaseTool):
         self.user_agent = user_agent or self.resolver.user_agent
         # LLM (or any callable) fallback for tag heterogeneity the map misses.
         self.tag_resolver = tag_resolver
-        self._facts_cache: dict[str, dict] = {}   # in-process memo by CIK
+        # In-process LRU memo by CIK. companyfacts payloads are multi-MB each, so
+        # cap the count — without a bound a long-running server answering about
+        # many companies grows unboundedly. The on-disk cache still serves the
+        # rest cheaply.
+        self._facts_cache: "OrderedDict[str, dict]" = OrderedDict()
+        self._facts_cache_max = 24
 
     # --- companyfacts load / cache ------------------------------------------
 
     def _load_companyfacts(self, cik: str) -> dict:
         if cik in self._facts_cache:
+            self._facts_cache.move_to_end(cik)      # mark most-recently-used
             return self._facts_cache[cik]
 
         path = self.cache_dir / f"CIK{cik}.json"
@@ -218,6 +225,8 @@ class XBRLClient(BaseTool):
                 else:
                     raise
         self._facts_cache[cik] = data
+        while len(self._facts_cache) > self._facts_cache_max:
+            self._facts_cache.popitem(last=False)   # evict least-recently-used
         return data
 
     # --- concept → tag -------------------------------------------------------

@@ -53,6 +53,7 @@ class AgentState(TypedDict, total=False):
     query_original: str                # the question as the user typed it (pre-translation)
     web_results: list[Any]             # already declared above; filled by web_search_node
     numeric_verification: dict         # {"claims": [...], "unverified": [...], "score": 0..1}
+    verify_iterations: int             # how many times verify_numbers has run (bounds re-route)
     refused: bool                      # set when the agent explicitly declines to answer
 
     # --- Market-data tool results ----------------------------------------- #
