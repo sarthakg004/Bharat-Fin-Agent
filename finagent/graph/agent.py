@@ -48,9 +48,12 @@ from finagent.graph.full import (
     append_comparison_row,  # noqa: F401  re-export
 )
 from finagent.graph.market_tools import call_tool as call_market_tool
-from finagent.graph.state import AgentState, MarketIntent, NumericVerification, XBRLQuery
+from finagent.graph.state import (
+    AgentState, MarketIntent, NumericVerification, XBRLQuery, CalcQuery,
+)
 from finagent.graph.translate import detect_language, language_name, translate_text
 from finagent.graph.web_search import WebSearcher
+from finagent.tools.calculator import FinancialCalculator
 from finagent.tools.xbrl import XBRLClient
 
 
@@ -136,6 +139,24 @@ from a list of tags a company actually reports. Reply with EXACTLY one tag name
 copied verbatim from the list (no explanation). If none fit, reply 'NONE'.
 """
 
+CALC_EXTRACT_SYSTEM = """\
+You extract a derived-metric computation from a numeric sub-query about a US
+public company. A DERIVED metric is one computed from reported figures: a margin
+(gross/operating/net), a ratio (current ratio, debt-to-equity, ROE, ROA, asset
+turnover, interest coverage), period-over-period GROWTH, a CAGR, or a multi-year
+TREND of any of those. Set is_derived=true and fill ticker, the canonical metric
+name, periods (fiscal years, earliest first), and — for growth/cagr only — the
+underlying concept. Set is_derived=false for a single reported figure (revenue,
+net income, total assets, …); those are handled by the XBRL facts tool, not here.
+Use the conversation context to resolve a follow-up's company/periods.
+"""
+
+CALC_EXTRACT_PROMPT = """\
+Numeric sub-query: {sub_query}
+
+Return the derived-metric computation (is_derived, ticker, metric, concept, periods).
+"""
+
 REFUSAL_TEMPLATE = (
     "I don't have enough information to answer this from the available "
     "filings{web_clause}. The retrieval and numeric verification steps could "
@@ -174,6 +195,7 @@ class AgenticRAGv4(AgenticRAGv3):
         self.min_verify_score = min_verify_score
         self._web: Optional[WebSearcher] = None
         self._xbrl: Optional[XBRLClient] = None
+        self._calc: Optional[FinancialCalculator] = None
 
     # ------------------------------------------------------------------ #
     # Resources
@@ -197,6 +219,14 @@ class AgenticRAGv4(AgenticRAGv3):
         if self._xbrl is None:
             self._xbrl = XBRLClient(tag_resolver=self._xbrl_pick_tag)
         return self._xbrl
+
+    @property
+    def calc(self) -> FinancialCalculator:
+        """Derived-metric calculator over XBRL inputs (Phase 4). Shares the XBRL
+        client so it reuses the same on-disk company-facts cache."""
+        if self._calc is None:
+            self._calc = FinancialCalculator(xbrl=self.xbrl)
+        return self._calc
 
     def _xbrl_pick_tag(self, concept: str, available_tags: list[str]):
         """LLM fallback for the XBRL client: pick the best US-GAAP tag for a
@@ -323,6 +353,68 @@ class AgenticRAGv4(AgenticRAGv3):
             else:
                 self._log(state, f"xbrl miss for {sub_q!r}: {res.get('error')}")
         return {"xbrl_facts": facts}
+
+    def calculator_node(self, state: AgentState) -> dict:
+        """Compute derived metrics (margins, ratios, growth, CAGR, trends) from
+        exact XBRL inputs (Phase 4).
+
+        For each `numeric` sub-query, a cheap LLM call decides whether it asks
+        for a *derived* metric and, if so, extracts (ticker, metric, periods).
+        The calculator then pulls the exact inputs via the Phase-3 XBRL client
+        and computes deterministically — so the result is auditable down to the
+        filed figures it divided. Plain single-figure lookups are left to the
+        XBRL node; this node simply skips them (is_derived=False).
+        """
+        from langchain_core.messages import HumanMessage, SystemMessage
+
+        sub_queries = state.get("sub_queries") or [state["question"]]
+        routes = state.get("query_routes") or ["narrative"] * len(sub_queries)
+        numeric_subs = [s for s, r in zip(sub_queries, routes) if r == "numeric"]
+        if not numeric_subs:
+            return {"calc_results": []}
+
+        history = state.get("chat_history") or []
+        history_block = ""
+        if history:
+            lines = [
+                f"{('User' if t.get('role') == 'user' else 'Assistant')}: "
+                f"{(t.get('content') or '')[:300]}"
+                for t in history[-4:]
+            ]
+            history_block = "Recent conversation:\n" + "\n".join(lines) + "\n\n"
+
+        extractor = self._get_router_llm().with_structured_output(CalcQuery)
+        results: list[dict] = []
+        for sub_q in numeric_subs:
+            try:
+                q: CalcQuery = extractor.invoke([
+                    SystemMessage(content=CALC_EXTRACT_SYSTEM),
+                    HumanMessage(content=history_block + CALC_EXTRACT_PROMPT.format(sub_query=sub_q)),
+                ])
+            except Exception as e:
+                self._log(state, f"calc extract failed for {sub_q!r}: {e}")
+                continue
+            if not q.is_derived or not (q.ticker and q.metric):
+                continue
+            try:
+                res = self.calc.run(
+                    metric=q.metric, ticker=q.ticker, concept=q.concept,
+                    periods=q.periods,
+                    period=(q.periods[0] if q.periods else None),
+                    period_from=(q.periods[0] if len(q.periods) >= 2 else None),
+                    period_to=(q.periods[-1] if len(q.periods) >= 2 else None),
+                    start_period=(q.periods[0] if len(q.periods) >= 2 else None),
+                    end_period=(q.periods[-1] if len(q.periods) >= 2 else None),
+                )
+            except Exception as e:
+                self._log(state, f"calc failed for {sub_q!r}: {e}")
+                continue
+            res["sub_query"] = sub_q
+            if res.get("ok"):
+                results.append(res)
+            else:
+                self._log(state, f"calc miss for {sub_q!r}: {res.get('error')}")
+        return {"calc_results": results}
 
     def market_data_node(self, state: AgentState) -> dict:
         """Call yfinance tools for sub-queries routed to `market`.
@@ -486,6 +578,17 @@ class AgenticRAGv4(AgenticRAGv3):
                 "sub_query": f.get("sub_query", ""),
             })
 
+        # Derived metrics → pseudo chunks (deterministic math on XBRL inputs).
+        for r in state.get("calc_results", []) or []:
+            pseudo_chunks.append({
+                "text": self._format_calc_result(r),
+                "source": f"<Calc: {r.get('metric','')} from XBRL>",
+                "company": r.get("ticker", "?"),
+                "year": str(r.get("fy", r.get("end_period", "?"))),
+                "page": "—",
+                "sub_query": r.get("sub_query", ""),
+            })
+
         # Web hits → pseudo chunks
         for h in state.get("web_results", []) or []:
             pseudo_chunks.append({
@@ -539,6 +642,7 @@ class AgenticRAGv4(AgenticRAGv3):
         table_res = state.get("table_results", []) or []
         market_data = state.get("market_data", []) or []
         xbrl_facts = state.get("xbrl_facts", []) or []
+        calc_res = state.get("calc_results", []) or []
 
         evidence_items: list[str] = []
         idx = 1
@@ -554,6 +658,16 @@ class AgenticRAGv4(AgenticRAGv3):
                 f"{f.get('entity', f.get('ticker',''))} {f.get('concept','')} "
                 f"FY{f.get('fy','?')}: {f.get('value_str','')}\n"
                 f"Source: {f.get('source','')} (us-gaap:{f.get('tag','')})."
+            )
+            idx += 1
+
+        # 0b. Derived metrics computed over XBRL inputs (margins, ratios, growth,
+        # CAGR, trends). Also authoritative — deterministic math on exact filed
+        # figures — so the synthesizer should use these values verbatim.
+        for r in calc_res:
+            evidence_items.append(
+                f"[{idx}] DERIVED METRIC (computed from exact XBRL inputs) — "
+                f"{self._format_calc_result(r)}"
             )
             idx += 1
 
@@ -800,6 +914,7 @@ single item is irrelevant."""
         g.add_node("grader", self.grader_node)
         g.add_node("rewrite", self.rewrite_node)
         g.add_node("xbrl", self.xbrl_node)
+        g.add_node("calculator", self.calculator_node)
         g.add_node("table_agent", self.table_agent_node)
         g.add_node("market_data", self.market_data_node)
         g.add_node("web_search", self.web_search_node)
@@ -813,10 +928,11 @@ single item is irrelevant."""
         g.add_edge("planner", "router")
         g.add_edge("router", "retrieve")
         g.add_edge("retrieve", "grader")
-        # Phase 3: numeric sub-queries hit XBRL first (exact structured facts),
-        # then the table agent supplements. `_grade_router` still returns
-        # "table_agent" as its proceed verdict; we just send that to `xbrl` and
-        # chain xbrl → table_agent so both run.
+        # Phase 3-4: numeric sub-queries hit XBRL first (exact structured facts),
+        # then the calculator (derived metrics over those facts), then the table
+        # agent supplements. `_grade_router` still returns "table_agent" as its
+        # proceed verdict; we send that to `xbrl` and chain
+        # xbrl → calculator → table_agent so all three run.
         g.add_conditional_edges(
             "grader", self._grade_router,
             {"rewrite": "rewrite", "table_agent": "xbrl"},
@@ -825,7 +941,8 @@ single item is irrelevant."""
         # it must be re-classified or query_routes goes stale (which silently
         # dropped the table/market lanes on the retry pass).
         g.add_edge("rewrite", "router")
-        g.add_edge("xbrl", "table_agent")
+        g.add_edge("xbrl", "calculator")
+        g.add_edge("calculator", "table_agent")
         g.add_edge("table_agent", "market_data")
         g.add_edge("market_data", "web_search")
         g.add_edge("web_search", "synthesize")
@@ -859,6 +976,22 @@ single item is irrelevant."""
         return bool(re.search(r"\d", text or ""))
 
     @staticmethod
+    def _format_calc_result(r: dict) -> str:
+        """One readable, auditable line (or block) for a derived-metric result."""
+        ticker = r.get("ticker", "")
+        metric = str(r.get("metric", "")).replace("_", " ")
+        if r.get("series"):                       # trend
+            pts = ", ".join(
+                f"FY{s.get('fy', s.get('period'))}={s.get('value_str')}"
+                for s in r["series"] if s.get("ok")
+            )
+            tail = f" — {r['summary']}" if r.get("summary") else ""
+            return f"{ticker} {metric} trend: {pts}{tail}"
+        # scalar (ratio / margin / growth / cagr)
+        head = f"{ticker} {metric} = {r.get('value_str', '')}"
+        return f"{head}\n{r.get('source', '')}"
+
+    @staticmethod
     def _build_evidence_block(state: AgentState) -> str:
         parts: list[str] = []
         # XBRL facts are the strongest grounding for any numeric claim.
@@ -868,6 +1001,9 @@ single item is irrelevant."""
                 f"FY{f.get('fy','?')} = {f.get('value_str','')} ({f.get('value')})\n"
                 f"{f.get('source','')}"
             )
+        # Derived metrics computed from those exact XBRL inputs.
+        for r in state.get("calc_results", []) or []:
+            parts.append(f"[Calc] {AgenticRAGv4._format_calc_result(r)}")
         for c in state.get("retrieved_chunks", []):
             parts.append(f"[Text] {c.get('source', '')}\n{c.get('text', '')[:1500]}")
         for t in state.get("table_results", []):

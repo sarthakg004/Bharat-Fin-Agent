@@ -8,11 +8,11 @@ Shared infrastructure:
     TickerCIKResolver (Phase 2) — ticker/name → SEC CIK; backs XBRL, fetch, FTS.
 
 Structured-data tools:
-    XBRLClient (Phase 3) — exact reported figures from SEC XBRL company-facts.
+    XBRLClient (Phase 3)        — exact reported figures from SEC XBRL company-facts.
+    FinancialCalculator (Phase 4) — margins/ratios/growth/CAGR/trends over XBRL inputs.
 
 Roadmap tools (stubs — `BaseTool` subclasses, implemented in later phases):
-    FinancialCalculator (Phase 4), SecFilingFetcher (Phase 5),
-    EdgarFullTextSearch (Phase 6).
+    SecFilingFetcher (Phase 5), EdgarFullTextSearch (Phase 6).
 
 Infrastructure:
     BaseTool, ToolRegistry — interface + name→tool registry.

@@ -62,6 +62,9 @@ class AgentState(TypedDict, total=False):
     # --- XBRL structured facts (Phase 3) ---------------------------------- #
     xbrl_facts: list[dict]             # one exact reported figure per numeric sub-query
 
+    # --- Derived metrics computed over XBRL (Phase 4) --------------------- #
+    calc_results: list[dict]           # margins/ratios/growth/CAGR/trends from XBRL inputs
+
     # --- Conversation memory ---------------------------------------------- #
     chat_history: list[dict]           # last K turns: [{role: "user"|"assistant", content}]
 
@@ -233,6 +236,40 @@ class XBRLQuery(BaseModel):
     period: str = Field(
         default="",
         description="Fiscal period like 'FY2022' or '2021'. Empty → most recent.",
+    )
+
+
+class CalcQuery(BaseModel):
+    """Structured extraction of a *derived-metric* numeric sub-query (Phase 4).
+
+    Turns "What was Apple's operating margin trend over the last 3 years?" into
+    (is_derived=True, ticker='AAPL', metric='operating_margin',
+    periods=['FY2020','FY2021','FY2022']). Plain single-figure lookups
+    (is_derived=False) are left to the XBRL facts node.
+    """
+
+    is_derived: bool = Field(
+        default=False,
+        description="True only if the sub-query asks for a DERIVED metric: a "
+                    "margin, ratio, YoY growth, CAGR, or a multi-year trend of one "
+                    "of those. False for a single reported figure (handled by XBRL).",
+    )
+    ticker: str = Field(default="", description="Ticker or company name (e.g. 'AAPL').")
+    metric: str = Field(
+        default="",
+        description="Canonical metric: gross_margin, operating_margin, net_margin, "
+                    "current_ratio, debt_to_equity, return_on_equity, "
+                    "return_on_assets, asset_turnover, interest_coverage, growth, cagr.",
+    )
+    concept: str = Field(
+        default="",
+        description="For 'growth'/'cagr' only: the underlying line item "
+                    "(revenue, net income, …) whose change is measured.",
+    )
+    periods: list[str] = Field(
+        default_factory=list,
+        description="Fiscal periods involved, e.g. ['FY2020','FY2021','FY2022']. "
+                    "Two periods for growth/cagr (earliest first); 2-5 for a trend.",
     )
 
 

@@ -22,11 +22,12 @@ from finagent.agents.state import (  # noqa: F401
     NumericVerification,
     MarketIntent,
     XBRLQuery,
+    CalcQuery,
 )
 
 __all__ = [
     "AgentState", "SubQueries", "ClaimVerdict", "CriticReport", "ChunkScore",
     "GraderReport", "RewrittenQuery", "QueryRoute", "RouterReport", "TableTitle",
     "PandasCode", "Translation", "NumericClaim", "NumericVerification", "MarketIntent",
-    "XBRLQuery",
+    "XBRLQuery", "CalcQuery",
 ]

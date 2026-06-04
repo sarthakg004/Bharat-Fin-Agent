@@ -141,7 +141,7 @@ def run_agentic(market: str, question: str, top_k: int = 5,
     initial_state: dict[str, object] = {
         "question": question,
         "iteration_count": 0, "errors": [],
-        "table_results": [], "web_results": [], "xbrl_facts": [],
+        "table_results": [], "web_results": [], "xbrl_facts": [], "calc_results": [],
     }
     if chat_history:
         initial_state["chat_history"] = chat_history
@@ -191,6 +191,27 @@ def run_agentic(market: str, question: str, top_k: int = 5,
             "citation": f.get("source", ""),
             "sub_query": f.get("sub_query", ""),
             "kind": "xbrl",
+        })
+        next_id += 1
+
+    # 0b. Derived metrics computed over XBRL inputs (margins, ratios, growth,
+    # CAGR, trends) — listed right after the raw XBRL facts they're built from.
+    for r in state.get("calc_results", []) or []:
+        if not r.get("ok"):
+            continue
+        from finagent.graph.agent import AgenticRAGv4 as _Agent
+        chunks.append({
+            "id": next_id,
+            "text": _Agent._format_calc_result(r),
+            "company": r.get("ticker", "?"),
+            "ticker": r.get("ticker", ""),
+            "year": str(r.get("fy", r.get("end_period", "?"))),
+            "page": "—",
+            "market": market,
+            "source_url": "",
+            "citation": f"(Computed: {str(r.get('metric','')).replace('_',' ')} from XBRL)",
+            "sub_query": r.get("sub_query", ""),
+            "kind": "calc",
         })
         next_id += 1
 
@@ -313,6 +334,7 @@ def run_agentic(market: str, question: str, top_k: int = 5,
             "unverified_count": len(nv.get("unverified", [])) if isinstance(nv, dict) else 0,
             "web_hits": len(state.get("web_results", []) or []),
             "xbrl_facts": len(state.get("xbrl_facts", []) or []),
+            "calc_results": len(state.get("calc_results", []) or []),
             "table_computations": len(state.get("table_results", []) or []),
             "market_calls": len(state.get("market_data", []) or []),
             "citations": state.get("citations", []),

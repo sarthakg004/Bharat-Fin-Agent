@@ -224,8 +224,18 @@ class XBRLClient(BaseTool):
 
     @staticmethod
     def canonical_concept(concept: str) -> Optional[str]:
-        """Map free-text concept ('total revenue') to a canonical key ('revenue')."""
-        q = (concept or "").lower()
+        """Map free-text concept ('total revenue') to a canonical key ('revenue').
+
+        Accepts both the canonical keys themselves ('operating_income', passed by
+        the calculator) and free text ('operating income', 'net sales').
+        """
+        q = (concept or "").strip().lower()
+        # Fast path: the caller passed a canonical key verbatim.
+        if q in CONCEPT_TAGS:
+            return q
+        # Normalise separators so 'operating_income' matches the 'operating
+        # income' keyword just like the free-text form does.
+        q = q.replace("_", " ").replace("-", " ")
         # Prefer the longest matching keyword so "operating income" beats "income".
         best: Optional[tuple[int, str]] = None
         for kw, key in _CONCEPT_KEYWORDS:
