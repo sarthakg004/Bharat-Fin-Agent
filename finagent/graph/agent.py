@@ -214,11 +214,16 @@ class AgenticRAGv4(AgenticRAGv3):
         translator_model: Optional[str] = None,
         verifier_model: Optional[str] = None,
         min_verify_score: float = 0.5,
+        dispatch: bool = True,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
         self.news_collection = news_collection
         self.web_top_k = web_top_k
+        # Phase 7 query-type dispatcher. When True, non-narrative questions skip
+        # retrieval/grading and go straight to the right tool. Set False to A/B
+        # against the legacy "always retrieve everything" path.
+        self.dispatch = dispatch
         # Translation is sensitive to model quality (especially Indian languages
         # with their digit grouping and proper-noun handling). Default to the
         # strong tier; override via translator_model for cheap-tier runs.
@@ -539,6 +544,31 @@ class AgenticRAGv4(AgenticRAGv3):
                 self._log(state, f"calc miss for {sub_q!r}: {res.get('error')}")
         return {"calc_results": results}
 
+    def table_agent_node(self, state: AgentState) -> dict:
+        """Phase 7: the table agent is the numeric *fallback*, not a duplicate.
+
+        Skip any numeric sub-query the XBRL facts node or the calculator already
+        answered — that trims an embedding search over the tables collection plus
+        a code-generation LLM call for each already-answered sub-query. The table
+        agent still runs for numeric sub-queries XBRL/calc couldn't serve.
+        """
+        answered = {f.get("sub_query") for f in state.get("xbrl_facts", []) or []}
+        answered |= {r.get("sub_query") for r in state.get("calc_results", []) or []}
+        if not answered:
+            return super().table_agent_node(state)
+
+        sub_queries = state.get("sub_queries") or [state["question"]]
+        routes = state.get("query_routes") or ["narrative"] * len(sub_queries)
+        remaining = [s for s, r in zip(sub_queries, routes)
+                     if r == "numeric" and s not in answered]
+        if not remaining:
+            return {"table_results": []}
+        # Restrict the table agent to the still-unanswered numeric sub-queries.
+        proxy = dict(state)
+        proxy["sub_queries"] = remaining
+        proxy["query_routes"] = ["numeric"] * len(remaining)
+        return super().table_agent_node(proxy)
+
     def market_data_node(self, state: AgentState) -> dict:
         """Call yfinance tools for sub-queries routed to `market`.
 
@@ -652,9 +682,14 @@ class AgenticRAGv4(AgenticRAGv3):
         routes = state.get("query_routes") or ["narrative"] * len(sub_queries)
         external_subs = [s for s, r in zip(sub_queries, routes) if r == "external"]
 
-        # Escalation: no explicit external sub-queries, but text retrieval
-        # didn't find usable evidence → fall back to the original question.
-        if not external_subs:
+        # Corrective dispatch (CRAG): no explicit external sub-queries, but a
+        # NARRATIVE retrieval was attempted and came back empty/poorly graded →
+        # escalate to web. We gate on a narrative route having run: under the
+        # Phase 7 dispatcher a purely numeric/cross-doc question skips retrieval
+        # by design, so empty `retrieved_chunks` there is expected, not a failure
+        # to correct — we must NOT escalate those to web.
+        narrative_attempted = (not routes) or any(r == "narrative" for r in routes)
+        if not external_subs and narrative_attempted:
             chunks = state.get("retrieved_chunks") or []
             avg_grade = state.get("avg_grade")
             retrieval_was_poor = (not chunks) or (
@@ -1075,6 +1110,25 @@ single item is irrelevant."""
     # Routers
     # ------------------------------------------------------------------ #
 
+    def _dispatch_router(self, state: AgentState) -> str:
+        """Phase 7 query-type dispatcher — pick the cheapest path that answers.
+
+        * any narrative sub-query (or no routing at all) → the **retrieval
+          path**: corpus-fetch gate → hybrid retrieve → grade → corrective loop.
+          This path also flows into the tool chain afterwards, so a mixed
+          question (narrative + numeric) still gets XBRL/calc/EDGAR.
+        * purely non-narrative (numeric / derived-metric / market /
+          cross-document / external) → straight into the **tool chain**, skipping
+          the fetch gate, retrieval, and grading entirely. This is the
+          efficiency win: a numeric question never touches retrieval.
+
+        With `self.dispatch` False the router always takes the retrieval path —
+        the legacy "retrieve everything" behaviour — for A/B measurement.
+        """
+        routes = state.get("query_routes") or []
+        has_narrative = (not routes) or any(r == "narrative" for r in routes)
+        return "retrieval" if (not self.dispatch or has_narrative) else "tools"
+
     def _verify_router(self, state: AgentState) -> str:
         """After numeric verification: refuse / retry retrieval / continue to translate-out.
 
@@ -1129,9 +1183,15 @@ single item is irrelevant."""
         # English-only: no language detection / translation nodes.
         g.add_edge(START, "planner")
         g.add_edge("planner", "router")
+        # Phase 7 dispatcher: route to the cheapest path. Narrative (and the
+        # default) take the retrieval path; purely non-narrative questions skip
+        # straight to the tool chain (no fetch gate, no retrieval, no grading).
+        g.add_conditional_edges(
+            "router", self._dispatch_router,
+            {"retrieval": "fetch_filing", "tools": "xbrl"},
+        )
         # Phase 5: corpus-membership gate before retrieval — fetch + ingest a
         # missing US company's 10-K so retrieval can find it on this turn.
-        g.add_edge("router", "fetch_filing")
         g.add_edge("fetch_filing", "retrieve")
         g.add_edge("retrieve", "grader")
         # Phase 3-4: numeric sub-queries hit XBRL first (exact structured facts),
