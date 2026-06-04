@@ -24,32 +24,46 @@ load_dotenv()
 
 
 _lock = Lock()
-_client: Any = None
+# One PersistentClient PER on-disk path, shared across every Chroma store on that
+# path. This is critical for correctness, not just efficiency: chromadb's
+# hnswlib/sqlite backend is NOT safe for two separate client handles touching the
+# same collection concurrently — the dynamic-fetch ingest WRITES `us_filings`
+# while the agent's retriever holds it OPEN for reads, and two native handles on
+# one segment SIGSEGVs the process. Sharing a single client routes both through
+# chromadb's own locking instead.
+_clients: dict[str, Any] = {}
 
 
-def _build_client() -> Any:
-    import chromadb
-
-    persist_dir = Path(os.getenv("CHROMA_DIR", "data/chroma"))
-    persist_dir.mkdir(parents=True, exist_ok=True)
-    return chromadb.PersistentClient(path=str(persist_dir))
+def _resolve_dir(persist_dir: Union[str, Path, None]) -> str:
+    if persist_dir is None:
+        persist_dir = os.getenv("CHROMA_DIR", "data/chroma")
+    return str(Path(persist_dir).resolve())
 
 
-def get_chroma_client() -> Any:
-    """Return the shared Chroma PersistentClient, built once."""
-    global _client
-    if _client is None:
+def get_chroma_client(persist_dir: Union[str, Path, None] = None) -> Any:
+    """Return the shared Chroma PersistentClient for `persist_dir`, built once."""
+    key = _resolve_dir(persist_dir)
+    client = _clients.get(key)
+    if client is None:
         with _lock:
-            if _client is None:
-                _client = _build_client()
-    return _client
+            client = _clients.get(key)
+            if client is None:
+                import chromadb
+
+                Path(key).mkdir(parents=True, exist_ok=True)
+                client = chromadb.PersistentClient(path=key)
+                _clients[key] = client
+    return client
 
 
 def chroma_kwargs_for_langchain(persist_dir: Union[str, Path, None] = None) -> dict:
-    """Kwargs for `langchain_chroma.Chroma(...)`."""
-    if persist_dir is None:
-        persist_dir = os.getenv("CHROMA_DIR", "data/chroma")
-    return {"persist_directory": str(persist_dir)}
+    """Kwargs for `langchain_chroma.Chroma(...)`.
+
+    Returns the SHARED client (not a bare `persist_directory`) so every store on
+    a given path reuses one chromadb handle — see `_clients` above for why this
+    prevents a concurrent read/write segfault.
+    """
+    return {"client": get_chroma_client(persist_dir)}
 
 
 def describe() -> dict:

@@ -51,6 +51,14 @@ if os.getenv("FORCE_IPV4", "").strip().lower() in ("1", "true", "yes"):
 
     _socket.getaddrinfo = _getaddrinfo_ipv4
 
+# Native-thread safety. The graph runs in a ThreadPoolExecutor, so embedding /
+# tokenizer / Chroma work happens off the main thread. The HuggingFace
+# `tokenizers` Rust parallelism is not fork/thread-safe and can SIGSEGV; disable
+# it before transformers is imported (it reads this at import time). Overridable.
+# On a GPU box you may also want FINAGENT_DEVICE=cpu locally, since CUDA from a
+# worker thread is fragile — production (Cloud Run) is CPU anyway.
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
@@ -87,7 +95,15 @@ app.add_middleware(
     allow_methods=["*"], allow_headers=["*"],
 )
 
-_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="rag")
+# The agent graph touches non-thread-safe native stacks: Chroma/hnswlib (a
+# concurrent read while the dynamic-fetch ingest WRITES the same collection
+# segfaults) and CUDA from worker threads. So run the graph on a SINGLE worker —
+# requests queue rather than racing the native libs. The API stays async for I/O
+# (DB, SSE); only the heavy RAG call is serialized here. Raise RAG_MAX_WORKERS
+# once the ingest write-path is moved off the live collection (Phase 12).
+_executor = ThreadPoolExecutor(
+    max_workers=int(os.getenv("RAG_MAX_WORKERS", "1")), thread_name_prefix="rag"
+)
 
 # Stateless mode (set on scale-to-zero hosts like Cloud Run): no server-side
 # chat store — the client supplies conversation memory via QueryRequest.chat_history
