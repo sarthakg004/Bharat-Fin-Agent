@@ -110,6 +110,23 @@ Return only the rewritten question.
 # Hybrid retriever (BM25 + dense + cross-encoder reranker)
 # --------------------------------------------------------------------------- #
 
+# Process-wide cache so every HybridRetriever (one per collection) reuses a
+# single CrossEncoder per model name instead of loading a ~1.1 GB copy each.
+_SHARED_RERANKERS: dict = {}
+
+
+def _get_shared_reranker(model_name: str):
+    reranker = _SHARED_RERANKERS.get(model_name)
+    if reranker is None:
+        from sentence_transformers import CrossEncoder
+
+        from finagent.device import get_device
+
+        reranker = CrossEncoder(model_name, device=get_device())
+        _SHARED_RERANKERS[model_name] = reranker
+    return reranker
+
+
 class HybridRetriever:
     """Fuse BM25 and dense retrieval, then rerank with a cross-encoder.
 
@@ -199,11 +216,12 @@ class HybridRetriever:
 
     def _ensure_reranker(self):
         if self._reranker is None:
-            from sentence_transformers import CrossEncoder
-
-            from finagent.device import get_device
-
-            self._reranker = CrossEncoder(self.reranker_model, device=get_device())
+            # Share ONE CrossEncoder per model across every HybridRetriever in
+            # the process. The agent builds one retriever per collection, so
+            # without this each collection loaded its own ~1.1 GB reranker —
+            # two collections blew past Cloud Run's 4 GiB and OOM-killed the
+            # container (exit 137) mid-query.
+            self._reranker = _get_shared_reranker(self.reranker_model)
         return self._reranker
 
     def _fetch_all_chunks(self) -> list[tuple[str, dict]]:

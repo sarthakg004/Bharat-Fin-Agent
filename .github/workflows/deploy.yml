@@ -60,6 +60,8 @@ jobs:
             --source . \
             --project "${PROJECT_ID}" \
             --region "${REGION}" \
+            --memory 8Gi \
+            --cpu 2 \
             --cpu-boost \
             --quiet
 
