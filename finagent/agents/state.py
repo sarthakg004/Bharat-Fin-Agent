@@ -59,6 +59,9 @@ class AgentState(TypedDict, total=False):
     market_data: list[dict]            # one entry per tool call (quote/history/...)
     charts: list[dict]                 # frontend-ready chart specs (lightweight-charts JSON)
 
+    # --- XBRL structured facts (Phase 3) ---------------------------------- #
+    xbrl_facts: list[dict]             # one exact reported figure per numeric sub-query
+
     # --- Conversation memory ---------------------------------------------- #
     chat_history: list[dict]           # last K turns: [{role: "user"|"assistant", content}]
 
@@ -201,6 +204,37 @@ class NumericVerification(BaseModel):
 # --------------------------------------------------------------------------- #
 # Market-data tool selection
 # --------------------------------------------------------------------------- #
+
+class XBRLQuery(BaseModel):
+    """Structured extraction of a numeric sub-query for the XBRL facts tool.
+
+    Turns "What was Apple's total revenue in FY2022?" into
+    (ticker='AAPL', concept='revenue', period='FY2022') so the XBRL client can
+    look up the exact reported figure. `answerable` is False when the sub-query
+    isn't a single-company single-figure lookup (comparisons, derived ratios,
+    or narrative questions) — those stay with retrieval / the table agent.
+    """
+
+    answerable: bool = Field(
+        default=False,
+        description="True only if this asks for ONE reported line-item figure for "
+                    "ONE US-listed company and period (revenue, net income, total "
+                    "assets, EPS, R&D, etc.). False for ratios/growth/comparisons.",
+    )
+    ticker: str = Field(
+        default="",
+        description="Ticker or company name to resolve (e.g. 'AAPL' or 'Apple').",
+    )
+    concept: str = Field(
+        default="",
+        description="The financial line item in plain words: 'revenue', 'net "
+                    "income', 'total assets', 'gross profit', 'diluted EPS', etc.",
+    )
+    period: str = Field(
+        default="",
+        description="Fiscal period like 'FY2022' or '2021'. Empty → most recent.",
+    )
+
 
 class MarketIntent(BaseModel):
     """The market-data node's plan — a SINGLE tool call.

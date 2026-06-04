@@ -141,7 +141,7 @@ def run_agentic(market: str, question: str, top_k: int = 5,
     initial_state: dict[str, object] = {
         "question": question,
         "iteration_count": 0, "errors": [],
-        "table_results": [], "web_results": [],
+        "table_results": [], "web_results": [], "xbrl_facts": [],
     }
     if chat_history:
         initial_state["chat_history"] = chat_history
@@ -169,6 +169,30 @@ def run_agentic(market: str, question: str, top_k: int = 5,
 
     chunks: list[dict] = []
     next_id = 0
+
+    # 0. XBRL facts FIRST — exact structured figures from SEC company-facts.
+    # Listed first so the `[N]` numbering aligns with the synthesizer, which
+    # presents XBRL facts as the leading authoritative evidence (Phase 3).
+    for f in state.get("xbrl_facts", []) or []:
+        if not f.get("ok"):
+            continue
+        chunks.append({
+            "id": next_id,
+            "text": (f"{f.get('concept','')} (FY{f.get('fy','?')}) = "
+                     f"{f.get('value_str','')}\n"
+                     f"Exact figure as filed — us-gaap:{f.get('tag','')}, "
+                     f"{f.get('form','')} {f.get('end','')}."),
+            "company": f.get("entity", f.get("ticker", "?")),
+            "ticker": f.get("ticker", ""),
+            "year": str(f.get("fy", "?")),
+            "page": "—",
+            "market": market,
+            "source_url": "",
+            "citation": f.get("source", ""),
+            "sub_query": f.get("sub_query", ""),
+            "kind": "xbrl",
+        })
+        next_id += 1
 
     # 1. Text excerpts (filtered by company if requested).
     for c in state.get("retrieved_chunks", []) or []:
@@ -288,6 +312,7 @@ def run_agentic(market: str, question: str, top_k: int = 5,
             "numeric_verification_score": nv.get("score"),
             "unverified_count": len(nv.get("unverified", [])) if isinstance(nv, dict) else 0,
             "web_hits": len(state.get("web_results", []) or []),
+            "xbrl_facts": len(state.get("xbrl_facts", []) or []),
             "table_computations": len(state.get("table_results", []) or []),
             "market_calls": len(state.get("market_data", []) or []),
             "citations": state.get("citations", []),

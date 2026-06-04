@@ -48,9 +48,10 @@ from finagent.graph.full import (
     append_comparison_row,  # noqa: F401  re-export
 )
 from finagent.graph.market_tools import call_tool as call_market_tool
-from finagent.graph.state import AgentState, MarketIntent, NumericVerification
+from finagent.graph.state import AgentState, MarketIntent, NumericVerification, XBRLQuery
 from finagent.graph.translate import detect_language, language_name, translate_text
 from finagent.graph.web_search import WebSearcher
+from finagent.tools.xbrl import XBRLClient
 
 
 # --------------------------------------------------------------------------- #
@@ -111,6 +112,30 @@ Extract every numeric claim from the answer (revenue figures, percentages,
 ratios, counts) and report whether each is supported by the evidence.
 """
 
+XBRL_EXTRACT_SYSTEM = """\
+You extract a single structured XBRL lookup from a numeric sub-query about a US
+public company's financial statements. Decide whether the sub-query asks for ONE
+exact reported line-item figure (revenue, net income, total assets, gross
+profit, R&D expense, diluted EPS, cash, long-term debt, …) for ONE company and
+period — if so set answerable=true and fill ticker, concept (plain words), and
+period (e.g. 'FY2022'). Set answerable=false for derived metrics (margins,
+growth, ratios, CAGR), multi-company comparisons, or narrative questions — those
+are handled elsewhere. Use the conversation context to resolve a follow-up's
+company/period if the sub-query omits them.
+"""
+
+XBRL_EXTRACT_PROMPT = """\
+Numeric sub-query: {sub_query}
+
+Return the XBRL lookup (answerable, ticker, concept, period).
+"""
+
+XBRL_TAG_SYSTEM = """\
+You map a plain-language financial concept to the single best US-GAAP XBRL tag
+from a list of tags a company actually reports. Reply with EXACTLY one tag name
+copied verbatim from the list (no explanation). If none fit, reply 'NONE'.
+"""
+
 REFUSAL_TEMPLATE = (
     "I don't have enough information to answer this from the available "
     "filings{web_clause}. The retrieval and numeric verification steps could "
@@ -148,6 +173,7 @@ class AgenticRAGv4(AgenticRAGv3):
         self.verifier_model = verifier_model or self.critic_model
         self.min_verify_score = min_verify_score
         self._web: Optional[WebSearcher] = None
+        self._xbrl: Optional[XBRLClient] = None
 
     # ------------------------------------------------------------------ #
     # Resources
@@ -163,6 +189,34 @@ class AgenticRAGv4(AgenticRAGv3):
                 top_k=self.web_top_k,
             )
         return self._web
+
+    @property
+    def xbrl(self) -> XBRLClient:
+        """SEC XBRL company-facts client (Phase 3). The tag-heterogeneity LLM
+        fallback is wired to the router-tier model via `_xbrl_pick_tag`."""
+        if self._xbrl is None:
+            self._xbrl = XBRLClient(tag_resolver=self._xbrl_pick_tag)
+        return self._xbrl
+
+    def _xbrl_pick_tag(self, concept: str, available_tags: list[str]):
+        """LLM fallback for the XBRL client: pick the best US-GAAP tag for a
+        concept from the tags a company actually reports. Used only when the
+        curated concept→tag map misses (keeps cost near zero on the common path).
+        """
+        from langchain_core.messages import HumanMessage, SystemMessage
+
+        # Cap the candidate list so the prompt stays small; the curated map
+        # already covers the common tags, so this is a genuine long-tail fallback.
+        listing = "\n".join(available_tags[:200])
+        try:
+            resp = self._get_router_llm().invoke([
+                SystemMessage(content=XBRL_TAG_SYSTEM),
+                HumanMessage(content=f"Concept: {concept}\n\nAvailable tags:\n{listing}"),
+            ])
+            choice = (resp.content or "").strip().strip("`").split()[0]
+            return None if choice.upper() == "NONE" else choice
+        except Exception:
+            return None
 
     def _get_translator_llm(self):
         if "translator" not in self._llms:
@@ -212,6 +266,63 @@ class AgenticRAGv4(AgenticRAGv3):
                 self.provider, self.planner_model, self.api_key, temperature=0.0,
             )
         return self._llms["market_planner"]
+
+    def xbrl_node(self, state: AgentState) -> dict:
+        """Answer numeric sub-queries from SEC XBRL structured facts (Phase 3).
+
+        For each sub-query the router flagged `numeric`, extract a single
+        (ticker, concept, period) lookup with a cheap LLM call, then fetch the
+        exact reported figure from `data.sec.gov` company-facts. The figure is
+        authoritative — it comes straight from the company's filing — so it
+        becomes the highest-priority evidence the synthesizer cites, and it
+        anchors numeric verification (no LLM in the number path = nothing to
+        hallucinate). Derived metrics / comparisons fall through to retrieval and
+        the table agent (and, in Phase 4, the calculator-over-XBRL).
+        """
+        from langchain_core.messages import HumanMessage, SystemMessage
+
+        sub_queries = state.get("sub_queries") or [state["question"]]
+        routes = state.get("query_routes") or ["narrative"] * len(sub_queries)
+        numeric_subs = [s for s, r in zip(sub_queries, routes) if r == "numeric"]
+        if not numeric_subs:
+            return {"xbrl_facts": []}
+
+        # Conversation context lets a follow-up ("and FY2023?") inherit company.
+        history = state.get("chat_history") or []
+        history_block = ""
+        if history:
+            lines = [
+                f"{('User' if t.get('role') == 'user' else 'Assistant')}: "
+                f"{(t.get('content') or '')[:300]}"
+                for t in history[-4:]
+            ]
+            history_block = "Recent conversation:\n" + "\n".join(lines) + "\n\n"
+
+        extractor = self._get_router_llm().with_structured_output(XBRLQuery)
+        facts: list[dict] = []
+        for sub_q in numeric_subs:
+            try:
+                q: XBRLQuery = extractor.invoke([
+                    SystemMessage(content=XBRL_EXTRACT_SYSTEM),
+                    HumanMessage(content=history_block + XBRL_EXTRACT_PROMPT.format(sub_query=sub_q)),
+                ])
+            except Exception as e:
+                self._log(state, f"xbrl extract failed for {sub_q!r}: {e}")
+                continue
+            if not q.answerable or not (q.ticker and q.concept):
+                continue
+            try:
+                res = self.xbrl.run(ticker=q.ticker, concept=q.concept,
+                                    period=q.period or None)
+            except Exception as e:
+                self._log(state, f"xbrl lookup failed for {sub_q!r}: {e}")
+                continue
+            res["sub_query"] = sub_q
+            if res.get("ok"):
+                facts.append(res)
+            else:
+                self._log(state, f"xbrl miss for {sub_q!r}: {res.get('error')}")
+        return {"xbrl_facts": facts}
 
     def market_data_node(self, state: AgentState) -> dict:
         """Call yfinance tools for sub-queries routed to `market`.
@@ -363,6 +474,18 @@ class AgenticRAGv4(AgenticRAGv3):
         """
         pseudo_chunks: list[dict] = []
 
+        # XBRL facts → pseudo chunks (authoritative structured figures).
+        for f in state.get("xbrl_facts", []) or []:
+            pseudo_chunks.append({
+                "text": (f"{f.get('concept','')} FY{f.get('fy','?')} = "
+                         f"{f.get('value_str','')} ({f.get('value')})"),
+                "source": f.get("source", "<XBRL>"),
+                "company": f.get("entity", f.get("ticker", "?")),
+                "year": str(f.get("fy", "?")),
+                "page": "—",
+                "sub_query": f.get("sub_query", ""),
+            })
+
         # Web hits → pseudo chunks
         for h in state.get("web_results", []) or []:
             pseudo_chunks.append({
@@ -415,9 +538,24 @@ class AgenticRAGv4(AgenticRAGv3):
         web_res = state.get("web_results", []) or []
         table_res = state.get("table_results", []) or []
         market_data = state.get("market_data", []) or []
+        xbrl_facts = state.get("xbrl_facts", []) or []
 
         evidence_items: list[str] = []
         idx = 1
+
+        # 0. XBRL facts FIRST — exact, structured, filing-sourced figures. These
+        # are authoritative: when a figure exists here, the synthesizer must use
+        # this value verbatim and prefer it over any number paraphrased from
+        # prose, tables, or the web. (Matches the frontend ordering in
+        # rag_service, which lists XBRL chunks first.)
+        for f in xbrl_facts:
+            evidence_items.append(
+                f"[{idx}] XBRL FACT (authoritative — exact figure as filed) — "
+                f"{f.get('entity', f.get('ticker',''))} {f.get('concept','')} "
+                f"FY{f.get('fy','?')}: {f.get('value_str','')}\n"
+                f"Source: {f.get('source','')} (us-gaap:{f.get('tag','')})."
+            )
+            idx += 1
 
         # 1. Text excerpts
         for c in chunks:
@@ -661,6 +799,7 @@ single item is irrelevant."""
         g.add_node("retrieve", self.hybrid_retrieve_node)
         g.add_node("grader", self.grader_node)
         g.add_node("rewrite", self.rewrite_node)
+        g.add_node("xbrl", self.xbrl_node)
         g.add_node("table_agent", self.table_agent_node)
         g.add_node("market_data", self.market_data_node)
         g.add_node("web_search", self.web_search_node)
@@ -674,14 +813,19 @@ single item is irrelevant."""
         g.add_edge("planner", "router")
         g.add_edge("router", "retrieve")
         g.add_edge("retrieve", "grader")
+        # Phase 3: numeric sub-queries hit XBRL first (exact structured facts),
+        # then the table agent supplements. `_grade_router` still returns
+        # "table_agent" as its proceed verdict; we just send that to `xbrl` and
+        # chain xbrl → table_agent so both run.
         g.add_conditional_edges(
             "grader", self._grade_router,
-            {"rewrite": "rewrite", "table_agent": "table_agent"},
+            {"rewrite": "rewrite", "table_agent": "xbrl"},
         )
         # Re-route after a rewrite: the rewritten query replaces sub_queries, so
         # it must be re-classified or query_routes goes stale (which silently
         # dropped the table/market lanes on the retry pass).
         g.add_edge("rewrite", "router")
+        g.add_edge("xbrl", "table_agent")
         g.add_edge("table_agent", "market_data")
         g.add_edge("market_data", "web_search")
         g.add_edge("web_search", "synthesize")
@@ -717,6 +861,13 @@ single item is irrelevant."""
     @staticmethod
     def _build_evidence_block(state: AgentState) -> str:
         parts: list[str] = []
+        # XBRL facts are the strongest grounding for any numeric claim.
+        for f in state.get("xbrl_facts", []) or []:
+            parts.append(
+                f"[XBRL] {f.get('entity', f.get('ticker',''))} {f.get('concept','')} "
+                f"FY{f.get('fy','?')} = {f.get('value_str','')} ({f.get('value')})\n"
+                f"{f.get('source','')}"
+            )
         for c in state.get("retrieved_chunks", []):
             parts.append(f"[Text] {c.get('source', '')}\n{c.get('text', '')[:1500]}")
         for t in state.get("table_results", []):

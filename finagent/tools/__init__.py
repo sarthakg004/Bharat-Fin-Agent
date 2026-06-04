@@ -7,9 +7,12 @@ Live tools (migrated here, re-exported from old `finagent.graph` paths):
 Shared infrastructure:
     TickerCIKResolver (Phase 2) — ticker/name → SEC CIK; backs XBRL, fetch, FTS.
 
+Structured-data tools:
+    XBRLClient (Phase 3) — exact reported figures from SEC XBRL company-facts.
+
 Roadmap tools (stubs — `BaseTool` subclasses, implemented in later phases):
-    XBRLClient (Phase 3), FinancialCalculator (Phase 4), SecFilingFetcher
-    (Phase 5), EdgarFullTextSearch (Phase 6).
+    FinancialCalculator (Phase 4), SecFilingFetcher (Phase 5),
+    EdgarFullTextSearch (Phase 6).
 
 Infrastructure:
     BaseTool, ToolRegistry — interface + name→tool registry.
