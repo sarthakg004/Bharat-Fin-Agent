@@ -308,6 +308,7 @@ class AgenticRAGv4(AgenticRAGv3):
         analyst_voice: bool = True,
         dedupe: bool = True,
         dedupe_threshold: float = 0.93,
+        strict_numeric: bool = True,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -324,6 +325,11 @@ class AgenticRAGv4(AgenticRAGv3):
         # before synthesis so the answer doesn't repeat itself. Set False to A/B.
         self.dedupe = dedupe
         self.dedupe_threshold = dedupe_threshold
+        # Phase 11 strict numeric verification: deterministically extract every
+        # figure in the draft and confirm each traces to XBRL / evidence; an
+        # ungrounded figure re-routes then refuses. Set False to A/B against the
+        # prior LLM-only numeric check.
+        self.strict_numeric = strict_numeric
         # Translation is sensitive to model quality (especially Indian languages
         # with their digit grouping and proper-noun handling). Default to the
         # strong tier; override via translator_model for cheap-tier runs.
@@ -1160,16 +1166,28 @@ single item is irrelevant."""
         }
 
     def verify_numbers_node(self, state: AgentState) -> dict:
-        """Check every numeric claim in the draft against the evidence."""
+        """Phase 11 fact-checking critic — every figure traces to a source.
+
+        Deterministically extract EVERY number in the draft, then ground each
+        against XBRL facts / derived metrics (exact) and numbers parsed from the
+        retrieved chunks, tables, web, and market data. The LLM verifier runs as
+        a *rescue* (its matched figures supplement the evidence) and to produce
+        human-readable claims. A figure grounded by neither is a hallucination;
+        `_verify_router` then re-routes or refuses. Tracks the hallucination rate
+        explicitly. With `strict_numeric` False this falls back to the prior
+        LLM-only check.
+        """
+        from langchain_core.messages import HumanMessage, SystemMessage
+
         answer = state.get("draft_answer", "")
+        clean = {"claims": [], "unverified": [], "score": 1.0,
+                 "numbers_total": 0, "numbers_grounded": 0, "hallucination_rate": 0.0}
         if not self._has_numbers(answer):
-            return {"numeric_verification": {"claims": [], "unverified": [], "score": 1.0}}
+            return {"numeric_verification": clean}
 
         evidence = self._build_evidence_block(state)
         llm = self._get_verifier_llm().with_structured_output(NumericVerification)
-
-        from langchain_core.messages import HumanMessage, SystemMessage
-
+        claims: list[dict] = []
         try:
             report: NumericVerification = llm.invoke([
                 SystemMessage(content=NUM_VERIFY_SYSTEM),
@@ -1178,21 +1196,47 @@ single item is irrelevant."""
             claims = [c.model_dump() for c in report.claims]
         except Exception as e:
             self._log(state, f"verifier failed ({e})")
-            return {"numeric_verification": {"claims": [], "unverified": [], "score": None}}
 
-        if not claims:
-            return {"numeric_verification": {"claims": [], "unverified": [], "score": 1.0}}
+        # Legacy LLM-only path (A/B baseline).
+        if not self.strict_numeric:
+            llm_unverified = [c for c in claims if not c.get("matched")]
+            score = ((len(claims) - len(llm_unverified)) / len(claims)) if claims else 1.0
+            return {"numeric_verification": {"claims": claims, "unverified": llm_unverified,
+                                             "score": round(score, 3),
+                                             "numbers_total": len(claims),
+                                             "numbers_grounded": len(claims) - len(llm_unverified),
+                                             "hallucination_rate": round(1 - score, 3)}}
 
-        unverified = [c for c in claims if not c.get("matched")]
-        score = (len(claims) - len(unverified)) / len(claims) if claims else 1.0
-        # Log unverified claims so they show up in the run's `errors` list.
-        for u in unverified:
-            self._log(state, f"unverified figure: {u.get('number')} — {u.get('claim')[:120]}")
+        # Deterministic, exhaustive grounding.
+        draft_nums = self._extract_numbers(answer)
+        if not draft_nums:
+            return {"numeric_verification": {**clean, "claims": claims}}
+
+        evidence_mags = self._evidence_numbers(state)
+        # LLM rescue: figures the verifier matched count as grounded too — pull
+        # their magnitudes from the matched claims and add them to the evidence.
+        for c in claims:
+            if c.get("matched"):
+                for n in self._extract_numbers(str(c.get("number", "")) + " " + str(c.get("evidence", ""))):
+                    evidence_mags.extend(n["magnitudes"])
+
+        ungrounded = [
+            {"number": d["raw"], "claim": d["ctx"]}
+            for d in draft_nums if not self._grounded(d["magnitudes"], evidence_mags)
+        ]
+        total = len(draft_nums)
+        grounded = total - len(ungrounded)
+        score = grounded / total if total else 1.0
+        for u in ungrounded:
+            self._log(state, f"ungrounded figure: {u['number']} — {u['claim'][:100]}")
         return {
             "numeric_verification": {
                 "claims": claims,
-                "unverified": unverified,
+                "unverified": ungrounded,          # refuse_node reads this key
                 "score": round(score, 3),
+                "numbers_total": total,
+                "numbers_grounded": grounded,
+                "hallucination_rate": round(len(ungrounded) / total, 3) if total else 0.0,
             }
         }
 
@@ -1258,18 +1302,27 @@ single item is irrelevant."""
         """
         nv = state.get("numeric_verification") or {}
         score = nv.get("score")
-        claims = nv.get("claims") if isinstance(nv, dict) else None
+        ungrounded = nv.get("unverified") or []
+        out_of_retries = state.get("critic_iterations", 0) >= self.max_critic_retries
 
-        # If critic asked for a retry and we still have budget, follow it.
+        # Phase 11: an ungrounded figure is a hallucination — every number must
+        # trace to a source. Under strict numeric verification, re-route once to
+        # try to ground it, then refuse rather than ship a fabricated figure.
+        if self.strict_numeric:
+            has_ungrounded = (nv.get("numbers_total", 0) > 0 and len(ungrounded) > 0)
+            if state.get("needs_retry") and not out_of_retries:
+                return "retrieve"
+            if has_ungrounded and not out_of_retries:
+                return "retrieve"          # re-route to re-ground the figure(s)
+            if has_ungrounded and out_of_retries:
+                return "refuse"            # "not in the filings" beats fabrication
+            return "end"
+
+        # Legacy LLM-only path.
+        claims = nv.get("claims") if isinstance(nv, dict) else None
         if state.get("needs_retry"):
             return "retrieve"
-
-        out_of_retries = state.get("critic_iterations", 0) >= self.max_critic_retries
         verify_failed = (score is not None and score < self.min_verify_score)
-
-        # We only refuse when (a) we've used up retries, (b) the verifier
-        # actually saw numeric claims AND rejected enough of them. A passing
-        # verifier overrides a complaining critic.
         if out_of_retries and verify_failed and claims:
             return "refuse"
         return "end"
@@ -1361,6 +1414,120 @@ single item is irrelevant."""
     @staticmethod
     def _has_numbers(text: str) -> bool:
         return bool(re.search(r"\d", text or ""))
+
+    # ------------------------------------------------------------------ #
+    # Phase 11 — deterministic numeric grounding
+    # ------------------------------------------------------------------ #
+
+    # Scale words → multiplier. Single-letter B/M/K/T handled with a word
+    # boundary so they don't fire on stray capitals mid-word.
+    _SCALES = {
+        "trillion": 1e12, "tn": 1e12, "t": 1e12,
+        "billion": 1e9, "bn": 1e9, "b": 1e9,
+        "million": 1e6, "mn": 1e6, "m": 1e6,
+        "thousand": 1e3, "k": 1e3,
+        "crore": 1e7, "lakh": 1e5,
+    }
+    # Trailing `(?=\b)` lookahead guards ONLY the single-letter scales (so a bare
+    # "B"/"M" must end a word, e.g. "$99.8B"); `%`/`bps`/word-scales match
+    # directly (a trailing `\b` here would wrongly reject "7.8%").
+    _NUM_RE = re.compile(
+        r"(?P<sign>[-+]?)\$?\s*"
+        r"(?P<num>\d[\d,]*(?:\.\d+)?)\s*"
+        r"(?P<scale>trillion|tn|billion|bn|million|mn|thousand|crore|lakh|bps|%|[bmkt](?=\b))?",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _extract_numbers(cls, text: str) -> list[dict]:
+        """Extract EVERY material figure from `text` as {raw, magnitudes, ctx}.
+
+        `magnitudes` is the set of plausible numeric values the figure could mean
+        — e.g. "30.3%" → {30.3, 0.303}, "$394.3 billion" → {3.943e11}. Matching
+        any magnitude against evidence (with tolerance) grounds the figure. We
+        strip citation markers, page refs, fiscal-year tokens and bare years
+        first so they aren't mistaken for financial claims.
+        """
+        if not text:
+            return []
+        # Remove things that look numeric but aren't financial claims.
+        scrubbed = re.sub(r"\[[\d,\s]+\]", " ", text)          # [1], [1, 3]
+        scrubbed = re.sub(r"\bFY\s?\d{2,4}\b", " ", scrubbed, flags=re.I)
+        scrubbed = re.sub(r"\bQ[1-4]\b", " ", scrubbed, flags=re.I)
+        scrubbed = re.sub(r"\b10-[KQ]\b|\b8-K\b", " ", scrubbed, flags=re.I)
+        scrubbed = re.sub(r"\bp\.?\s*\d+\b", " ", scrubbed, flags=re.I)  # p. 12
+
+        out: list[dict] = []
+        for m in cls._NUM_RE.finditer(scrubbed):
+            raw = m.group(0).strip()
+            num = m.group("num").replace(",", "")
+            try:
+                base = float(num)
+            except ValueError:
+                continue
+            if m.group("sign") == "-":
+                base = -base
+            scale = (m.group("scale") or "").lower()
+
+            if scale in ("%",):
+                mags = {base, base / 100.0}
+            elif scale == "bps":
+                mags = {base, base / 100.0, base / 10000.0}
+            elif scale in cls._SCALES:
+                mags = {base * cls._SCALES[scale]}
+            else:
+                # No scale word. Skip bare integers that are almost certainly
+                # years (1900-2099) — they're periods, not financial figures.
+                if scale == "" and base.is_integer() and 1900 <= base <= 2099:
+                    continue
+                mags = {base}
+            ctx = scrubbed[max(0, m.start() - 30): m.end() + 30].strip()
+            out.append({"raw": raw, "magnitudes": mags, "ctx": ctx})
+        return out
+
+    @staticmethod
+    def _num_close(a: float, b: float, rel_tol: float = 0.02) -> bool:
+        """Scale-free closeness: within 2% relative (covers rounding like
+        $394.3bn vs 394,328,000,000, or 30.3% vs 0.303)."""
+        return abs(a - b) <= rel_tol * max(abs(a), abs(b), 1e-9)
+
+    @classmethod
+    def _grounded(cls, magnitudes: set, evidence_mags: list[float]) -> bool:
+        return any(cls._num_close(mag, ev) for mag in magnitudes for ev in evidence_mags)
+
+    def _evidence_numbers(self, state: AgentState) -> list[float]:
+        """Every numeric value present in the grounding evidence: XBRL facts and
+        derived metrics (exact), plus numbers parsed from retrieved chunks,
+        tables, web hits, and market data."""
+        mags: list[float] = []
+        # XBRL — exact filed values (the ground truth).
+        for f in state.get("xbrl_facts", []) or []:
+            v = f.get("value")
+            if isinstance(v, (int, float)):
+                mags.append(float(v))
+        # Derived metrics — value plus its percent form (0.303 and 30.3).
+        for r in state.get("calc_results", []) or []:
+            for key in ("value",):
+                v = r.get(key)
+                if isinstance(v, (int, float)):
+                    mags.extend([float(v), float(v) * 100.0])
+            for s in r.get("series", []) or []:
+                v = s.get("value")
+                if isinstance(v, (int, float)):
+                    mags.extend([float(v), float(v) * 100.0])
+        # Free-text evidence — parse any numbers out of the prose.
+        texts: list[str] = []
+        texts += [c.get("text", "") for c in state.get("retrieved_chunks", []) or []]
+        for t in state.get("table_results", []) or []:
+            texts.append(str(t.get("answer", "")) + " " + str(t.get("stdout", "")))
+        for h in state.get("web_results", []) or []:
+            texts.append(h.get("content", "") or "")
+        for mkt in state.get("market_data", []) or []:
+            texts.append(str(mkt.get("data", "")))
+        for txt in texts:
+            for n in self._extract_numbers(txt):
+                mags.extend(n["magnitudes"])
+        return mags
 
     @staticmethod
     def _format_calc_result(r: dict) -> str:
