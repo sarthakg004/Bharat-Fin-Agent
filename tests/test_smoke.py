@@ -186,6 +186,30 @@ def test_verification_report_cross_source_and_units():
     assert rep["sources"]["with_citation"] == 1
 
 
+def test_audit_trail_has_all_required_sections():
+    """#13: every answer carries an audit trail — sources used, calculations
+    performed, verification status, and the confidence score."""
+    from finagent.api.rag_service import _build_audit
+    state = {
+        "status": "answered", "query_routes": ["numeric"],
+        "evidence": [{"kind": "xbrl", "source": "SEC XBRL",
+                      "citation": "us-gaap:Revenues", "confidence": 0.98}],
+        "calc_results": [{"metric": "growth", "ticker": "AMZN", "value_str": "+30.8%",
+                          "formula": "(b-a)/a",
+                          "inputs": [{"concept": "revenue", "value_str": "$136B", "fy": 2016}]}],
+        "numeric_verification": {"score": 1.0, "numbers_total": 6, "numbers_grounded": 6,
+                                 "unverified": []},
+        "verification_report": {"cross_source": {"corroborated": 1}},
+        "confidence": 0.889, "confidence_band": "answer",
+        "citation_score": 0.667, "critic_score": 1.0,
+    }
+    a = _build_audit(state)
+    assert a["sources_used"] and a["sources_used"][0]["kind"] == "xbrl"
+    assert a["calculations"] and a["calculations"][0]["result"] == "+30.8%"
+    assert a["verification"]["numeric_score"] == 1.0
+    assert a["confidence"]["score"] == 0.889 and a["confidence"]["band"] == "answer"
+
+
 def test_device_selection_returns_valid_value():
     from finagent.device import get_device
 

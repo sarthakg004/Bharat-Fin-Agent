@@ -104,6 +104,62 @@ def _count_kinds(evidence: list[dict]) -> dict:
     return counts
 
 
+def _build_audit(state: dict) -> dict:
+    """Audit trail (#13): a single self-contained record of HOW the answer was
+    produced — sources used, calculations performed, verification status, and
+    the confidence score. Assembled as a read-only VIEW over the final state at
+    response time, so it never touches the answer-generation path.
+    """
+    ev = state.get("evidence") or []
+    calc = state.get("calc_results") or []
+    nv = state.get("numeric_verification") or {}
+    vr = state.get("verification_report") or {}
+    return {
+        "status": state.get("status"),
+        "routes": state.get("query_routes") or [],
+        # Sources used — every normalised evidence item with its provenance.
+        "sources_used": [
+            {"kind": e.get("kind"), "source": e.get("source"),
+             "citation": e.get("citation"), "confidence": e.get("confidence")}
+            for e in ev
+        ],
+        # Calculations performed — auditable down to the exact XBRL inputs.
+        "calculations": [
+            {"metric": r.get("metric"), "ticker": r.get("ticker"),
+             "formula": r.get("formula") or r.get("source"),
+             "result": r.get("value_str", r.get("value")),
+             "inputs": [
+                 {"concept": i.get("concept"), "value": i.get("value_str"),
+                  "period": i.get("fy")}
+                 for i in (r.get("inputs") or []) if isinstance(i, dict)
+             ]}
+            for r in calc
+        ],
+        # Verification status — numeric grounding + the cross-source / unit /
+        # citation report.
+        "verification": {
+            "numeric_score": nv.get("score"),
+            "figures_total": nv.get("numbers_total"),
+            "figures_grounded": nv.get("numbers_grounded"),
+            "ungrounded_figures": [u.get("number") for u in (nv.get("unverified") or [])],
+            "cross_source": vr.get("cross_source", {}),
+            "units": vr.get("units", {}),
+            "sources": vr.get("sources", {}),
+        },
+        # Confidence score + the sub-scores that produced it.
+        "confidence": {
+            "score": state.get("confidence"),
+            "band": state.get("confidence_band"),
+            "sub_scores": {
+                "retrieval": state.get("retrieval_score"),
+                "verification": state.get("verification_score"),
+                "citation": state.get("citation_score"),
+                "critic": state.get("critic_score"),
+            },
+        },
+    }
+
+
 def _normalise_chunk(text: str, meta: dict, idx: int) -> dict:
     company = meta.get("company") or meta.get("ticker", "?")
     year = str(meta.get("year", "?"))
@@ -387,6 +443,8 @@ def run_agentic(market: str, question: str, top_k: int = 5,
             "evidence_count": len(state.get("evidence", []) or []),
             "evidence_kinds": _count_kinds(state.get("evidence", []) or []),
             "evidence": (state.get("evidence", []) or [])[:60],
+            # Audit trail (#13): full provenance of this answer.
+            "audit": _build_audit(state),
             "numeric_verification_score": nv.get("score"),
             # #5 verification report: cross-source corroboration, unit-shift
             # flags, and citation coverage of numeric evidence.
