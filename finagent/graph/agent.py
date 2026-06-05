@@ -331,6 +331,9 @@ class AgenticRAGv4(AgenticRAGv3):
         dedupe_threshold: float = 0.93,
         strict_numeric: bool = True,
         persist_fetch: bool = True,
+        confidence_gating: bool = True,
+        confidence_answer: float = 0.80,
+        confidence_warn: float = 0.60,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -355,6 +358,16 @@ class AgenticRAGv4(AgenticRAGv3):
         # Dynamic fetch: persist the fetched filing into the on-disk index (True,
         # local) or use it ephemerally in memory for this session (False, cloud).
         self.persist_fetch = persist_fetch
+        # Confidence framework (#8/9): blend retrieval/verification/citation/critic
+        # sub-scores into a single confidence, then gate the answer on it. With
+        # `confidence_gating` False the score is still computed (observability) but
+        # the gate always answers — for A/B against the ungated path. Bands:
+        #   confidence >= confidence_answer            → answer
+        #   confidence_warn <= confidence < answer     → answer_with_warning
+        #   confidence <  confidence_warn              → refuse
+        self.confidence_gating = confidence_gating
+        self.confidence_answer = confidence_answer
+        self.confidence_warn = confidence_warn
         # Translation is sensitive to model quality (especially Indian languages
         # with their digit grouping and proper-noun handling). Default to the
         # strong tier; override via translator_model for cheap-tier runs.
@@ -1458,7 +1471,8 @@ single item is irrelevant."""
                 detail = f" (unverified figures: {nums})"
         web_clause = "" if web_used else " or recent web sources"
         msg = REFUSAL_TEMPLATE.format(web_clause=web_clause, detail=detail)
-        return {"final_answer": msg, "refused": True, "needs_retry": False}
+        return {"final_answer": msg, "refused": True, "needs_retry": False,
+                "status": "refused"}
 
     def translate_out_node(self, state: AgentState) -> dict:
         """Translate the final answer back to the user's language."""
@@ -1470,6 +1484,183 @@ single item is irrelevant."""
             llm=self._get_translator_llm(), source_code="en",
         )
         return {"final_answer": translated}
+
+    # ------------------------------------------------------------------ #
+    # Confidence framework (#8/9)
+    # ------------------------------------------------------------------ #
+
+    # Weights from the spec. Applied only over the sub-scores that are present
+    # for a given question; the denominator renormalises so a missing component
+    # (e.g. retrieval on a pure-XBRL numeric query) doesn't drag the blend down.
+    _CONF_WEIGHTS = {
+        "retrieval": 0.25,
+        "verification": 0.35,
+        "citation": 0.25,
+        "critic": 0.15,
+    }
+
+    # A citation marker: [1] / [1, 3] and the fullwidth 【1】 form some models
+    # (gpt-oss, certain Llama builds) emit despite the prompt asking for ASCII.
+    # Requiring a leading digit keeps it off prose brackets like "[note]".
+    _CITE_RE = re.compile(r"[\[【]\s*\d[\d,\s]*\s*[\]】]")
+
+    def _citation_score(self, state: AgentState) -> Optional[float]:
+        """Fraction of material figures in the draft that carry a [N] citation.
+
+        Returns None (component not applicable) when the draft is empty or there
+        is no evidence to cite at all. For a figure-free answer it's 1.0 if any
+        citation is present, else None — we don't penalise a purely qualitative
+        answer for having no numbers to anchor.
+        """
+        answer = state.get("draft_answer", "") or ""
+        if not answer.strip():
+            return None
+        has_evidence = any(state.get(k) for k in (
+            "retrieved_chunks", "xbrl_facts", "calc_results", "table_results",
+            "web_results", "market_data", "edgar_results",
+        ))
+        if not has_evidence:
+            return None
+
+        # Positions of citation markers in the ORIGINAL answer.
+        markers = [m.start() for m in self._CITE_RE.finditer(answer)]
+
+        # Mask out tokens that look numeric but aren't financial claims, keeping
+        # length (and therefore offsets) identical so `markers` stays aligned.
+        def _blank(m: re.Match) -> str:
+            return " " * len(m.group(0))
+
+        masked = self._CITE_RE.sub(_blank, answer)
+        masked = re.sub(r"\bFY\s?\d{2,4}\b", _blank, masked, flags=re.I)
+        masked = re.sub(r"\bQ[1-4]\b", _blank, masked, flags=re.I)
+        masked = re.sub(r"\b10-[KQ]\b|\b8-K\b", _blank, masked, flags=re.I)
+        masked = re.sub(r"\bp\.?\s*\d+\b", _blank, masked, flags=re.I)
+
+        fig_ends = [m.end() for m in self._NUM_RE.finditer(masked) if m.group("num")]
+        if not fig_ends:
+            return 1.0 if markers else None
+
+        # A figure is "cited" if a marker sits just after it (or a few chars
+        # before, for "[1] revenue of $X" ordering).
+        WINDOW = 80
+        covered = sum(
+            1 for p in fig_ends
+            if any(-15 <= (mk - p) <= WINDOW for mk in markers)
+        )
+        return round(covered / len(fig_ends), 3)
+
+    def _confidence_components(self, state: AgentState) -> dict:
+        """The sub-scores that apply to this question, each in [0,1]."""
+        comps: dict[str, float] = {}
+
+        # Retrieval — normalise the mean grade (1-5) to [0,1]. Applicable only
+        # when retrieval actually ran (graded chunks exist).
+        grades = state.get("grades") or []
+        avg = state.get("avg_grade")
+        if grades and avg is not None:
+            comps["retrieval"] = max(0.0, min(1.0, (avg - 1.0) / 4.0))
+        elif state.get("retrieved_chunks"):
+            # Chunks present but ungraded (e.g. ephemeral fetch on the tool path).
+            comps["retrieval"] = 0.5
+
+        # Verification — only when the answer actually made numeric claims.
+        nv = state.get("numeric_verification") or {}
+        if isinstance(nv, dict) and nv.get("numbers_total", 0) > 0:
+            comps["verification"] = max(0.0, min(1.0, float(nv.get("score", 0.0))))
+
+        # Citation coverage.
+        cs = self._citation_score(state)
+        if cs is not None:
+            comps["citation"] = cs
+
+        # Critic — claim-support rate (None when the critic couldn't score).
+        gs = state.get("grading_score")
+        if gs is not None:
+            comps["critic"] = max(0.0, min(1.0, float(gs)))
+
+        return comps
+
+    def confidence_node(self, state: AgentState) -> dict:
+        """Blend the applicable sub-scores into a single confidence and pick a band.
+
+        Runs once, after numeric verification has settled, on the path that the
+        verifier already deemed answerable (ungrounded-figure refusals are
+        handled upstream by `_verify_router`). Writes the four sub-scores plus
+        the blend and the routing band into state for the gate, the audit trail,
+        and the UI.
+        """
+        comps = self._confidence_components(state)
+        if comps:
+            wsum = sum(self._CONF_WEIGHTS[k] for k in comps)
+            conf = sum(self._CONF_WEIGHTS[k] * v for k, v in comps.items()) / wsum
+        else:
+            conf = 0.0
+        conf = round(conf, 3)
+
+        if not self.confidence_gating:
+            band = "answer"
+        elif conf >= self.confidence_answer:
+            band = "answer"
+        elif conf >= self.confidence_warn:
+            band = "warn"
+        else:
+            band = "refuse"
+
+        self._log(
+            state,
+            f"confidence={conf} band={band} "
+            f"[{', '.join(f'{k}={v:.2f}' for k, v in comps.items())}]",
+        )
+        return {
+            "retrieval_score": comps.get("retrieval"),
+            "verification_score": comps.get("verification"),
+            "citation_score": comps.get("citation"),
+            "critic_score": comps.get("critic"),
+            "confidence": conf,
+            "confidence_band": band,
+            "status": "answered" if band == "answer" else state.get("status"),
+        }
+
+    def withhold_low_confidence_node(self, state: AgentState) -> dict:
+        """Low-confidence band: don't present the draft as the answer, but DON'T
+        throw it away either. We replace `final_answer` with a short notice and
+        stash the draft in `suppressed_answer` so the UI can offer it on demand
+        ("a lower-confidence answer is available").
+
+        This is distinct from `refuse_node`: that path fires when the verifier
+        found an ungrounded/fabricated figure, where surfacing the draft would
+        leak a hallucinated number. Here the figures may be grounded — we're just
+        below the overall confidence bar — so letting the user opt in is safe.
+        """
+        draft = state.get("draft_answer", "") or state.get("final_answer", "") or ""
+        conf = state.get("confidence")
+        pct = f"{conf:.0%}" if isinstance(conf, (int, float)) else "low"
+        notice = (
+            f"I'm not confident enough to present this answer directly "
+            f"(confidence {pct}, below the {self.confidence_warn:.0%} bar). "
+            f"A lower-confidence draft is available below if you'd like to see it."
+        )
+        return {
+            "final_answer": notice,
+            "suppressed_answer": draft,
+            "refused": True,
+            "needs_retry": False,
+            "status": "refused_low_confidence",
+        }
+
+    def answer_with_warning_node(self, state: AgentState) -> dict:
+        """Moderate-confidence band: keep the answer but append a one-line caveat."""
+        ans = state.get("final_answer", "") or state.get("draft_answer", "")
+        if "_Confidence:" in ans:                      # idempotent on a re-entry
+            return {"status": "answered_with_warning"}
+        conf = state.get("confidence")
+        pct = f"{conf:.0%}" if isinstance(conf, (int, float)) else "moderate"
+        note = (
+            f"\n\n*_Confidence: {pct} — moderate. Some figures or claims are only "
+            f"partially corroborated by the available sources; verify against the "
+            f"primary filing before relying on them._*"
+        )
+        return {"final_answer": ans + note, "status": "answered_with_warning"}
 
     # ------------------------------------------------------------------ #
     # Routers
@@ -1542,6 +1733,11 @@ single item is irrelevant."""
             return "refuse"
         return "end"
 
+    def _confidence_gate(self, state: AgentState) -> str:
+        """Route on the band `confidence_node` already chose: answer / warn /
+        refuse. Kept as a pure read so the policy lives in one place."""
+        return state.get("confidence_band") or "answer"
+
     # ------------------------------------------------------------------ #
     # Graph
     # ------------------------------------------------------------------ #
@@ -1565,6 +1761,9 @@ single item is irrelevant."""
         g.add_node("synthesize", self.synthesize_node)
         g.add_node("critic", self.critic_node)
         g.add_node("verify_numbers", self.verify_numbers_node)
+        g.add_node("confidence", self.confidence_node)
+        g.add_node("answer_with_warning", self.answer_with_warning_node)
+        g.add_node("low_confidence", self.withhold_low_confidence_node)
         g.add_node("refuse", self.refuse_node)
 
         # English-only: no language detection / translation nodes.
@@ -1603,10 +1802,20 @@ single item is irrelevant."""
         g.add_edge("edgar_search", "synthesize")
         g.add_edge("synthesize", "critic")
         g.add_edge("critic", "verify_numbers")
+        # Verifier settles hard refusals (ungrounded figures) and retries; an
+        # answerable draft ("end") then flows into the confidence gate (#8/9).
         g.add_conditional_edges(
             "verify_numbers", self._verify_router,
-            {"retrieve": "retrieve", "refuse": "refuse", "end": END},
+            {"retrieve": "retrieve", "refuse": "refuse", "end": "confidence"},
         )
+        # Confidence gate: high → answer, moderate → answer + caveat, low →
+        # withhold (keep the draft as `suppressed_answer` for opt-in reveal).
+        g.add_conditional_edges(
+            "confidence", self._confidence_gate,
+            {"answer": END, "warn": "answer_with_warning", "refuse": "low_confidence"},
+        )
+        g.add_edge("answer_with_warning", END)
+        g.add_edge("low_confidence", END)
         g.add_edge("refuse", END)
         return g.compile()
 
@@ -1666,7 +1875,7 @@ single item is irrelevant."""
         if not text:
             return []
         # Remove things that look numeric but aren't financial claims.
-        scrubbed = re.sub(r"\[[\d,\s]+\]", " ", text)          # [1], [1, 3]
+        scrubbed = cls._CITE_RE.sub(" ", text)                 # [1], [1, 3], 【1】
         scrubbed = re.sub(r"\bFY\s?\d{2,4}\b", " ", scrubbed, flags=re.I)
         scrubbed = re.sub(r"\bQ[1-4]\b", " ", scrubbed, flags=re.I)
         scrubbed = re.sub(r"\b10-[KQ]\b|\b8-K\b", " ", scrubbed, flags=re.I)
@@ -1681,7 +1890,14 @@ single item is irrelevant."""
             except ValueError:
                 continue
             if m.group("sign") == "-":
-                base = -base
+                # Distinguish a negative quantity (a $5.2bn loss) from a binary
+                # subtraction operator inside a shown derivation ("a - b"): if the
+                # text just before the '-' ends with a digit / ')' / '%', it's a
+                # subtraction and the figure itself is positive. Misreading it as
+                # negative would refuse a correct worked calculation.
+                prefix = scrubbed[: m.start()].rstrip()
+                if not (prefix and prefix[-1] in "0123456789)%"):
+                    base = -base
             scale = (m.group("scale") or "").lower()
 
             if scale in ("%",):
@@ -1710,27 +1926,57 @@ single item is irrelevant."""
     def _grounded(cls, magnitudes: set, evidence_mags: list[float]) -> bool:
         return any(cls._num_close(mag, ev) for mag in magnitudes for ev in evidence_mags)
 
+    # Powers of ten by which an exact figure may be RESTATED in prose. A filed
+    # value of 135,987,000,000 is the same fact whether the answer writes it as
+    # "$135.987 billion" (×1), "135,987" million (×1e-6), or a scale-free
+    # "135.987" inside a worked formula (×1e-9). Expanding each exact evidence
+    # value across these scales makes grounding unit-insensitive, so a correct
+    # derivation isn't refused just because it dropped the "billion" word.
+    _RESTATE_SCALES = (1.0, 1e-3, 1e-6, 1e-9, 1e-12)
+
+    # Structural constants that appear in growth / CAGR / margin DERIVATIONS
+    # (×100 to render a percent, the 1 in `(b/a)^(1/n) − 1`, a leading 0). They
+    # are math scaffolding the synthesizer writes out, never financial claims —
+    # so they must count as grounded or every shown calculation self-refutes.
+    _MATH_CONSTANTS = (0.0, 1.0, 100.0)
+
     def _evidence_numbers(self, state: AgentState) -> list[float]:
         """Every numeric value present in the grounding evidence: XBRL facts and
-        derived metrics (exact), plus numbers parsed from retrieved chunks,
-        tables, web hits, and market data."""
-        mags: list[float] = []
+        derived metrics (exact, scale-expanded), plus numbers parsed from
+        retrieved chunks, tables, web hits, and market data."""
+        # `exact` holds authoritative, structured figures we trust enough to
+        # expand across scales; free-text numbers are taken at face value only.
+        exact: list[float] = []
+
         # XBRL — exact filed values (the ground truth).
         for f in state.get("xbrl_facts", []) or []:
             v = f.get("value")
             if isinstance(v, (int, float)):
-                mags.append(float(v))
-        # Derived metrics — value plus its percent form (0.303 and 30.3).
+                exact.append(float(v))
+
+        # Derived metrics — the result, its percent form, the trend series, AND
+        # the exact XBRL inputs the metric was computed from (the two revenue
+        # figures behind a growth %, etc.). Those inputs are what the synthesizer
+        # writes into a shown derivation, so they must be groundable.
         for r in state.get("calc_results", []) or []:
-            for key in ("value",):
-                v = r.get(key)
-                if isinstance(v, (int, float)):
-                    mags.extend([float(v), float(v) * 100.0])
+            v = r.get("value")
+            if isinstance(v, (int, float)):
+                exact.extend([float(v), float(v) * 100.0])
             for s in r.get("series", []) or []:
-                v = s.get("value")
-                if isinstance(v, (int, float)):
-                    mags.extend([float(v), float(v) * 100.0])
-        # Free-text evidence — parse any numbers out of the prose.
+                sv = s.get("value")
+                if isinstance(sv, (int, float)):
+                    exact.extend([float(sv), float(sv) * 100.0])
+            for inp in r.get("inputs", []) or []:
+                iv = inp.get("value") if isinstance(inp, dict) else None
+                if isinstance(iv, (int, float)):
+                    exact.append(float(iv))
+
+        mags: list[float] = list(self._MATH_CONSTANTS)
+        for v in exact:
+            for scale in self._RESTATE_SCALES:
+                mags.append(v * scale)
+
+        # Free-text evidence — parse any numbers out of the prose (face value).
         texts: list[str] = []
         texts += [c.get("text", "") for c in state.get("retrieved_chunks", []) or []]
         for t in state.get("table_results", []) or []:
@@ -1875,6 +2121,10 @@ def _build_cli() -> argparse.ArgumentParser:
     p.add_argument("--max-rewrites", type=int, default=3)
     p.add_argument("--max-critic-retries", type=int, default=2)
     p.add_argument("--min-verify-score", type=float, default=0.5)
+    p.add_argument("--no-confidence-gating", dest="confidence_gating",
+                   action="store_false", help="compute confidence but never gate on it")
+    p.add_argument("--confidence-answer", type=float, default=0.80)
+    p.add_argument("--confidence-warn", type=float, default=0.60)
     p.add_argument("--question", default=None)
     p.add_argument("--dataset", default=None)
     p.add_argument("--question-col", default="question")
@@ -1922,6 +2172,9 @@ def main():
         max_rewrites=args.max_rewrites,
         max_critic_retries=args.max_critic_retries,
         min_verify_score=args.min_verify_score,
+        confidence_gating=args.confidence_gating,
+        confidence_answer=args.confidence_answer,
+        confidence_warn=args.confidence_warn,
     )
 
     if args.dataset:
@@ -1947,6 +2200,12 @@ def main():
     print(f"Numeric verify:   score={nv.get('score')}  unverified={len(nv.get('unverified', []))}")
     print(f"Refused:          {state.get('refused', False)}")
     print(f"Low confidence:   {state.get('low_confidence', False)}")
+    print(
+        f"Confidence:       {state.get('confidence')} "
+        f"(band={state.get('confidence_band')}, status={state.get('status')}) "
+        f"[retr={state.get('retrieval_score')} verif={state.get('verification_score')} "
+        f"cite={state.get('citation_score')} crit={state.get('critic_score')}]"
+    )
     print(f"\nAnswer:\n{state.get('final_answer')}")
     print(f"\nCitations:        {state.get('citations')}")
     if state.get("table_results"):

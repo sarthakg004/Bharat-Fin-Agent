@@ -76,6 +76,24 @@ class AgentState(TypedDict, total=False):
     # --- Conversation memory ---------------------------------------------- #
     chat_history: list[dict]           # last K turns: [{role: "user"|"assistant", content}]
 
+    # --- Confidence framework (#8/9) -------------------------------------- #
+    # Four sub-scores in [0,1], then their weighted blend, computed once after
+    # verification by `confidence_node`. Any sub-score that doesn't apply to a
+    # given question (e.g. retrieval on a pure-XBRL numeric query, or
+    # verification on an answer with no figures) is left out and the remaining
+    # weights are renormalised — so a fully-grounded numeric answer isn't
+    # penalised for not having gone through retrieval.
+    retrieval_score: float             # from avg_grade (1-5) → [0,1]
+    verification_score: float          # numeric_verification["score"]
+    citation_score: float              # fraction of figures carrying a [N] marker
+    critic_score: float                # grading_score (critic claim-support rate)
+    confidence: float                  # weighted blend of the applicable sub-scores
+    confidence_band: str               # "answer" | "warn" | "refuse" (gate routing)
+    status: str                        # "answered" | "answered_with_warning" | "refused"
+    suppressed_answer: str             # low-confidence draft withheld by the gate,
+                                       # offered to the user on demand (NOT set for a
+                                       # hallucination refusal — that draft is unsafe)
+
 
 # --------------------------------------------------------------------------- #
 # Structured-output schemas (used with llm.with_structured_output(...))

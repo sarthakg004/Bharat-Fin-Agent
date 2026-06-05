@@ -359,6 +359,20 @@ def run_agentic(market: str, question: str, top_k: int = 5,
             "needs_retry": state.get("needs_retry"),
             "low_confidence": state.get("low_confidence"),
             "refused": state.get("refused", False),
+            # Confidence framework (#8/9): blended score, routing band, and the
+            # four sub-scores that fed it (each null when not applicable).
+            "confidence": state.get("confidence"),
+            "confidence_band": state.get("confidence_band"),
+            "answer_status": state.get("status"),
+            "confidence_scores": {
+                "retrieval": state.get("retrieval_score"),
+                "verification": state.get("verification_score"),
+                "citation": state.get("citation_score"),
+                "critic": state.get("critic_score"),
+            },
+            # Low-confidence draft the gate withheld — the UI offers it on demand.
+            # Empty for a hallucination refusal (that draft is unsafe to reveal).
+            "suppressed_answer": state.get("suppressed_answer") or "",
             "numeric_verification_score": nv.get("score"),
             "unverified_count": len(nv.get("unverified", [])) if isinstance(nv, dict) else 0,
             "numbers_total": nv.get("numbers_total", 0) if isinstance(nv, dict) else 0,

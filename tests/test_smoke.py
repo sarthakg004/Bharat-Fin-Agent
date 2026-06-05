@@ -57,6 +57,61 @@ def test_agent_graph_has_expected_nodes():
     assert not ({"detect_lang", "translate_in", "translate_out"} & nodes)
 
 
+def test_confidence_gate_is_wired():
+    """The confidence framework (#8/9) sits after verification: verify_numbers
+    feeds `confidence`, which gates to answer / warning / refuse."""
+    agent = _build_agent()
+    g = agent.graph.get_graph()
+    nodes = {n for n in g.nodes if not n.startswith("__")}
+    assert {"confidence", "answer_with_warning", "low_confidence"} <= nodes
+    targets = {(e.source, e.target) for e in g.edges}
+    assert ("verify_numbers", "confidence") in targets
+    assert ("confidence", "answer_with_warning") in targets
+    # Low band withholds the draft (for opt-in reveal) rather than hard-refusing.
+    assert ("confidence", "low_confidence") in targets
+
+
+def test_confidence_score_blends_and_renormalises():
+    """A fully-grounded pure-XBRL answer (no retrieval) must not be penalised for
+    the missing retrieval component — weights renormalise over what applies."""
+    agent = _build_agent()
+    out = agent.confidence_node({
+        "draft_answer": "Net income was $99.8 billion [1].",
+        "grades": [], "avg_grade": None, "grading_score": 1.0,
+        "numeric_verification": {"numbers_total": 1, "numbers_grounded": 1, "score": 1.0},
+        "xbrl_facts": [{"value": 99.8e9}],
+    })
+    assert out["retrieval_score"] is None          # not applicable
+    assert out["confidence"] == 1.0
+    assert out["confidence_band"] == "answer"
+
+
+def test_xbrl_derivation_is_not_falsely_refused():
+    """Regression: a correct XBRL-grounded growth answer that shows its working
+    (scale-free figures inside a formula, ×100 percent conversion) and uses
+    fullwidth 【N】 citations must verify clean — not get refused as ungrounded.
+    """
+    agent = _build_agent()
+    state = {
+        "draft_answer": (
+            "Amazon revenue grew +30.8% YoY 【3】.\n"
+            "FY2016 $135.987 billion 【1】; FY2017 $177.866 billion 【2】.\n"
+            "YoY = (177.866 - 135.987) / 135.987 × 100 = 30.8% 【3】."
+        ),
+        "xbrl_facts": [{"value": 135987000000}, {"value": 177866000000}],
+        "calc_results": [{"value": 0.30796, "inputs": [
+            {"value": 135987000000}, {"value": 177866000000}]}],
+    }
+    mags = agent._evidence_numbers(state)
+    figures = agent._extract_numbers(state["draft_answer"])
+    ungrounded = [d["raw"] for d in figures if not agent._grounded(d["magnitudes"], mags)]
+    assert not ungrounded, f"falsely ungrounded: {ungrounded}"
+    # 【N】 citation markers must not be mistaken for figures 1/2/3.
+    assert not any(d["raw"] in ("1", "2", "3") for d in figures)
+    # Fullwidth citations still count toward citation coverage.
+    assert agent._citation_score(state) == 1.0
+
+
 def test_device_selection_returns_valid_value():
     from finagent.device import get_device
 
