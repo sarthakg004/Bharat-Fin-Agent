@@ -40,10 +40,25 @@ RATIOS: dict[str, tuple[str, str, bool]] = {
     "return_on_assets": ("net_income", "total_assets", True),
     "asset_turnover": ("revenue", "total_assets", False),
     "interest_coverage": ("operating_income", "interest_expense", False),
+    # cash ratio is a simple two-concept ratio (most conservative liquidity ratio).
+    "cash_ratio": ("cash", "current_liabilities", False),
     # "% of revenue" intensity ratios analysts compare across companies/years.
     "rd_to_revenue": ("rd_expense", "revenue", True),
     "sga_to_revenue": ("sga_expense", "revenue", True),
     "capex_to_revenue": ("capex", "revenue", True),
+}
+
+# Ratios whose numerator is a COMBINATION of concepts (so they can't be a single
+# (num, den) pair). Each: the concepts to add, the concepts to subtract, the
+# denominator concept, and whether to render as a percent. `optional` concepts
+# default to 0 when a company doesn't report them (e.g. a services firm with no
+# inventory → quick ratio collapses to the current ratio, which is correct).
+COMPOSITE_RATIOS: dict[str, dict] = {
+    # Quick (acid-test) ratio = (current assets − inventory) / current liabilities.
+    "quick_ratio": {
+        "add": ["current_assets"], "sub": ["inventory"],
+        "den": "current_liabilities", "pct": False, "optional": {"inventory"},
+    },
 }
 
 # Friendly synonyms → canonical metric name.
@@ -58,6 +73,10 @@ ALIASES: dict[str, str] = {
     "de_ratio": "debt_to_equity", "debt_equity": "debt_to_equity",
     "debt/equity": "debt_to_equity", "debt to equity": "debt_to_equity",
     "liquidity_ratio": "current_ratio", "current ratio": "current_ratio",
+    "quick ratio": "quick_ratio", "acid_test": "quick_ratio",
+    "acid test": "quick_ratio", "acid_test_ratio": "quick_ratio",
+    "acid test ratio": "quick_ratio", "quick_assets_ratio": "quick_ratio",
+    "cash ratio": "cash_ratio",
     "asset turnover": "asset_turnover", "times_interest_earned": "interest_coverage",
     "interest coverage": "interest_coverage",
     "r&d as % of revenue": "rd_to_revenue", "r&d as a percentage of revenue": "rd_to_revenue",
@@ -122,9 +141,48 @@ class FinancialCalculator(BaseTool):
 
     # --- ratios / margins ----------------------------------------------------
 
+    def _composite_ratio(self, ticker: str, name: str, period: Optional[str]) -> dict:
+        """Compute a ratio whose numerator combines several concepts, e.g. the
+        quick ratio = (current assets − inventory) / current liabilities."""
+        spec = COMPOSITE_RATIOS[name]
+        optional = spec.get("optional", set())
+        concepts = spec["add"] + spec["sub"] + [spec["den"]]
+        got = {c: self._input(ticker, c, period) for c in dict.fromkeys(concepts)}
+        inputs = list(got.values())
+
+        def val(c: str) -> Optional[float]:
+            inp = got[c]
+            if inp["ok"]:
+                return inp["value"]
+            return 0.0 if c in optional else None      # optional missing → 0
+
+        # Every REQUIRED concept must resolve.
+        if any(val(c) is None for c in concepts):
+            missing = [c for c in concepts if val(c) is None]
+            return self._fail(name, ticker, inputs, f"missing XBRL input(s): {missing}")
+        den = val(spec["den"])
+        if not den:
+            return self._fail(name, ticker, inputs, "denominator is zero")
+        numerator = sum(val(c) for c in spec["add"]) - sum(val(c) for c in spec["sub"])
+        value = numerator / den
+        as_pct = spec.get("pct", False)
+        num_desc = " − ".join(spec["add"] + [f"({s})" for s in spec["sub"]]) \
+            if spec["sub"] else " + ".join(spec["add"])
+        return {
+            "ok": True, "metric": name, "ticker": self._tkr(got[spec["add"][0]]),
+            "period": period, "fy": got[spec["add"][0]].get("fy"),
+            "value": value, "value_str": _fmt(value, as_pct), "is_percent": as_pct,
+            "formula": f"({num_desc}) / {spec['den']}",
+            "inputs": inputs,
+            "source": (f"computed from XBRL: ({num_desc}) / {spec['den']} "
+                       f"(FY{got[spec['add'][0]].get('fy')})"),
+        }
+
     def ratio(self, ticker: str, metric: str, period: Optional[str]) -> dict:
         """Compute a margin or balance-sheet ratio for a single period."""
         name = _canonical_metric(metric)
+        if name in COMPOSITE_RATIOS:
+            return self._composite_ratio(ticker, name, period)
         if name not in RATIOS:
             return self._fail(metric, ticker, [], f"unknown ratio metric '{metric}'")
         num_c, den_c, as_pct = RATIOS[name]
@@ -205,8 +263,10 @@ class FinancialCalculator(BaseTool):
         like "operating margin trend over the last 3 years".
         """
         name = _canonical_metric(metric)
-        is_ratio = name in RATIOS
-        as_pct = RATIOS[name][2] if is_ratio else False
+        is_ratio = name in RATIOS or name in COMPOSITE_RATIOS
+        as_pct = (RATIOS[name][2] if name in RATIOS
+                  else COMPOSITE_RATIOS[name].get("pct", False) if name in COMPOSITE_RATIOS
+                  else False)
 
         series: list[dict] = []
         for p in periods:

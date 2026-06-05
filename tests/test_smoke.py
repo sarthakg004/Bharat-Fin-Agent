@@ -341,6 +341,28 @@ def test_xbrl_tag_relevance_guard_blocks_concept_mismatch():
     assert "restructuring" in CONCEPT_TAGS
 
 
+def test_quick_ratio_metric_is_supported():
+    """Quick (acid-test) ratio must be a recognised derived metric with a
+    composite numerator (current assets − inventory) / current liabilities."""
+    from finagent.tools.calculator import (
+        _canonical_metric, COMPOSITE_RATIOS, RATIOS)
+    assert _canonical_metric("quick ratio") == "quick_ratio"
+    assert _canonical_metric("acid-test ratio") == "quick_ratio"
+    assert "quick_ratio" in COMPOSITE_RATIOS
+    spec = COMPOSITE_RATIOS["quick_ratio"]
+    assert spec["add"] == ["current_assets"] and spec["sub"] == ["inventory"]
+    assert spec["den"] == "current_liabilities"
+    # cash ratio is a recognised simple ratio too.
+    assert _canonical_metric("cash ratio") == "cash_ratio" and "cash_ratio" in RATIOS
+
+
+def test_router_uses_strong_tool_tier():
+    """Tool selection / structured extraction must default to the strong synth
+    tier, not the fast planner model (mis-routing was sending M&A to filings)."""
+    agent = _build_agent()
+    assert agent.router_model == agent.synth_model
+
+
 def test_device_selection_returns_valid_value():
     from finagent.device import get_device
 

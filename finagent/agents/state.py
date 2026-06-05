@@ -308,8 +308,9 @@ class CalcQuery(BaseModel):
     metric: str = Field(
         default="",
         description="Canonical metric: gross_margin, operating_margin, net_margin, "
-                    "current_ratio, debt_to_equity, return_on_equity, "
-                    "return_on_assets, asset_turnover, interest_coverage, growth, cagr.",
+                    "current_ratio, quick_ratio, cash_ratio, debt_to_equity, "
+                    "return_on_equity, return_on_assets, asset_turnover, "
+                    "interest_coverage, growth, cagr.",
     )
     concept: str = Field(
         default="",

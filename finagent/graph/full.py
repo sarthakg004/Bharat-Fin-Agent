@@ -271,9 +271,14 @@ class AgenticRAGv3(AgenticRAGv2):
         super().__init__(*args, **kwargs)
         self.table_collection = table_collection
         self.table_top_k = table_top_k
-        # Code generation needs the strong tier; router can use a fast model.
+        # Code generation needs the strong tier.
         self.code_model = code_model or self.synth_model
-        self.router_model = router_model or self.planner_model
+        # Tool selection + structured extraction (router, XBRL/calc/EDGAR/gate
+        # extractors, market planner all share this tier) is accuracy-critical:
+        # a weak model mis-routes ("acquisitions" not sent to web) and mis-maps
+        # metrics. Default it to the STRONG synth tier, not the fast planner.
+        # Override `router_model` for a cheaper/faster tool tier if desired.
+        self.router_model = router_model or self.synth_model
         self._table_agent: Optional[TableAgent] = None
 
     # ------------------------------------------------------------------ #

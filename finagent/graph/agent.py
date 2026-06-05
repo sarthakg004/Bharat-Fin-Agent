@@ -67,6 +67,11 @@ _WEB_NEWS_MARKERS = (
     "outlook", "forecast", "guidance", "analyst", "expected to perform",
     "upcoming month", "coming month", "next quarter", "this week", "today's",
     "recently", "happening", "sentiment", "what's new",
+    # Corporate-events / M&A: often span multiple years and may sit outside the
+    # indexed filing text, so let the web supplement filing retrieval.
+    "acquisition", "acquisitions", "acquire", "acquired", "merger", "merged",
+    "takeover", "divestiture", "divest", "spin-off", "spinoff", "joint venture",
+    "partnership", "deal", "buyout",
 )
 
 
@@ -255,7 +260,8 @@ copied verbatim from the list (no explanation). If none fit, reply 'NONE'.
 CALC_EXTRACT_SYSTEM = """\
 You extract a derived-metric computation from a numeric sub-query about a US
 public company. A DERIVED metric is one computed from reported figures: a margin
-(gross/operating/net), a ratio (current ratio, debt-to-equity, ROE, ROA, asset
+(gross/operating/net), a liquidity ratio (current ratio, quick/acid-test ratio,
+cash ratio), a leverage/return ratio (debt-to-equity, ROE, ROA, asset
 turnover, interest coverage), an intensity ratio (rd_to_revenue = R&D as % of
 revenue, sga_to_revenue, capex_to_revenue), period-over-period GROWTH, a CAGR,
 or a multi-year TREND of any of those. Set is_derived=true and fill ticker, the
