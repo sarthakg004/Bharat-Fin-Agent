@@ -242,9 +242,11 @@ _STEP_LABELS = {
     "market_data":    "Pulling market data…",
     "web_search":     "Searching the web…",
     "edgar_search":   "Searching EDGAR across companies…",
+    "evidence_builder": "Organising the evidence…",
     "synthesize":     "Writing the answer…",
     "critic":         "Fact-checking the draft…",
     "verify_numbers": "Verifying every figure…",
+    "confidence":     "Scoring confidence…",
 }
 
 # Canonical pipeline order (for the UI progress bar). The agent skips most of
@@ -289,6 +291,15 @@ async def _stream_answer(request: QueryRequest) -> AsyncGenerator[str, None]:
         agent_history = _build_history_for_agent(chat_id)
     yield _sse({"type": "chat", "chat_id": chat_id})
 
+    # Emit the first pipeline step UP FRONT so the progress bar appears the
+    # instant the user submits — instead of only after the first node finishes.
+    # This matters most for slow/rate-limited first calls (e.g. a free-tier
+    # Gemini key), where the planner LLM call can take seconds or fail: without
+    # this the user sees a lone "…" with no sign the run started.
+    yield _sse({"type": "status", "stage": "planner",
+                "label": _STEP_LABELS["planner"],
+                "index": 0, "total": len(PIPELINE_ORDER)})
+
     # Bridge the (synchronous, thread-pool) graph run to this async generator:
     # the graph pushes node names onto a thread-safe queue as it runs, and we
     # drain them here into live "status" events so the UI shows real progress
@@ -325,22 +336,42 @@ async def _stream_answer(request: QueryRequest) -> AsyncGenerator[str, None]:
         print(f"[query error] {type(e).__name__}", flush=True)
 
         rate_limited = is_rate_limit_error(e)
+        pc = request.provider_config
+        provider = (pc.provider if pc else "groq")
+        user_key = bool(pc and pc.api_key)
+        prov_label = {"groq": "Groq", "gemini": "Gemini",
+                      "openai": "OpenAI", "anthropic": "Anthropic"}.get(provider, provider)
         if rate_limited:
             code = "rate_limit"
-            if is_daily_quota_error(e):
-                # Daily token/request quota drained on every key — only a 24h
-                # wait (or the user's own key) recovers.
+            if user_key:
+                # The user supplied THEIR OWN key — don't blame the shared keys.
+                # Free tiers are tiny (Gemini = 5 req/min) and this agent makes
+                # many model calls per question, so a single query can exhaust
+                # them. Tell them what actually happened and how to recover.
+                daily = is_daily_quota_error(e)
+                window = "daily quota" if daily else "per-minute rate limit"
+                message = (
+                    f"Your {prov_label} API key hit its {window}. This agent makes "
+                    f"several model calls per question, and free tiers are very low "
+                    f"(Gemini allows just 5 requests/min). "
+                    + ("Try again tomorrow, " if daily else "Wait a minute and retry, ")
+                    + f"or use a higher-tier {prov_label} key."
+                )
+            elif is_daily_quota_error(e):
                 message = ("We've hit today's usage limit on the shared API keys. "
                            "Please try again tomorrow — or add your own API key "
                            "from the model picker to keep going now.")
             else:
-                # Per-minute burst limit across all keys — recovers in moments.
                 message = ("The shared API keys are rate-limited right now. "
                            "Please wait a minute and try again — or add your own "
                            "API key from the model picker to keep going now.")
         else:
             code = "error"
-            message = f"{type(e).__name__}: {e}"
+            # Surface a clean provider error (the value may include a key, so the
+            # llm layer already avoids logging it; here we keep the type + a short
+            # hint without echoing the full provider payload).
+            msg = str(e)
+            message = f"{prov_label} error: {msg[:240]}" if user_key else f"{type(e).__name__}: {msg[:240]}"
         if not STATELESS:
             history.add_message(
                 chat_id, role="assistant", content="",
