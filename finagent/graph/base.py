@@ -460,6 +460,9 @@ class AgenticRAG:
             "grading_score": round(score, 3),
             "needs_retry": bool(unsupported),
             "errors": errors,
+            # The specific claims the critic could not support — fed to a focused
+            # re-draft (active-critic recovery) so the synth fixes/drops them.
+            "critic_feedback": list(unsupported),
         }
 
     # ------------------------------------------------------------------ #

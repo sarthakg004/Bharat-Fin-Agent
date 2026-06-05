@@ -303,6 +303,27 @@ def test_audit_degraded_summary():
     assert "market" in a["degraded"]["lanes"] and "xbrl" not in a["degraded"]["lanes"]
 
 
+def test_active_critic_router_severity_and_bound():
+    """#6: critic routes to a re-draft only when there are unsupported claims AND
+    evidence is rich; thin evidence defers to verify (heavy re-gather); the flag
+    disables it. The loop is bounded by the existing critic_iterations cap."""
+    agent = _build_agent()
+    agent._log = lambda s, m: None
+    # unsupported + rich evidence → light re-draft
+    assert agent._critic_router({"needs_retry": True, "xbrl_facts": [{"ok": True}]}) == "resynthesize"
+    # unsupported + thin evidence → defer to verify (heavy path)
+    assert agent._critic_router({"needs_retry": True}) == "verify"
+    # nothing unsupported → proceed
+    assert agent._critic_router({"needs_retry": False, "xbrl_facts": [1]}) == "verify"
+    # flag off → always proceed
+    agent.active_critic = False
+    assert agent._critic_router({"needs_retry": True, "xbrl_facts": [1]}) == "verify"
+    agent.active_critic = True
+    # critic edge offers both targets (bound comes from critic_iterations cap).
+    targets = {(e.source, e.target) for e in agent.graph.get_graph().edges}
+    assert ("critic", "synthesize") in targets and ("critic", "verify_numbers") in targets
+
+
 def test_device_selection_returns_valid_value():
     from finagent.device import get_device
 

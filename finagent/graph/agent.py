@@ -334,6 +334,7 @@ class AgenticRAGv4(AgenticRAGv3):
         confidence_gating: bool = True,
         confidence_answer: float = 0.80,
         confidence_warn: float = 0.60,
+        active_critic: bool = True,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -368,6 +369,13 @@ class AgenticRAGv4(AgenticRAGv3):
         self.confidence_gating = confidence_gating
         self.confidence_answer = confidence_answer
         self.confidence_warn = confidence_warn
+        # Active-critic recovery (#6): when the critic finds unsupported claims
+        # but the evidence is rich, route to a focused RE-DRAFT (cheap) instead
+        # of a full re-retrieve — the draft over-claimed, not the evidence. Falls
+        # back to the heavy re-gather path when evidence is thin. Bounded by the
+        # existing critic_iterations cap. Set False to A/B against the prior
+        # "critic always proceeds to verify" behaviour.
+        self.active_critic = active_critic
         # Translation is sensitive to model quality (especially Indian languages
         # with their digit grouping and proper-noun handling). Default to the
         # strong tier; override via translator_model for cheap-tier runs.
@@ -1469,6 +1477,19 @@ class AgenticRAGv4(AgenticRAGv3):
                 + "\n\n"
             )
 
+        # Active-critic re-draft (#6): if a prior critic pass flagged claims it
+        # couldn't support, tell the synth to fix or drop exactly those — using
+        # the SAME evidence (the issue was over-claiming, not missing evidence).
+        feedback = state.get("critic_feedback") or []
+        feedback_block = ""
+        if feedback and self.active_critic:
+            bullet = "\n".join(f"  - {c}" for c in feedback[:5])
+            feedback_block = (
+                "\nA reviewer flagged these claims as NOT supported by the evidence "
+                "above — remove them, hedge them, or re-ground them in a cited "
+                "[N] item; do not repeat an unsupported figure:\n" + bullet + "\n"
+            )
+
         prompt = f"""{history_block}Question: {state['question']}
 
 Sub-queries researched:
@@ -1476,7 +1497,7 @@ Sub-queries researched:
 
 Numbered evidence (cite with `[N]`):
 {evidence_block}
-
+{feedback_block}
 ---
 Write your answer now in well-structured markdown with [N] citations after
 every factual claim. Treat the conversation history above as context for
@@ -1965,6 +1986,30 @@ single item is irrelevant."""
         refuse. Kept as a pure read so the policy lives in one place."""
         return state.get("confidence_band") or "answer"
 
+    def _critic_router(self, state: AgentState) -> str:
+        """Active-critic recovery (#6). After the critic:
+
+        * no unsupported claims (or active_critic off) → proceed to verify;
+        * unsupported claims AND we already have substantial evidence → a focused
+          RE-DRAFT (`resynthesize`): the draft over-claimed, so re-writing against
+          the same evidence is cheap and usually fixes it;
+        * unsupported claims AND evidence is thin → proceed to verify, whose
+          router then re-routes to retrieve (the heavier re-gather path).
+
+        Bounded by the existing `critic_iterations` cap: the critic only keeps
+        `needs_retry` True while under the cap, so this can re-draft at most
+        `max_critic_retries` times before it must proceed.
+        """
+        if not self.active_critic or not state.get("needs_retry"):
+            return "verify"
+        has_evidence = bool(
+            state.get("evidence") or state.get("retrieved_chunks")
+            or state.get("xbrl_facts") or state.get("calc_results")
+            or state.get("market_data") or state.get("web_results")
+            or state.get("edgar_results")
+        )
+        return "resynthesize" if has_evidence else "verify"
+
     # ------------------------------------------------------------------ #
     # Graph
     # ------------------------------------------------------------------ #
@@ -2042,7 +2087,13 @@ single item is irrelevant."""
         g.add_edge("edgar_search", "evidence_builder")
         g.add_edge("evidence_builder", "synthesize")
         g.add_edge("synthesize", "critic")
-        g.add_edge("critic", "verify_numbers")
+        # #6: the critic can actively route to a focused re-draft (resynthesize)
+        # when the draft over-claimed against otherwise-good evidence, instead of
+        # always deferring recovery to the verify→retrieve path.
+        g.add_conditional_edges(
+            "critic", self._critic_router,
+            {"resynthesize": "synthesize", "verify": "verify_numbers"},
+        )
         # Verifier settles hard refusals (ungrounded figures) and retries; an
         # answerable draft ("end") then flows into the confidence gate (#8/9).
         g.add_conditional_edges(

@@ -41,6 +41,7 @@ class AgentState(TypedDict, total=False):
     avg_grade: float                   # grader: mean of grades
     rewrite_history: list[str]         # past rewritten sub-queries
     critic_iterations: int             # critic-retry counter (cap = max_critic_retries)
+    critic_feedback: list[str]         # unsupported claims, fed to an active re-draft
     low_confidence: bool               # synth flag when grader stayed below threshold
 
     # --- Table-agent additions (v3) ---------------------------------------- #
