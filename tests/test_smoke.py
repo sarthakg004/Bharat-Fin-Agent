@@ -265,6 +265,19 @@ def test_market_cache_is_bounded_and_ttl():
     M.TOOLS.pop("__t__", None); M.TOOLS.pop("__e__", None)
 
 
+def test_retrieval_status_caps_and_defers_refusal():
+    """#7: retrieval status reports attempts vs cap + retrieval confidence and
+    flags exhaustion, but defers the refuse decision to the confidence gate."""
+    from finagent.api.rag_service import _retrieval_status
+    ex = _retrieval_status({"iteration_count": 2, "avg_grade": 1.5}, 2, 3.0)
+    assert ex["exhausted"] is True and ex["refusal_handled_by"] == "confidence_gate"
+    ok = _retrieval_status({"iteration_count": 0, "avg_grade": 4.5}, 2, 3.0)
+    assert ok["exhausted"] is False
+    # No grades at all (pure tool path) → not exhausted-with-grade, just capped check.
+    none = _retrieval_status({"iteration_count": 0, "avg_grade": None}, 2, 3.0)
+    assert none["exhausted"] is False
+
+
 def test_device_selection_returns_valid_value():
     from finagent.device import get_device
 

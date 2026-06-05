@@ -145,7 +145,26 @@ def _tool_health(state: dict) -> dict:
     }
 
 
-def _build_audit(state: dict) -> dict:
+def _retrieval_status(state: dict, max_attempts: int, grade_threshold: float) -> dict:
+    """Retrieval-loop status (#7): how many rewrite attempts ran vs the cap, the
+    retrieval confidence (mean grade), and whether the loop was EXHAUSTED without
+    reaching the quality bar. The actual refuse decision is NOT made here — a
+    numeric/market question legitimately skips retrieval — it's deferred to the
+    confidence gate, which weighs ALL evidence, not just retrieval."""
+    attempts = state.get("iteration_count", 0)
+    avg = state.get("avg_grade")
+    exhausted = attempts >= max_attempts and (avg is None or avg < grade_threshold)
+    return {
+        "attempts": attempts,
+        "max_attempts": max_attempts,
+        "avg_grade": avg,
+        "grade_threshold": grade_threshold,
+        "exhausted": bool(exhausted),
+        "refusal_handled_by": "confidence_gate",
+    }
+
+
+def _build_audit(state: dict, retrieval: Optional[dict] = None) -> dict:
     """Audit trail (#13): a single self-contained record of HOW the answer was
     produced — sources used, calculations performed, verification status, and
     the confidence score. Assembled as a read-only VIEW over the final state at
@@ -158,6 +177,8 @@ def _build_audit(state: dict) -> dict:
     return {
         "status": state.get("status"),
         "routes": state.get("query_routes") or [],
+        # Retrieval-loop status (#7): attempts vs cap + retrieval confidence.
+        "retrieval": retrieval or {},
         # Sources used — every normalised evidence item with its provenance.
         "sources_used": [
             {"kind": e.get("kind"), "source": e.get("source"),
@@ -512,8 +533,12 @@ def run_agentic(market: str, question: str, top_k: int = 5,
             "evidence_count": len(state.get("evidence", []) or []),
             "evidence_kinds": _count_kinds(state.get("evidence", []) or []),
             "evidence": (state.get("evidence", []) or [])[:60],
+            # Retrieval-loop status (#7): attempts vs cap, retrieval confidence,
+            # whether exhausted (refusal is deferred to the confidence gate).
+            "retrieval": _retrieval_status(state, rag.max_rewrites, rag.grade_threshold),
             # Audit trail (#13): full provenance of this answer.
-            "audit": _build_audit(state),
+            "audit": _build_audit(
+                state, _retrieval_status(state, rag.max_rewrites, rag.grade_threshold)),
             "numeric_verification_score": nv.get("score"),
             # #5 verification report: cross-source corroboration, unit-shift
             # flags, and citation coverage of numeric evidence.
