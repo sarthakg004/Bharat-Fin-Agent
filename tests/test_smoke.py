@@ -278,6 +278,31 @@ def test_retrieval_status_caps_and_defers_refusal():
     assert none["exhausted"] is False
 
 
+def test_new_nodes_degrade_gracefully_on_bad_state(monkeypatch=None):
+    """#14: the evidence_builder / confidence / verification-report additions
+    must never crash the run on a malformed state — they degrade to a safe dict."""
+    agent = _build_agent()
+    # Malformed calc_results (inputs is not a list of dicts) must not raise.
+    bad = {"calc_results": [{"value": 0.3, "inputs": "oops"}],
+           "xbrl_facts": [{"value": None}], "draft_answer": "x"}
+    out = agent.evidence_builder_node(bad)
+    assert "evidence" in out                      # returned, didn't raise
+
+    # Confidence scoring on a malformed verification dict fails OPEN (answers).
+    out2 = agent.confidence_node({"numeric_verification": "not-a-dict",
+                                  "draft_answer": "x", "grading_score": 1.0})
+    assert "confidence_band" in out2              # returned a band, didn't raise
+
+
+def test_audit_degraded_summary():
+    """#14: the audit flags lanes that ran but returned nothing usable."""
+    from finagent.api.rag_service import _build_audit
+    a = _build_audit({"market_data": [{"ok": False}, {"ok": False}],
+                      "xbrl_facts": [{"ok": True}]})
+    assert a["degraded"]["is_degraded"] is True
+    assert "market" in a["degraded"]["lanes"] and "xbrl" not in a["degraded"]["lanes"]
+
+
 def test_device_selection_returns_valid_value():
     from finagent.device import get_device
 

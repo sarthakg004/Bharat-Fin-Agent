@@ -1201,7 +1201,13 @@ class AgenticRAGv4(AgenticRAGv3):
         trail, and (later) cross-source validation — without disturbing the
         synthesizer's existing numbered-evidence assembly.
         """
-        ev = self._normalize_evidence(state)
+        try:
+            ev = self._normalize_evidence(state)
+        except Exception as e:
+            # Never let evidence normalisation break the run — synth still has
+            # its own assembly to fall back on.
+            self._log(state, f"evidence_builder failed ({e}); continuing without normalised evidence")
+            return {"evidence": []}
         self._log(state, f"evidence_builder: normalised {len(ev)} items across "
                          f"{len({e['kind'] for e in ev})} source kinds")
         return {"evidence": ev}
@@ -1583,8 +1589,14 @@ single item is irrelevant."""
             "numbers_grounded": grounded,
             "hallucination_rate": round(len(ungrounded) / total, 3) if total else 0.0,
         }
-        report = self._build_verification_report(
-            state, draft_nums, ungrounded_raws, by_kind)
+        try:
+            report = self._build_verification_report(
+                state, draft_nums, ungrounded_raws, by_kind)
+        except Exception as e:
+            # The report is advisory — never let it break the refusal-bearing
+            # numeric verdict.
+            self._log(state, f"verification report failed ({e})")
+            report = {}
         report["numeric"] = nv
         return {"numeric_verification": nv, "verification_report": report, **vi}
 
@@ -1797,13 +1809,20 @@ single item is irrelevant."""
         the blend and the routing band into state for the gate, the audit trail,
         and the UI.
         """
-        comps = self._confidence_components(state)
-        if comps:
-            wsum = sum(self._CONF_WEIGHTS[k] for k in comps)
-            conf = sum(self._CONF_WEIGHTS[k] * v for k, v in comps.items()) / wsum
-        else:
-            conf = 0.0
-        conf = round(conf, 3)
+        try:
+            comps = self._confidence_components(state)
+            if comps:
+                wsum = sum(self._CONF_WEIGHTS[k] for k in comps)
+                conf = sum(self._CONF_WEIGHTS[k] * v for k, v in comps.items()) / wsum
+            else:
+                conf = 0.0
+            conf = round(conf, 3)
+        except Exception as e:
+            # If scoring itself fails, don't block a verified answer — fail OPEN
+            # (answer, no gate) rather than refusing a good answer on a math bug.
+            self._log(state, f"confidence scoring failed ({e}); answering without the gate")
+            return {"confidence": None, "confidence_band": "answer",
+                    "status": "answered"}
 
         if not self.confidence_gating:
             band = "answer"

@@ -174,11 +174,21 @@ def _build_audit(state: dict, retrieval: Optional[dict] = None) -> dict:
     calc = state.get("calc_results") or []
     nv = state.get("numeric_verification") or {}
     vr = state.get("verification_report") or {}
+    # Graceful-degradation summary (#14): lanes that ran but returned nothing
+    # usable (all calls failed/missed). The run still completes — every lane
+    # try/excepts and the agent answers from whatever else grounded — but we
+    # record which lanes degraded so the answer's reliability is transparent.
+    th = _tool_health(state)
+    degraded_lanes = [k for k, v in th.items() if v["calls"] > 0 and v["ok"] == 0]
+
     return {
         "status": state.get("status"),
         "routes": state.get("query_routes") or [],
         # Retrieval-loop status (#7): attempts vs cap + retrieval confidence.
         "retrieval": retrieval or {},
+        # Failure recovery (#14): did any lane degrade, and which.
+        "degraded": {"is_degraded": bool(degraded_lanes), "lanes": degraded_lanes,
+                     "tool_health": th},
         # Sources used — every normalised evidence item with its provenance.
         "sources_used": [
             {"kind": e.get("kind"), "source": e.get("source"),
