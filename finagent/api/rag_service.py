@@ -95,6 +95,15 @@ def get_agentic(market: str, provider: str = "groq",
 # Output normalisation — both modes emit the same shape
 # --------------------------------------------------------------------------- #
 
+def _count_kinds(evidence: list[dict]) -> dict:
+    """Per-source-kind tally of normalised evidence items, e.g. {'xbrl': 2, 'filing': 5}."""
+    counts: dict[str, int] = {}
+    for e in evidence:
+        k = e.get("kind", "?")
+        counts[k] = counts.get(k, 0) + 1
+    return counts
+
+
 def _normalise_chunk(text: str, meta: dict, idx: int) -> dict:
     company = meta.get("company") or meta.get("ticker", "?")
     year = str(meta.get("year", "?"))
@@ -373,6 +382,11 @@ def run_agentic(market: str, question: str, top_k: int = 5,
             # Low-confidence draft the gate withheld — the UI offers it on demand.
             # Empty for a hallucination refusal (that draft is unsafe to reveal).
             "suppressed_answer": state.get("suppressed_answer") or "",
+            # Normalised evidence (#3): one common shape across all lanes, capped
+            # for payload size. Per-kind counts give a quick provenance summary.
+            "evidence_count": len(state.get("evidence", []) or []),
+            "evidence_kinds": _count_kinds(state.get("evidence", []) or []),
+            "evidence": (state.get("evidence", []) or [])[:60],
             "numeric_verification_score": nv.get("score"),
             "unverified_count": len(nv.get("unverified", [])) if isinstance(nv, dict) else 0,
             "numbers_total": nv.get("numbers_total", 0) if isinstance(nv, dict) else 0,

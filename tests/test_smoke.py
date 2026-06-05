@@ -49,8 +49,8 @@ def test_agent_graph_has_expected_nodes():
     nodes = {n for n in agent.graph.get_graph().nodes if not n.startswith("__")}
     expected = {
         "planner", "router", "retrieve", "grader", "rewrite", "table_agent",
-        "market_data", "web_search", "synthesize", "critic", "verify_numbers",
-        "refuse",
+        "market_data", "web_search", "evidence_builder", "synthesize", "critic",
+        "verify_numbers", "refuse",
     }
     assert expected <= nodes, f"missing nodes: {expected - nodes}"
     # English-only: the bilingual translation nodes must be gone.
@@ -110,6 +110,40 @@ def test_xbrl_derivation_is_not_falsely_refused():
     assert not any(d["raw"] in ("1", "2", "3") for d in figures)
     # Fullwidth citations still count toward citation coverage.
     assert agent._citation_score(state) == 1.0
+
+
+def test_evidence_builder_normalises_all_lanes():
+    """#3: every lane projects into one {kind,fact,value,unit,source,citation,
+    confidence,sub_query} shape, with per-source confidence ordering preserved
+    (XBRL > web) and filing items refined by their grader score."""
+    agent = _build_agent()
+    state = {
+        "xbrl_facts": [{"entity": "AMAZON", "concept": "revenue",
+                        "period_label": "FY2017", "value_str": "$177.866B",
+                        "value": 177866000000, "unit": "USD", "tag": "Revenues",
+                        "source": "SEC XBRL", "sub_query": "amzn rev"}],
+        "calc_results": [{"metric": "growth", "ticker": "AMZN", "value": 0.308,
+                          "value_str": "+30.8%", "is_percent": True,
+                          "source": "computed", "sub_query": "amzn growth"}],
+        "retrieved_chunks": [{"text": "Risk factors include competition.",
+                              "source": "[AMZN 10-K 2017, p.5]", "sub_query": "risks"}],
+        "grades": [5],
+        "web_results": [{"title": "Amazon hits new high", "source": "Reuters",
+                         "url": "http://x", "sub_query": "news"}],
+    }
+    out = agent.evidence_builder_node(state)
+    ev = out["evidence"]
+    kinds = {e["kind"] for e in ev}
+    assert {"xbrl", "calc", "filing", "web"} <= kinds
+    # Required shape on every item.
+    for e in ev:
+        assert set(e) >= {"kind", "fact", "value", "unit", "source",
+                          "citation", "confidence", "sub_query"}
+    by_kind = {e["kind"]: e for e in ev}
+    assert by_kind["xbrl"]["value"] == 177866000000
+    assert by_kind["calc"]["unit"] == "%"
+    assert by_kind["filing"]["confidence"] == 1.0          # grade 5 → (5-1)/4
+    assert by_kind["xbrl"]["confidence"] > by_kind["web"]["confidence"]
 
 
 def test_device_selection_returns_valid_value():

@@ -76,6 +76,14 @@ class AgentState(TypedDict, total=False):
     # --- Conversation memory ---------------------------------------------- #
     chat_history: list[dict]           # last K turns: [{role: "user"|"assistant", content}]
 
+    # --- Normalised evidence (#3) ----------------------------------------- #
+    # Every lane's output (XBRL, calc, filing text, tables, market, web, EDGAR)
+    # projected into one common shape by `evidence_builder_node`, so downstream
+    # nodes, the audit trail, and cross-source checks read a single structure
+    # instead of seven bespoke ones. Each item:
+    #   {kind, fact, value, unit, source, citation, confidence, sub_query}
+    evidence: list[dict]
+
     # --- Confidence framework (#8/9) -------------------------------------- #
     # Four sub-scores in [0,1], then their weighted blend, computed once after
     # verification by `confidence_node`. Any sub-score that doesn't apply to a

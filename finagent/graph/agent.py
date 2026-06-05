@@ -1082,6 +1082,130 @@ class AgenticRAGv4(AgenticRAGv3):
             results.append(res)
         return {"edgar_results": results}
 
+    # ------------------------------------------------------------------ #
+    # Evidence builder (#3)
+    # ------------------------------------------------------------------ #
+
+    # Per-source baseline confidence for a normalised evidence item. Ordered by
+    # how authoritative the source is for a financial claim: exact filed XBRL is
+    # ground truth; deterministic math over it is nearly as good; filing text and
+    # tables are strong; live market data is fresh-but-point-in-time; EDGAR FTS
+    # locates filers; web is the weakest. Retrieved-chunk items refine this with
+    # their own grader score where available.
+    _EVIDENCE_BASE_CONF = {
+        "xbrl": 0.98, "calc": 0.95, "table": 0.85, "filing": 0.75,
+        "market": 0.90, "edgar": 0.70, "web": 0.55,
+    }
+
+    def _normalize_evidence(self, state: AgentState) -> list[dict]:
+        """Project every lane's output into one common evidence shape.
+
+        Returns a list of
+            {kind, fact, value, unit, source, citation, confidence, sub_query}
+        items — `value`/`unit` are filled for the structured numeric lanes
+        (XBRL, calc, market) and left None for narrative/text evidence. This is
+        the single normalised view the audit trail and cross-source checks read;
+        it does not replace the synthesizer's own numbered-evidence assembly.
+        """
+        ev: list[dict] = []
+
+        def add(kind, fact, *, value=None, unit="", source="", citation="",
+                confidence=None, sub_query=""):
+            ev.append({
+                "kind": kind,
+                "fact": (fact or "").strip(),
+                "value": value,
+                "unit": unit,
+                "source": source,
+                "citation": citation or source,
+                "confidence": round(
+                    self._EVIDENCE_BASE_CONF.get(kind, 0.5)
+                    if confidence is None else confidence, 3),
+                "sub_query": sub_query or "",
+            })
+
+        # XBRL facts — exact filed figures.
+        for f in state.get("xbrl_facts", []) or []:
+            add("xbrl",
+                f"{f.get('entity', f.get('ticker',''))} {f.get('concept','')} "
+                f"{f.get('period_label','FY'+str(f.get('fy','?')))} = {f.get('value_str','')}",
+                value=f.get("value"), unit=f.get("unit", ""),
+                source=f.get("source", "<XBRL>"),
+                citation=f"us-gaap:{f.get('tag','')}",
+                sub_query=f.get("sub_query", ""))
+
+        # Derived metrics — deterministic math over XBRL inputs.
+        for r in state.get("calc_results", []) or []:
+            add("calc", self._format_calc_result(r),
+                value=r.get("value"),
+                unit="%" if r.get("is_percent") else "",
+                source=r.get("source", f"<Calc: {r.get('metric','')}>"),
+                citation=f"<Calc: {r.get('metric','')}>",
+                sub_query=r.get("sub_query", ""))
+
+        # Filing text excerpts — per-chunk grader score becomes its confidence.
+        chunks = state.get("retrieved_chunks", []) or []
+        grades = state.get("grades", []) or []
+        for i, c in enumerate(chunks):
+            conf = ((grades[i] - 1) / 4.0) if i < len(grades) else \
+                self._EVIDENCE_BASE_CONF["filing"]
+            add("filing", c.get("text", "")[:300],
+                source=c.get("source", ""),
+                citation=c.get("source", ""),
+                confidence=max(0.0, min(1.0, conf)),
+                sub_query=c.get("sub_query", ""))
+
+        # Table-agent computations.
+        for t in state.get("table_results", []) or []:
+            if t.get("error") or not t.get("answer"):
+                continue
+            srcs = ", ".join(
+                f"{tu.get('title','?')} ({tu.get('company','?')} {tu.get('year','?')})"
+                for tu in (t.get("tables_used") or [])[:3])
+            add("table", f"Computed: {str(t.get('answer',''))[:200]}",
+                source=f"<Table: {srcs}>", citation=f"<Table: {srcs}>",
+                sub_query=t.get("sub_query", ""))
+
+        # Live market data (yfinance) — one item per successful tool call.
+        for m in state.get("market_data", []) or []:
+            if not m.get("ok"):
+                continue
+            data = m.get("data") or {}
+            sym = data.get("symbol") or (data.get("summary") or {}).get("symbol") or "?"
+            add("market", f"yfinance.{m.get('tool','')} {sym}: {str(data)[:200]}",
+                source=f"<Market: yfinance.{m.get('tool','')} {sym}>",
+                citation=f"<Market: {sym}>",
+                sub_query=m.get("sub_query", ""))
+
+        # EDGAR full-text search — the matching filers.
+        for r in state.get("edgar_results", []) or []:
+            add("edgar", self._format_edgar_result(r)[:300],
+                source=f"<EDGAR FTS: {r.get('query','')}>",
+                citation=f"<EDGAR: {r.get('query','')}>",
+                sub_query=r.get("sub_query", ""))
+
+        # Web hits.
+        for h in state.get("web_results", []) or []:
+            add("web", (h.get("title", "") or "")[:200],
+                source=f"<News: {h.get('source','web')}>",
+                citation=h.get("url", "") or f"<News: {h.get('source','web')}>",
+                sub_query=h.get("sub_query", ""))
+
+        return ev
+
+    def evidence_builder_node(self, state: AgentState) -> dict:
+        """Normalise all lane outputs into one `evidence` list (#3).
+
+        Runs after the tool lanes and before synthesis, so the structured view
+        is available to the verifier, the confidence/citation scoring, the audit
+        trail, and (later) cross-source validation — without disturbing the
+        synthesizer's existing numbered-evidence assembly.
+        """
+        ev = self._normalize_evidence(state)
+        self._log(state, f"evidence_builder: normalised {len(ev)} items across "
+                         f"{len({e['kind'] for e in ev})} source kinds")
+        return {"evidence": ev}
+
     def critic_node(self, state: AgentState) -> dict:
         """v3 critic with web-search hits AND market-data tool results added to
         the evidence pool. Without this, a claim grounded in a Tavily hit or
@@ -1758,6 +1882,7 @@ single item is irrelevant."""
         g.add_node("market_data", self.market_data_node)
         g.add_node("web_search", self.web_search_node)
         g.add_node("edgar_search", self.edgar_search_node)
+        g.add_node("evidence_builder", self.evidence_builder_node)
         g.add_node("synthesize", self.synthesize_node)
         g.add_node("critic", self.critic_node)
         g.add_node("verify_numbers", self.verify_numbers_node)
@@ -1799,7 +1924,9 @@ single item is irrelevant."""
         g.add_edge("market_data", "web_search")
         # Phase 6: cross-document sub-queries fan out to EDGAR full-text search.
         g.add_edge("web_search", "edgar_search")
-        g.add_edge("edgar_search", "synthesize")
+        # #3: normalise every lane's output into one `evidence` list before synth.
+        g.add_edge("edgar_search", "evidence_builder")
+        g.add_edge("evidence_builder", "synthesize")
         g.add_edge("synthesize", "critic")
         g.add_edge("critic", "verify_numbers")
         # Verifier settles hard refusals (ungrounded figures) and retries; an
@@ -2193,6 +2320,11 @@ def main():
     print(f"Language:         {state.get('language')} ({language_name(state.get('language', 'en'))})")
     print(f"Sub-queries:      {state.get('sub_queries')}")
     print(f"Routes:           {state.get('query_routes')}")
+    ev = state.get("evidence") or []
+    kinds: dict = {}
+    for e in ev:
+        kinds[e.get("kind")] = kinds.get(e.get("kind"), 0) + 1
+    print(f"Evidence:         {len(ev)} items {kinds}")
     print(f"Grades:           {state.get('grades')} (avg {state.get('avg_grade')})")
     print(f"Rewrites:         {state.get('iteration_count', 0)}")
     print(f"Critic retries:   {state.get('critic_iterations', 0)}")
