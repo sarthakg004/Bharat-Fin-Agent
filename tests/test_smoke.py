@@ -210,6 +210,30 @@ def test_audit_trail_has_all_required_sections():
     assert a["confidence"]["score"] == 0.889 and a["confidence"]["band"] == "answer"
 
 
+def test_observability_summaries():
+    """#11: token usage flattens across models, and tool health tallies per lane."""
+    from types import SimpleNamespace
+    from finagent.api.rag_service import _sum_usage, _tool_health
+    cb = SimpleNamespace(usage_metadata={
+        "llama-3.1-8b-instant": {"input_tokens": 100, "output_tokens": 20},
+        "openai/gpt-oss-120b": {"input_tokens": 400, "output_tokens": 80},
+    })
+    u = _sum_usage(cb)
+    assert u["input_tokens"] == 500 and u["output_tokens"] == 100 and u["total_tokens"] == 600
+    assert _sum_usage(None) == {}
+
+    th = _tool_health({
+        "xbrl_facts": [{"ok": True}, {"ok": False}],
+        "market_data": [{"ok": True}],
+        "table_results": [{"error": "boom"}, {"answer": "x"}],
+        "web_results": [{"title": "a"}],
+    })
+    assert th["xbrl"] == {"calls": 2, "ok": 1, "failed": 1}
+    assert th["market"]["ok"] == 1
+    assert th["table"] == {"calls": 2, "ok": 1, "failed": 1}
+    assert th["web"]["ok"] == 1
+
+
 def test_device_selection_returns_valid_value():
     from finagent.device import get_device
 

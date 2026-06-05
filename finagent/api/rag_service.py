@@ -17,6 +17,7 @@ quick; swap to `bge-reranker-large` once you don't mind the download.
 from __future__ import annotations
 
 import os
+import time
 from threading import Lock
 from typing import Callable, Optional
 
@@ -102,6 +103,46 @@ def _count_kinds(evidence: list[dict]) -> dict:
         k = e.get("kind", "?")
         counts[k] = counts.get(k, 0) + 1
     return counts
+
+
+def _sum_usage(usage_cb) -> dict:
+    """Flatten a UsageMetadataCallbackHandler into total input/output tokens.
+
+    Its `usage_metadata` is keyed by model name → {input_tokens, output_tokens,
+    total_tokens, ...}; we sum across every model the run touched."""
+    if usage_cb is None:
+        return {}
+    per_model = getattr(usage_cb, "usage_metadata", {}) or {}
+    inp = sum((m.get("input_tokens") or 0) for m in per_model.values())
+    out = sum((m.get("output_tokens") or 0) for m in per_model.values())
+    if not (inp or out):
+        return {}
+    return {"input_tokens": inp, "output_tokens": out,
+            "total_tokens": inp + out, "by_model": per_model}
+
+
+def _tool_health(state: dict) -> dict:
+    """Per-lane success/failure tally (#11 / #14): how many calls each tool
+    lane made and how many succeeded, so a degraded lane is visible at a glance."""
+    def tally(items, ok_key="ok"):
+        items = items or []
+        ok = sum(1 for x in items if isinstance(x, dict) and x.get(ok_key))
+        return {"calls": len(items), "ok": ok, "failed": len(items) - ok}
+
+    tables = state.get("table_results", []) or []
+    return {
+        "xbrl": tally(state.get("xbrl_facts")),
+        "calc": tally(state.get("calc_results")),
+        # tables carry an `error` instead of an `ok` flag.
+        "table": {"calls": len(tables),
+                  "ok": sum(1 for t in tables if not t.get("error")),
+                  "failed": sum(1 for t in tables if t.get("error"))},
+        "market": tally(state.get("market_data")),
+        "edgar": tally(state.get("edgar_results")),
+        # web hits have no ok flag — count presence.
+        "web": {"calls": len(state.get("web_results", []) or []),
+                "ok": len(state.get("web_results", []) or []), "failed": 0},
+    }
 
 
 def _build_audit(state: dict) -> dict:
@@ -216,11 +257,25 @@ def run_agentic(market: str, question: str, top_k: int = 5,
     if chat_history:
         initial_state["chat_history"] = chat_history
 
+    # #11 Observability (complements LangSmith traces with in-app metrics):
+    # a token-usage callback aggregates input/output tokens across EVERY model
+    # call in the run, across providers, with no extra deps. Node latencies are
+    # timed from the update stream below.
+    usage_cb = None
+    try:
+        from langchain_core.callbacks import UsageMetadataCallbackHandler
+        usage_cb = UsageMetadataCallbackHandler()
+    except Exception:
+        usage_cb = None
+
     # A hard recursion cap so a pathological retrieve→grade→rewrite or
     # critic→retrieve loop can never spin forever — it terminates with whatever
     # we have instead of hanging the request.
-    config = {"recursion_limit": 50}
+    config: dict = {"recursion_limit": 50}
+    if usage_cb is not None:
+        config["callbacks"] = [usage_cb]
 
+    node_latencies: dict[str, float] = {}
     if on_step is None:
         state = rag.graph.invoke(initial_state, config=config)
     else:
@@ -228,14 +283,22 @@ def run_agentic(market: str, question: str, top_k: int = 5,
         # for live progress and ("values", full_state) so we keep the final
         # accumulated state to build the response from.
         state: dict = {}
+        last_ts = time.time()
         for mode, data in rag.graph.stream(
             initial_state, stream_mode=["updates", "values"], config=config
         ):
             if mode == "values":
                 state = data
             elif mode == "updates" and isinstance(data, dict):
+                now = time.time()
+                # Attribute the elapsed wall-clock since the previous update to
+                # the node(s) that just produced one (rough but useful; parallel
+                # lanes that land together share the interval).
                 for node_name in data:
+                    node_latencies[node_name] = round(
+                        node_latencies.get(node_name, 0.0) + (now - last_ts), 3)
                     on_step(node_name)
+                last_ts = now
 
     chunks: list[dict] = []
     next_id = 0
@@ -414,6 +477,12 @@ def run_agentic(market: str, question: str, top_k: int = 5,
         "metadata": {
             "model": rag.synth_model,
             "latency": 0.0,                          # filled in by main.py wrapper
+            # #11 Observability: real token usage (was always null), per-node
+            # latency, and per-lane tool health. LangSmith has the full trace;
+            # these put the headline numbers in the answer's own metadata/footer.
+            **_sum_usage(usage_cb),
+            "node_latencies": node_latencies,
+            "tool_health": _tool_health(state),
             "language": state.get("language"),
             "sub_queries": state.get("sub_queries", []),
             "query_routes": state.get("query_routes", []),
