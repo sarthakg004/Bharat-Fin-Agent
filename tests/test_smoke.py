@@ -146,6 +146,46 @@ def test_evidence_builder_normalises_all_lanes():
     assert by_kind["xbrl"]["confidence"] > by_kind["web"]["confidence"]
 
 
+def test_market_label_tokens_are_not_verified_as_figures():
+    """#5 regression: window/year-range labels ("52-wk high", "FY2023-24",
+    "200-day"), incl. with Unicode hyphens, must not be extracted as claimed
+    figures — that was falsely refusing correct market answers."""
+    agent = _build_agent()
+    text = ("FY 2023‑24 Stock – 52‑wk high $316.94 ; 52‑wk low $194.30 ; "
+            "200-day moving average over 2023-2024")
+    raws = [d["raw"] for d in agent._extract_numbers(text)]
+    assert not any(x in ("24", "52", "200", "2023", "2024") for x in raws), raws
+    assert any("316.94" in x for x in raws) and any("194.30" in x for x in raws)
+
+
+def test_verification_report_cross_source_and_units():
+    """#5: the report attributes each grounded figure to the lanes that
+    corroborate it, flags a stated-scale/unit mismatch, and reports citation
+    coverage of numeric evidence — without driving refusals itself."""
+    agent = _build_agent()
+    # Revenue corroborated by BOTH an XBRL fact and a web snippet; plus a draft
+    # figure stated in the WRONG unit ("$136 million" for a $136bn value).
+    state = {
+        "draft_answer": "Revenue was $135.987 billion and also $136 million somewhere.",
+        "xbrl_facts": [{"value": 135987000000, "sub_query": "rev"}],
+        "web_results": [{"content": "Amazon revenue reached $135.987 billion.",
+                         "source": "Reuters"}],
+        "evidence": [{"kind": "xbrl", "value": 135987000000, "citation": "us-gaap:Revenues"}],
+    }
+    draft_nums = agent._extract_numbers(state["draft_answer"])
+    by_kind = agent._evidence_numbers_by_kind(state)
+    ungrounded = {d["raw"] for d in draft_nums
+                  if not agent._grounded(d["magnitudes"], agent._evidence_numbers(state))}
+    rep = agent._build_verification_report(state, draft_nums, ungrounded, by_kind)
+    # The billions figure is corroborated by ≥2 lanes (xbrl + web).
+    assert rep["cross_source"]["corroborated"] >= 1
+    # The "$136 million" form grounds only via a scale restatement → unit flag.
+    assert rep["units"]["scale_shifted_figures"] >= 1
+    # Citation coverage of numeric evidence is reported.
+    assert rep["sources"]["numeric_evidence_items"] == 1
+    assert rep["sources"]["with_citation"] == 1
+
+
 def test_device_selection_returns_valid_value():
     from finagent.device import get_device
 

@@ -1555,7 +1555,8 @@ single item is irrelevant."""
         if not draft_nums:
             return {"numeric_verification": {**clean, "claims": claims}, **vi}
 
-        evidence_mags = self._evidence_numbers(state)
+        by_kind = self._evidence_numbers_by_kind(state)
+        evidence_mags = [m for vals in by_kind.values() for m in vals]
         # LLM rescue: figures the verifier matched count as grounded too — pull
         # their magnitudes from the matched claims and add them to the evidence.
         for c in claims:
@@ -1567,21 +1568,104 @@ single item is irrelevant."""
             {"number": d["raw"], "claim": d["ctx"]}
             for d in draft_nums if not self._grounded(d["magnitudes"], evidence_mags)
         ]
+        ungrounded_raws = {u["number"] for u in ungrounded}
         total = len(draft_nums)
         grounded = total - len(ungrounded)
         score = grounded / total if total else 1.0
         for u in ungrounded:
             self._log(state, f"ungrounded figure: {u['number']} — {u['claim'][:100]}")
+
+        nv = {
+            "claims": claims,
+            "unverified": ungrounded,              # refuse_node reads this key
+            "score": round(score, 3),
+            "numbers_total": total,
+            "numbers_grounded": grounded,
+            "hallucination_rate": round(len(ungrounded) / total, 3) if total else 0.0,
+        }
+        report = self._build_verification_report(
+            state, draft_nums, ungrounded_raws, by_kind)
+        report["numeric"] = nv
+        return {"numeric_verification": nv, "verification_report": report, **vi}
+
+    # ------------------------------------------------------------------ #
+    # #5 — financial verification report (cross-source / units / sources)
+    # ------------------------------------------------------------------ #
+
+    def _exact_raw_values(self, state: AgentState) -> list[float]:
+        """The exact, UN-expanded XBRL / calc figures (1× scale only) — used to
+        tell whether a grounded draft number matched at its stated scale or only
+        after a power-of-10 restatement (a possible unit slip)."""
+        raw: list[float] = []
+        for f in state.get("xbrl_facts", []) or []:
+            v = f.get("value")
+            if isinstance(v, (int, float)):
+                raw.append(float(v))
+        for r in state.get("calc_results", []) or []:
+            for key_val in ([r.get("value")] + [s.get("value") for s in (r.get("series") or [])]
+                            + [i.get("value") for i in (r.get("inputs") or []) if isinstance(i, dict)]):
+                if isinstance(key_val, (int, float)):
+                    raw.extend([float(key_val), float(key_val) * 100.0])
+        return raw
+
+    def _build_verification_report(self, state: AgentState, draft_nums: list[dict],
+                                   ungrounded_raws: set, by_kind: dict) -> dict:
+        """Assemble the financial verification report the spec (#5) asks for:
+        cross-source corroboration, unit-shift flags, and source/citation
+        coverage. This is a REPORT — it informs confidence and the audit trail;
+        it does not itself trigger refusals (that stays with numeric grounding).
+        """
+        grounded_nums = [d for d in draft_nums if d["raw"] not in ungrounded_raws]
+        source_kinds = [k for k in by_kind if k != "const"]
+
+        # Cross-source: which independent lanes corroborate each grounded figure.
+        details: list[dict] = []
+        corroborated = single = web_only = 0
+        for d in grounded_nums:
+            matching = [
+                k for k in source_kinds
+                if any(self._num_close(m, ev) for m in d["magnitudes"] for ev in by_kind[k])
+            ]
+            if not matching:
+                continue                            # grounded only by a constant
+            if len(matching) >= 2:
+                corroborated += 1
+            else:
+                single += 1
+                if matching == ["web"]:
+                    web_only += 1
+            if len(details) < 12:
+                details.append({"number": d["raw"], "kinds": matching})
+
+        # Units: figures that grounded only after a scale restatement (the stated
+        # magnitude didn't match an exact value at 1×) — a possible unit slip.
+        exact_raw = self._exact_raw_values(state)
+        scale_shifted = 0
+        for d in grounded_nums:
+            if any(self._num_close(m, v) for m in d["magnitudes"] for v in exact_raw):
+                continue                            # matched at its stated scale
+            if any(self._num_close(m, v * s) for m in d["magnitudes"]
+                   for v in exact_raw for s in self._RESTATE_SCALES if s != 1.0):
+                scale_shifted += 1
+
+        # Sources: citation coverage of the structured numeric evidence items.
+        ev = state.get("evidence") or []
+        numeric_items = [e for e in ev if e.get("value") is not None]
+        with_cit = sum(1 for e in numeric_items if (e.get("citation") or "").strip())
+
         return {
-            "numeric_verification": {
-                "claims": claims,
-                "unverified": ungrounded,          # refuse_node reads this key
-                "score": round(score, 3),
-                "numbers_total": total,
-                "numbers_grounded": grounded,
-                "hallucination_rate": round(len(ungrounded) / total, 3) if total else 0.0,
+            "cross_source": {
+                "corroborated": corroborated,       # ≥2 independent lanes agree
+                "single_source": single,
+                "web_only": web_only,               # weakest — web alone
+                "details": details,
             },
-            **vi,
+            "units": {"scale_shifted_figures": scale_shifted},
+            "sources": {
+                "numeric_evidence_items": len(numeric_items),
+                "with_citation": with_cit,
+                "without_citation": len(numeric_items) - with_cit,
+            },
         }
 
     def refuse_node(self, state: AgentState) -> dict:
@@ -1918,13 +2002,24 @@ single item is irrelevant."""
         # it must be re-classified or query_routes goes stale (which silently
         # dropped the table/market lanes on the retry pass).
         g.add_edge("rewrite", "router")
+        # Numeric chain stays SEQUENTIAL: xbrl→calculator→table_agent share the
+        # XBRL client (facts + resolver cache) and table_agent reads the Chroma
+        # `tables` collection. Keeping them ordered avoids the concurrent-Chroma
+        # segfault class this codebase already hit once (commit 71e6bda).
         g.add_edge("xbrl", "calculator")
         g.add_edge("calculator", "table_agent")
+        # #2: the three NETWORK-bound lanes are mutually independent (distinct
+        # state keys, different services) and dominate tool latency, so fan them
+        # out to run in PARALLEL after the numeric chain. Only web_search's
+        # news-fallback touches Chroma, and it can't race table_agent (which has
+        # already finished) — so no two Chroma readers ever overlap.
         g.add_edge("table_agent", "market_data")
-        g.add_edge("market_data", "web_search")
-        # Phase 6: cross-document sub-queries fan out to EDGAR full-text search.
-        g.add_edge("web_search", "edgar_search")
-        # #3: normalise every lane's output into one `evidence` list before synth.
+        g.add_edge("table_agent", "web_search")
+        g.add_edge("table_agent", "edgar_search")
+        # Fan-in: evidence_builder runs once, after all three parallel lanes land,
+        # and normalises every lane's output into one `evidence` list before synth.
+        g.add_edge("market_data", "evidence_builder")
+        g.add_edge("web_search", "evidence_builder")
         g.add_edge("edgar_search", "evidence_builder")
         g.add_edge("evidence_builder", "synthesize")
         g.add_edge("synthesize", "critic")
@@ -2001,9 +2096,23 @@ single item is irrelevant."""
         """
         if not text:
             return []
+        # Normalise Unicode hyphens/dashes (‑ – — − …) to ASCII "-" so the
+        # range/label scrubs below catch them regardless of which dash the model
+        # emitted (the synth often uses a non-breaking hyphen in "FY2023‑24").
+        scrubbed = text.translate({
+            0x2010: 0x2d, 0x2011: 0x2d, 0x2012: 0x2d, 0x2013: 0x2d,
+            0x2014: 0x2d, 0x2015: 0x2d, 0x2212: 0x2d,
+        })
         # Remove things that look numeric but aren't financial claims.
-        scrubbed = cls._CITE_RE.sub(" ", text)                 # [1], [1, 3], 【1】
+        scrubbed = cls._CITE_RE.sub(" ", scrubbed)             # [1], [1, 3], 【1】
+        # Fiscal-year RANGES first ("FY2023-24", "2023-2024"), then single years.
+        scrubbed = re.sub(r"\bFY\s?\d{4}\s?-\s?\d{2,4}\b", " ", scrubbed, flags=re.I)
+        scrubbed = re.sub(r"\b(?:19|20)\d{2}\s?-\s?\d{2,4}\b", " ", scrubbed)
         scrubbed = re.sub(r"\bFY\s?\d{2,4}\b", " ", scrubbed, flags=re.I)
+        # Window labels: "52-week", "52 wk", "200-day" — the count names the
+        # metric, it isn't a reported figure.
+        scrubbed = re.sub(r"\b\d{1,3}\s?-?\s?(?:week|wk|day|month|mo)s?\b",
+                          " ", scrubbed, flags=re.I)
         scrubbed = re.sub(r"\bQ[1-4]\b", " ", scrubbed, flags=re.I)
         scrubbed = re.sub(r"\b10-[KQ]\b|\b8-K\b", " ", scrubbed, flags=re.I)
         scrubbed = re.sub(r"\bp\.?\s*\d+\b", " ", scrubbed, flags=re.I)  # p. 12
@@ -2067,54 +2176,65 @@ single item is irrelevant."""
     # so they must count as grounded or every shown calculation self-refutes.
     _MATH_CONSTANTS = (0.0, 1.0, 100.0)
 
-    def _evidence_numbers(self, state: AgentState) -> list[float]:
-        """Every numeric value present in the grounding evidence: XBRL facts and
-        derived metrics (exact, scale-expanded), plus numbers parsed from
-        retrieved chunks, tables, web hits, and market data."""
-        # `exact` holds authoritative, structured figures we trust enough to
-        # expand across scales; free-text numbers are taken at face value only.
-        exact: list[float] = []
+    def _evidence_numbers_by_kind(self, state: AgentState) -> dict[str, list[float]]:
+        """Grounding magnitudes bucketed BY SOURCE KIND, so cross-source
+        validation can tell which lanes corroborate a given figure.
 
-        # XBRL — exact filed values (the ground truth).
+        Exact structured lanes (xbrl, calc) are scale-expanded — see
+        `_RESTATE_SCALES`; free-text lanes (filing, table, market, web) are taken
+        at face value. The flat union (`_evidence_numbers`) is identical to the
+        prior behaviour, so number GROUNDING is unchanged — this only adds the
+        per-kind attribution used by the verification report.
+        """
+        buckets: dict[str, list[float]] = {"const": list(self._MATH_CONSTANTS)}
+
+        def add_exact(kind: str, v: float) -> None:
+            b = buckets.setdefault(kind, [])
+            for scale in self._RESTATE_SCALES:
+                b.append(v * scale)
+
+        def add_text(kind: str, txt: str) -> None:
+            b = buckets.setdefault(kind, [])
+            for n in self._extract_numbers(txt):
+                b.extend(n["magnitudes"])
+
+        # XBRL — exact filed values (ground truth).
         for f in state.get("xbrl_facts", []) or []:
             v = f.get("value")
             if isinstance(v, (int, float)):
-                exact.append(float(v))
+                add_exact("xbrl", float(v))
 
-        # Derived metrics — the result, its percent form, the trend series, AND
-        # the exact XBRL inputs the metric was computed from (the two revenue
-        # figures behind a growth %, etc.). Those inputs are what the synthesizer
-        # writes into a shown derivation, so they must be groundable.
+        # Derived metrics — result, percent form, trend series, AND the exact
+        # XBRL inputs the metric was computed from (what a shown derivation uses).
         for r in state.get("calc_results", []) or []:
             v = r.get("value")
             if isinstance(v, (int, float)):
-                exact.extend([float(v), float(v) * 100.0])
+                add_exact("calc", float(v)); add_exact("calc", float(v) * 100.0)
             for s in r.get("series", []) or []:
                 sv = s.get("value")
                 if isinstance(sv, (int, float)):
-                    exact.extend([float(sv), float(sv) * 100.0])
+                    add_exact("calc", float(sv)); add_exact("calc", float(sv) * 100.0)
             for inp in r.get("inputs", []) or []:
                 iv = inp.get("value") if isinstance(inp, dict) else None
                 if isinstance(iv, (int, float)):
-                    exact.append(float(iv))
+                    add_exact("calc", float(iv))
 
-        mags: list[float] = list(self._MATH_CONSTANTS)
-        for v in exact:
-            for scale in self._RESTATE_SCALES:
-                mags.append(v * scale)
-
-        # Free-text evidence — parse any numbers out of the prose (face value).
-        texts: list[str] = []
-        texts += [c.get("text", "") for c in state.get("retrieved_chunks", []) or []]
+        # Free-text lanes — face value.
+        for c in state.get("retrieved_chunks", []) or []:
+            add_text("filing", c.get("text", ""))
         for t in state.get("table_results", []) or []:
-            texts.append(str(t.get("answer", "")) + " " + str(t.get("stdout", "")))
-        for h in state.get("web_results", []) or []:
-            texts.append(h.get("content", "") or "")
+            add_text("table", str(t.get("answer", "")) + " " + str(t.get("stdout", "")))
         for mkt in state.get("market_data", []) or []:
-            texts.append(str(mkt.get("data", "")))
-        for txt in texts:
-            for n in self._extract_numbers(txt):
-                mags.extend(n["magnitudes"])
+            add_text("market", str(mkt.get("data", "")))
+        for h in state.get("web_results", []) or []:
+            add_text("web", h.get("content", "") or "")
+        return buckets
+
+    def _evidence_numbers(self, state: AgentState) -> list[float]:
+        """Flat union of every grounding magnitude across all source kinds."""
+        mags: list[float] = []
+        for vals in self._evidence_numbers_by_kind(state).values():
+            mags.extend(vals)
         return mags
 
     @staticmethod

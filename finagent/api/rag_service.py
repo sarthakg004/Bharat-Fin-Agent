@@ -388,6 +388,9 @@ def run_agentic(market: str, question: str, top_k: int = 5,
             "evidence_kinds": _count_kinds(state.get("evidence", []) or []),
             "evidence": (state.get("evidence", []) or [])[:60],
             "numeric_verification_score": nv.get("score"),
+            # #5 verification report: cross-source corroboration, unit-shift
+            # flags, and citation coverage of numeric evidence.
+            "verification_report": state.get("verification_report") or {},
             "unverified_count": len(nv.get("unverified", [])) if isinstance(nv, dict) else 0,
             "numbers_total": nv.get("numbers_total", 0) if isinstance(nv, dict) else 0,
             "hallucination_rate": nv.get("hallucination_rate", 0.0) if isinstance(nv, dict) else 0.0,
