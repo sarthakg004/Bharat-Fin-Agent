@@ -363,6 +363,17 @@ def test_router_uses_strong_tool_tier():
     assert agent.router_model == agent.synth_model
 
 
+def test_web_search_historical_vs_news():
+    """A historical/factual lookup (past fiscal years, acquisitions) must search
+    all-time by relevance, not as recency-filtered 'news' — that was returning
+    recent articles about unrelated companies for an FY2021-2023 M&A question."""
+    from finagent.tools.web_search import is_historical
+    assert is_historical("major acquisitions Amcor did in FY2023, FY2022, FY2021") is True
+    assert is_historical("AES restructuring history") is True
+    assert is_historical("AAPL premarket price right now") is False
+    assert is_historical("latest news on Tesla") is False
+
+
 def test_device_selection_returns_valid_value():
     from finagent.device import get_device
 

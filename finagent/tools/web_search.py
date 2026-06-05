@@ -29,6 +29,7 @@ Usage as a library
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Optional, Union
 
@@ -110,6 +111,31 @@ def infer_time_range(query: str) -> str:
     if any(m in q for m in _RECENCY_WEEK_MARKERS):
         return "week"
     return _DEFAULT_NEWS_RANGE
+
+
+# Past-year / historical-fact markers. A question about FY2021-2023 acquisitions
+# is a HISTORICAL lookup, not "latest news" — applying a recency window to it
+# returns recent articles that merely mention the topic for unrelated companies.
+_PAST_YEAR_RE = re.compile(r"\b(?:fy\s*)?(19|20)\d{2}\b", re.I)
+_HISTORICAL_MARKERS = (
+    "acquisition", "acquisitions", "acquire", "acquired", "merger", "merged",
+    "divestiture", "divest", "spin-off", "spinoff", "history", "historical",
+    "over the years", "in the past", "previously", "founded", "since",
+)
+
+
+def is_historical(query: str) -> bool:
+    """True when the query is a historical/factual lookup rather than fresh news,
+    so the web search should run ALL-TIME by relevance (no recency window)."""
+    import datetime
+    q = (query or "").lower()
+    if any(m in q for m in _RECENCY_DAY_MARKERS + _RECENCY_WEEK_MARKERS):
+        return False
+    cur_year = datetime.date.today().year
+    for m in _PAST_YEAR_RE.finditer(q):
+        if int(m.group(0)[-4:]) < cur_year:        # a real past-year reference
+            return True
+    return any(t in q for t in _HISTORICAL_MARKERS)
 
 
 class WebSearcher:
@@ -206,7 +232,17 @@ class WebSearcher:
         client = self._tavily_client()
         hits: list[dict] = []
         seen_urls: set[str] = set()
-        ranges = self._TIME_RANGE_FALLBACK[infer_time_range(query)]
+        # Historical/factual lookups (FY2021-2023 acquisitions, company history)
+        # search ALL-TIME by relevance — a recency window would return recent
+        # articles that merely mention the topic for unrelated companies. Fresh
+        # questions keep the day→week→month recency fallback. `None` time_range
+        # means "no time filter" (omitted from the Tavily call below).
+        if is_historical(query):
+            ranges: list = [None]
+            general_topic = "general"      # not "news" — we want reference pages
+        else:
+            ranges = self._TIME_RANGE_FALLBACK[infer_time_range(query)]
+            general_topic = None           # Tavily default
 
         def _collect(resp, tier):
             for r in (resp.get("results") or []):
@@ -215,28 +251,32 @@ class WebSearcher:
                     seen_urls.add(norm["url"])
                     hits.append(norm)
 
+        def _search(max_results, time_range, **extra):
+            kw = dict(query=query, max_results=max_results, search_depth="basic", **extra)
+            if time_range is not None:
+                kw["time_range"] = time_range
+            return client.search(**kw)
+
         # --- Pass 1: trusted financial domains first ----------------------
         for time_range in ranges:
             if len(hits) >= self._ENOUGH_HITS:
                 break
             try:
-                _collect(client.search(
-                    query=query, max_results=k, search_depth="basic",
-                    time_range=time_range, include_domains=list(self.TRUSTED_DOMAINS),
-                ), tier="trusted")
+                _collect(_search(k, time_range,
+                                 include_domains=list(self.TRUSTED_DOMAINS)), tier="trusted")
             except Exception as e:
                 print(f"[Tavily] trusted ({time_range}) failed ({type(e).__name__}: {e})")
 
         # --- Pass 2: general web ONLY to fill the gap, excluding junk -------
         if len(hits) < k:
+            extra = {"exclude_domains": list(JUNK_DOMAINS)}
+            if general_topic:
+                extra["topic"] = general_topic
             for time_range in ranges:
                 if len(hits) >= k:
                     break
                 try:
-                    _collect(client.search(
-                        query=query, max_results=k - len(hits), search_depth="basic",
-                        time_range=time_range, exclude_domains=list(JUNK_DOMAINS),
-                    ), tier="web")
+                    _collect(_search(k - len(hits), time_range, **extra), tier="web")
                 except Exception as e:
                     print(f"[Tavily] general ({time_range}) failed ({type(e).__name__}: {e})")
 
