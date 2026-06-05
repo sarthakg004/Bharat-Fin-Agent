@@ -75,6 +75,9 @@ CONCEPT_TAGS: dict[str, list[str]] = {
                    "ResearchAndDevelopmentExpenseExcludingAcquiredInProcessCost"],
     "sga_expense": ["SellingGeneralAndAdministrativeExpense"],
     "interest_expense": ["InterestExpense", "InterestExpenseDebt"],
+    "restructuring": ["RestructuringCharges",
+                      "RestructuringAndRelatedCostIncurredCost",
+                      "RestructuringCostsAndAssetImpairmentCharges"],
     "depreciation_amortization": ["DepreciationDepletionAndAmortization",
                                   "DepreciationAmortizationAndAccretionNet",
                                   "DepreciationAndAmortization"],
@@ -119,6 +122,7 @@ _CONCEPT_KEYWORDS: list[tuple[str, str]] = [
     ("research and development", "rd_expense"), ("r&d", "rd_expense"),
     ("selling, general", "sga_expense"), ("sg&a", "sga_expense"),
     ("interest expense", "interest_expense"),
+    ("restructuring", "restructuring"),
     ("depreciation", "depreciation_amortization"), ("amortization", "depreciation_amortization"),
     ("diluted eps", "eps_diluted"), ("diluted earnings per share", "eps_diluted"),
     ("basic eps", "eps_basic"), ("basic earnings per share", "eps_basic"),
@@ -272,9 +276,49 @@ class XBRLClient(BaseTool):
                 chosen = self.tag_resolver(concept, sorted(usgaap.keys()))
             except Exception:
                 chosen = None
-            if chosen and chosen in usgaap:
+            # Deterministic relevance guard: the LLM will happily map an
+            # unreported concept onto a loosely-related tag (e.g. "restructuring
+            # costs" → AssetImpairmentCharges), which then surfaces a real figure
+            # under the WRONG name — a concept-mismatch hallucination the numeric
+            # verifier can't catch (the value IS in the evidence). Only accept a
+            # fallback tag whose NAME actually shares the concept's salient words;
+            # otherwise treat the concept as unreported (a miss → the agent
+            # answers "not reported / 0" rather than inventing a figure).
+            if chosen and chosen in usgaap and self._tag_relevant(concept, chosen):
                 return [chosen], "llm_fallback"
         return [], "none"
+
+    # Generic finance words that don't discriminate one line item from another —
+    # excluded so relevance is judged on the concept's DISTINCTIVE words.
+    _TAG_STOP = {
+        "cost", "costs", "expense", "expenses", "charge", "charges", "total",
+        "net", "gross", "amount", "value", "the", "of", "and", "for", "in",
+        "from", "to", "income", "loss", "other", "current", "noncurrent",
+    }
+
+    @classmethod
+    def _tag_relevant(cls, concept: str, tag: str) -> bool:
+        """True if `tag`'s name shares a salient (non-generic) word with `concept`.
+
+        Splits the CamelCase tag into words and the concept into content words,
+        then accepts on any stem-level overlap. "restructuring costs" vs
+        AssetImpairmentCharges → no shared salient word → False (reject the
+        fallback). "asset impairment" vs AssetImpairmentCharges → "impairment"
+        overlaps → True.
+        """
+        cwords = [w for w in re.findall(r"[a-z]+", (concept or "").lower())
+                  if len(w) >= 4 and w not in cls._TAG_STOP]
+        if not cwords:
+            return True                              # nothing distinctive to check
+        twords = [w.lower() for w in re.findall(
+            r"[A-Z]+(?=[A-Z][a-z])|[A-Z][a-z]+|[a-z]+|[A-Z]+", tag or "")]
+
+        def overlap(c: str, t: str) -> bool:
+            return (c == t or c in t or t in c
+                    or (len(c) >= 5 and len(t) >= 5
+                        and (t.startswith(c[:5]) or c.startswith(t[:5]))))
+
+        return any(overlap(c, t) for c in cwords for t in twords)
 
     @staticmethod
     def _primary_unit(units: dict) -> Optional[str]:

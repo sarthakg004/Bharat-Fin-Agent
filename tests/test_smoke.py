@@ -324,6 +324,23 @@ def test_active_critic_router_severity_and_bound():
     assert ("critic", "synthesize") in targets and ("critic", "verify_numbers") in targets
 
 
+def test_xbrl_tag_relevance_guard_blocks_concept_mismatch():
+    """Regression: an unreported concept must NOT be silently mapped onto a
+    loosely-related tag (the bug that surfaced AES 'restructuring costs' as
+    AssetImpairmentCharges = $1.715B). The relevance guard rejects a fallback
+    tag that shares no salient word with the concept."""
+    from finagent.tools.xbrl import XBRLClient as X, CONCEPT_TAGS
+    # The exact mismatch that caused the hallucination.
+    assert X._tag_relevant("restructuring costs", "AssetImpairmentCharges") is False
+    assert X._tag_relevant("restructuring costs", "CostsAndExpenses") is False
+    # Correct mappings still pass.
+    assert X._tag_relevant("restructuring costs", "RestructuringCharges") is True
+    assert X._tag_relevant("asset impairment", "AssetImpairmentCharges") is True
+    assert X._tag_relevant("research and development", "ResearchAndDevelopmentExpense") is True
+    # Restructuring is now in the curated map, so reporters resolve correctly.
+    assert "restructuring" in CONCEPT_TAGS
+
+
 def test_device_selection_returns_valid_value():
     from finagent.device import get_device
 
