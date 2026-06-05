@@ -249,7 +249,15 @@ class XBRLQuery(BaseModel):
     )
     period: str = Field(
         default="",
-        description="Fiscal period like 'FY2022' or '2021'. Empty → most recent.",
+        description="Fiscal YEAR like 'FY2022' or '2021' ONLY if the question names a "
+                    "specific year. Leave EMPTY when no year is given — the tool then "
+                    "returns the most recent data (do not guess a year).",
+    )
+    quarterly: bool = Field(
+        default=False,
+        description="True if the question asks for a QUARTERLY figure ('last quarter', "
+                    "'most recent quarter', 'Q3', 'quarterly EPS'). The tool then returns "
+                    "the latest quarter (10-Q) instead of the annual (10-K) figure.",
     )
 
 
@@ -336,9 +344,16 @@ class MarketIntent(BaseModel):
         default="none",
         description="Market tool to invoke; 'none' if the question isn't about market data.",
     )
+    company: str = Field(
+        default="",
+        description="The company's NAME in words (e.g. 'Rocket Lab', 'Apple'). Used to "
+                    "resolve the correct ticker from SEC data — fill this whenever you "
+                    "know the company, even if you also guess a symbol.",
+    )
     symbol: str = Field(
         default="",
-        description="Yahoo ticker (e.g. AAPL, RELIANCE.NS, TSLA). Empty for `compare`.",
+        description="Yahoo ticker if you're confident (e.g. AAPL, TSLA). Empty for `compare`. "
+                    "Don't append an exchange suffix like '.NASDAQ'.",
     )
     symbols: list[str] = Field(
         default_factory=list,

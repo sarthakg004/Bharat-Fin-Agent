@@ -306,49 +306,75 @@ class XBRLClient(BaseTool):
             return None
         return d.year - 1 if (d.month == 1 and d.day <= 14) else d.year
 
-    @classmethod
-    def _select_fact(cls, unit_facts: list[dict], year: Optional[int]) -> Optional[dict]:
-        """Choose the annual (10-K, full-year) fact for `year` from a unit's list.
+    @staticmethod
+    def _duration_days(f: dict) -> Optional[int]:
+        s, e = f.get("start"), f.get("end")
+        if not s or not e:
+            return None      # instant fact
+        try:
+            from datetime import date
+            return (date.fromisoformat(e) - date.fromisoformat(s)).days
+        except Exception:
+            return None
 
-        Flow concepts (revenue, income) are durations — we take the ~full-year
-        span, not a quarter. Stock concepts (assets, equity) are instants — we
-        take the period-end value. When `year` is None we return the most recent
-        annual fact.
+    @classmethod
+    def _select_fact(cls, unit_facts: list[dict], year: Optional[int],
+                     quarterly: bool = False) -> Optional[dict]:
+        """Choose a fact from a unit's list.
+
+        `quarterly` → the latest ~3-month (10-Q) figure (for "last quarter"
+        questions). Otherwise the annual (10-K, full-year) figure. When `year` is
+        None we return the MOST RECENT matching fact — so a question with no year
+        always gets the latest data, never a stale default.
         """
         def is_full_year(f: dict) -> bool:
-            s, e = f.get("start"), f.get("end")
-            if not s or not e:
-                return True   # instant fact (balance-sheet item)
-            try:
-                from datetime import date
-                d = (date.fromisoformat(e) - date.fromisoformat(s)).days
-                return d >= 300   # full year, not a quarter
-            except Exception:
-                return True
+            d = cls._duration_days(f)
+            return d is None or d >= 300        # instant, or a full year
 
-        annual = [f for f in unit_facts if f.get("fp") == "FY" and is_full_year(f)]
-        pool = annual or [f for f in unit_facts if is_full_year(f)] or unit_facts
+        def is_quarter(f: dict) -> bool:
+            d = cls._duration_days(f)
+            # A true quarter is ~3 months (80-100d). Excludes YTD 6-/9-month
+            # facts and instants. Quarterly periodic forms carry fp Q1-Q4.
+            return d is not None and 80 <= d <= 100
 
-        if year is not None:
-            # Match on the end-date-derived fiscal year (robust to restated
-            # comparatives); fall back to the raw `fy` tag if that finds nothing.
+        if quarterly:
+            qs = [f for f in unit_facts if is_quarter(f)]
+            # Instant concepts (balance-sheet items) have no quarter duration —
+            # fall back to the latest instant at a quarter-end.
+            pool = qs or [f for f in unit_facts if cls._duration_days(f) is None]
+        else:
+            annual = [f for f in unit_facts if f.get("fp") == "FY" and is_full_year(f)]
+            pool = annual or [f for f in unit_facts if is_full_year(f)] or unit_facts
+
+        if year is not None and not quarterly:
             cands = [f for f in pool if cls._fiscal_year(f) == year]
             if not cands:
                 cands = [f for f in pool if f.get("fy") == year]
             if not cands:
                 return None
+        elif year is not None:               # quarterly within a specific year
+            cands = [f for f in pool if str(f.get("end", "")).startswith(str(year))] or pool
         else:
             cands = pool
+        if not cands:
+            return None
 
-        # Prefer the figure as reported on a 10-K, then the latest period-end.
-        tenk = [f for f in cands if f.get("form", "").startswith("10-K")]
-        cands = tenk or cands
+        if not quarterly:
+            # Prefer the figure as reported on a 10-K, then the latest period-end.
+            tenk = [f for f in cands if f.get("form", "").startswith("10-K")]
+            cands = tenk or cands
+        # Latest period-end wins (the most recent data).
         return max(cands, key=lambda f: f.get("end", ""))
 
     # --- public API ----------------------------------------------------------
 
-    def run(self, ticker: str, concept: str, period: Optional[str] = None) -> dict:
-        """Return the exact reported value for (ticker/name, concept, period)."""
+    def run(self, ticker: str, concept: str, period: Optional[str] = None,
+            quarterly: bool = False) -> dict:
+        """Return the exact reported value for (ticker/name, concept, period).
+
+        `quarterly=True` returns the latest quarter (10-Q); otherwise the annual
+        figure. With no `period`, returns the most recent matching fact.
+        """
         r = self.resolver.resolve(ticker)
         cik = r.get("cik")
         if not cik:
@@ -384,7 +410,7 @@ class XBRLClient(BaseTool):
             ukey = self._primary_unit(units)
             if not ukey:
                 continue
-            f = self._select_fact(units[ukey], year)
+            f = self._select_fact(units[ukey], year, quarterly=quarterly)
             if f is None:
                 continue
             if f.get("val"):                        # truthy → real, non-zero value
@@ -412,6 +438,10 @@ class XBRLClient(BaseTool):
         value_str = (f"${value:,.0f}" if is_money and isinstance(value, (int, float))
                      else f"{value:,}" if isinstance(value, (int, float)) else str(value))
         fy = self._fiscal_year(fact) or fact.get("fy")
+        fp = fact.get("fp")
+        # Human period label: "Q1 2026" for a quarter, "FY2025" for a year — so
+        # the synthesizer states the right period (and never mislabels a quarter).
+        period_label = (f"{fp} {fy}" if quarterly and fp and fp != "FY" else f"FY{fy}")
         return {
             "ok": True,
             "ticker": r.get("ticker", ticker),
@@ -423,13 +453,14 @@ class XBRLClient(BaseTool):
             "tag_match": how,
             "unit": unit_key,
             "period": period,
+            "period_label": period_label,
             "fy": fy,
-            "fp": fact.get("fp"),
+            "fp": fp,
             "form": fact.get("form"),
             "start": fact.get("start"),
             "end": fact.get("end"),
             "value": value,
             "value_str": value_str,
             "source": (f"SEC XBRL companyfacts (us-gaap:{tag}, "
-                       f"FY{fy} {fact.get('form','')}, filed {fact.get('filed','?')})"),
+                       f"{period_label} {fact.get('form','')}, filed {fact.get('filed','?')})"),
         }

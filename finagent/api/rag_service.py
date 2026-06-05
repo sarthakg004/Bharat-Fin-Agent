@@ -183,7 +183,7 @@ def run_agentic(market: str, question: str, top_k: int = 5,
             continue
         chunks.append({
             "id": next_id,
-            "text": (f"{f.get('concept','')} (FY{f.get('fy','?')}) = "
+            "text": (f"{f.get('concept','')} ({f.get('period_label','FY'+str(f.get('fy','?')))}) = "
                      f"{f.get('value_str','')}\n"
                      f"Exact figure as filed — us-gaap:{f.get('tag','')}, "
                      f"{f.get('form','')} {f.get('end','')}."),

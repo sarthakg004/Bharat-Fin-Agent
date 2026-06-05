@@ -85,9 +85,12 @@ Available tools:
   - get_news(symbol, limit)          — recent ticker-specific headlines.
   - compare(symbols)                 — quote snapshot for 2-6 tickers.
 
-Use Yahoo ticker format: AAPL, MSFT (US listings have no suffix); for India use
-.NS (NSE) like RELIANCE.NS or TCS.NS. Common aliases (TCS, INFY, RELIANCE,
-HDFC, etc.) are auto-normalised — pass either form.
+ALWAYS fill `company` with the company's name in words (e.g. "Rocket Lab",
+"Apple") — the system resolves the correct ticker from authoritative SEC data,
+which is more reliable than guessing a symbol. You may also fill `symbol` if
+you're confident, but do NOT invent tickers or append exchange suffixes like
+".NASDAQ". For India use .NS (NSE) like RELIANCE.NS. Common aliases (TCS, INFY,
+RELIANCE, etc.) are auto-normalised.
 
 Prefer get_history for almost anything stock-related — it returns a candlestick
 CHART plus the latest price, so it answers "how is X doing", "how has X
@@ -221,12 +224,20 @@ XBRL_EXTRACT_SYSTEM = """\
 You extract a single structured XBRL lookup from a numeric sub-query about a US
 public company's financial statements. Decide whether the sub-query asks for ONE
 exact reported line-item figure (revenue, net income, total assets, gross
-profit, R&D expense, diluted EPS, cash, long-term debt, …) for ONE company and
-period — if so set answerable=true and fill ticker, concept (plain words), and
-period (e.g. 'FY2022'). Set answerable=false for derived metrics (margins,
-growth, ratios, CAGR), multi-company comparisons, or narrative questions — those
-are handled elsewhere. Use the conversation context to resolve a follow-up's
-company/period if the sub-query omits them.
+profit, R&D expense, diluted EPS, cash, long-term debt, …) for ONE company — if
+so set answerable=true and fill ticker and concept (plain words).
+
+Period rules (important):
+- Set `period` to a fiscal YEAR (e.g. 'FY2022') ONLY if the question names a
+  specific year. If NO year is mentioned, leave period EMPTY — do NOT guess a
+  year; the tool then returns the LATEST available data.
+- Set `quarterly`=true if the question asks for a quarter ('last quarter', 'most
+  recent quarter', 'Q3', 'quarterly EPS') — the tool returns the latest 10-Q
+  figure instead of the annual one.
+
+Set answerable=false for derived metrics (margins, growth, ratios, CAGR),
+multi-company comparisons, or narrative questions — those are handled elsewhere.
+Use the conversation context to resolve a follow-up's company/period.
 """
 
 XBRL_EXTRACT_PROMPT = """\
@@ -679,7 +690,7 @@ class AgenticRAGv4(AgenticRAGv3):
                 continue
             try:
                 res = self.xbrl.run(ticker=q.ticker, concept=q.concept,
-                                    period=q.period or None)
+                                    period=q.period or None, quarterly=q.quarterly)
             except Exception as e:
                 self._log(state, f"xbrl lookup failed for {sub_q!r}: {e}")
                 continue
@@ -777,6 +788,45 @@ class AgenticRAGv4(AgenticRAGv3):
         proxy["query_routes"] = ["numeric"] * len(remaining)
         return super().table_agent_node(proxy)
 
+    # US exchange suffixes the LLM sometimes wrongly appends; any OTHER dotted
+    # suffix (.NS, .L, .TO, .HK, …) is a deliberate foreign listing we keep.
+    _US_SUFFIX_RE = re.compile(r"\.(NASDAQ|NYSE|NYS|NMS|NASD|NAS|OQ|N|O|A|P|Z|BATS|ARCA)$", re.I)
+
+    def _resolve_market_ticker(self, company: str, symbol: str) -> str:
+        """Resolve to the authoritative ticker, generally (not per-stock).
+
+        Prefer the SEC resolver on the company NAME (e.g. 'Rocket Lab' → RKLB),
+        which is far more reliable than the LLM's symbol guess. The symbol is only
+        used as an EXACT ticker (never a fuzzy name match, which could land on a
+        different company), and a deliberate foreign-exchange suffix is preserved.
+        """
+        symbol = (symbol or "").strip()
+        # Keep a non-US exchange ticker as-is (RELIANCE.NS, BARC.L, RY.TO).
+        if "." in symbol and not self._US_SUFFIX_RE.search(symbol):
+            return symbol.upper()
+
+        # 1. Resolve the company NAME (fuzzy is fine for names).
+        name = (company or "").strip()
+        if name:
+            try:
+                r = self.xbrl.resolver.resolve(name)
+            except Exception:
+                r = {}
+            if r.get("ticker"):
+                return r["ticker"]
+
+        # 2. The symbol: strip a US suffix, then accept the resolver ONLY on an
+        #    exact ticker match (so a typo can't fuzzy-map to another company).
+        raw = self._US_SUFFIX_RE.sub("", symbol).upper()
+        if raw:
+            try:
+                r = self.xbrl.resolver.resolve(raw)
+            except Exception:
+                r = {}
+            if r.get("match") == "ticker" and r.get("ticker"):
+                return r["ticker"]
+        return raw
+
     def market_data_node(self, state: AgentState) -> dict:
         """Call yfinance tools for sub-queries routed to `market`.
 
@@ -841,6 +891,15 @@ class AgenticRAGv4(AgenticRAGv3):
         except Exception as e:
             self._log(state, f"market planner failed ({e}); skipping market lane")
             return {"market_data": [], "charts": []}
+
+        # Correct the ticker via the SEC resolver (authoritative) instead of
+        # trusting the LLM's guess — fixes hallucinated symbols like RLAB→RKLB
+        # for ANY company, and strips bogus exchange suffixes (".NASDAQ").
+        if intent.tool == "compare":
+            intent.symbols = [self._resolve_market_ticker("", s) for s in (intent.symbols or [])]
+            intent.symbols = [s for s in intent.symbols if s]
+        else:
+            intent.symbol = self._resolve_market_ticker(intent.company, intent.symbol)
 
         if intent.tool == "none" or not (intent.symbol or intent.symbols):
             return {"market_data": [], "charts": []}
@@ -1022,7 +1081,7 @@ class AgenticRAGv4(AgenticRAGv3):
         # XBRL facts → pseudo chunks (authoritative structured figures).
         for f in state.get("xbrl_facts", []) or []:
             pseudo_chunks.append({
-                "text": (f"{f.get('concept','')} FY{f.get('fy','?')} = "
+                "text": (f"{f.get('concept','')} {f.get('period_label','FY'+str(f.get('fy','?')))} = "
                          f"{f.get('value_str','')} ({f.get('value')})"),
                 "source": f.get("source", "<XBRL>"),
                 "company": f.get("entity", f.get("ticker", "?")),
@@ -1134,7 +1193,7 @@ class AgenticRAGv4(AgenticRAGv3):
             evidence_items.append(
                 f"[{idx}] XBRL FACT (authoritative — exact figure as filed) — "
                 f"{f.get('entity', f.get('ticker',''))} {f.get('concept','')} "
-                f"FY{f.get('fy','?')}: {f.get('value_str','')}\n"
+                f"{f.get('period_label', 'FY' + str(f.get('fy','?')))}: {f.get('value_str','')}\n"
                 f"Source: {f.get('source','')} (us-gaap:{f.get('tag','')})."
             )
             idx += 1
@@ -1755,7 +1814,7 @@ single item is irrelevant."""
         for f in state.get("xbrl_facts", []) or []:
             parts.append(
                 f"[XBRL] {f.get('entity', f.get('ticker',''))} {f.get('concept','')} "
-                f"FY{f.get('fy','?')} = {f.get('value_str','')} ({f.get('value')})\n"
+                f"{f.get('period_label','FY'+str(f.get('fy','?')))} = {f.get('value_str','')} ({f.get('value')})\n"
                 f"{f.get('source','')}"
             )
         # Derived metrics computed from those exact XBRL inputs.
