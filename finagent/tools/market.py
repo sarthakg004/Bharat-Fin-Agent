@@ -24,6 +24,10 @@ so the caller can short-circuit on errors without try/except gymnastics.
 
 from __future__ import annotations
 
+import os
+import threading
+import time
+from collections import OrderedDict
 from typing import Any, Optional
 
 
@@ -280,14 +284,52 @@ TOOLS: dict[str, dict] = {
 }
 
 
+# --------------------------------------------------------------------------- #
+# Bounded TTL cache (#12)
+# --------------------------------------------------------------------------- #
+# yfinance calls are slow (1-3s) and rate-limit-prone, and identical calls
+# recur within a session (follow-ups, the get_history safety-net, multi-lane
+# questions). A short-TTL, hard-capped LRU cache removes the redundant network
+# round-trips. Memory is bounded by `_CACHE_MAX` entries (a history result with
+# its chart is at most tens of KB → a few MB worst case), so it's safe on a
+# small instance. Set MARKET_CACHE_TTL=0 to disable entirely.
+_CACHE_TTL = float(os.getenv("MARKET_CACHE_TTL", "90"))    # seconds; 0 disables
+_CACHE_MAX = int(os.getenv("MARKET_CACHE_MAX", "48"))       # hard entry cap (LRU)
+_cache: "OrderedDict[str, tuple[float, dict]]" = OrderedDict()
+_cache_lock = threading.Lock()
+
+
+def _cache_key(name: str, kwargs: dict) -> str:
+    return name + "|" + repr(sorted(kwargs.items()))
+
+
 def call_tool(name: str, **kwargs: Any) -> dict:
-    """Dispatch by name. Unknown tool returns an error dict."""
+    """Dispatch by name, with a bounded TTL cache. Unknown tool → error dict."""
     tool = TOOLS.get(name)
     if tool is None:
         return _err(f"Unknown tool {name!r}. Available: {list(TOOLS)}.")
+
+    key = _cache_key(name, kwargs)
+    if _CACHE_TTL > 0:
+        now = time.time()
+        with _cache_lock:
+            hit = _cache.get(key)
+            if hit is not None and (now - hit[0]) < _CACHE_TTL:
+                _cache.move_to_end(key)            # mark most-recently-used
+                return hit[1]
+
     try:
-        return tool["fn"](**kwargs)
+        res = tool["fn"](**kwargs)
     except TypeError as e:
         return _err(f"Bad args for {name!r}: {e}")
     except Exception as e:
         return _err(f"{type(e).__name__}: {e}")
+
+    # Cache only successes, so a transient failure never sticks.
+    if _CACHE_TTL > 0 and isinstance(res, dict) and res.get("ok"):
+        with _cache_lock:
+            _cache[key] = (time.time(), res)
+            _cache.move_to_end(key)
+            while len(_cache) > _CACHE_MAX:        # evict least-recently-used
+                _cache.popitem(last=False)
+    return res

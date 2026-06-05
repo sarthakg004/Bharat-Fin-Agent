@@ -234,6 +234,37 @@ def test_observability_summaries():
     assert th["web"]["ok"] == 1
 
 
+def test_market_cache_is_bounded_and_ttl():
+    """#12: the market tool cache serves hits, never caches failures, stays hard
+    bounded (LRU), and expires by TTL — so it can't grow unbounded on a small box."""
+    import time as _time
+    import finagent.tools.market as M
+    calls = {"n": 0}
+    M.TOOLS["__t__"] = {"fn": lambda symbol: (
+        calls.__setitem__("n", calls["n"] + 1)
+        or {"ok": True, "data": {"symbol": symbol}, "error": None})}
+    M._cache.clear()
+    r1 = M.call_tool("__t__", symbol="AAPL")
+    r2 = M.call_tool("__t__", symbol="AAPL")
+    assert calls["n"] == 1 and r1 is r2            # 2nd request served from cache
+
+    M.TOOLS["__e__"] = {"fn": lambda symbol: {"ok": False, "data": None, "error": "x"}}
+    M.call_tool("__e__", symbol="X"); M.call_tool("__e__", symbol="X")
+    assert "__e__|" + repr([("symbol", "X")]) not in M._cache   # failures not cached
+
+    M._cache.clear()
+    for i in range(M._CACHE_MAX + 25):
+        M.call_tool("__t__", symbol=f"T{i}")
+    assert len(M._cache) <= M._CACHE_MAX           # hard bound
+
+    old = M._CACHE_TTL; M._CACHE_TTL = 0.05; calls["n"] = 0
+    M._cache.clear()
+    M.call_tool("__t__", symbol="Z"); _time.sleep(0.08); M.call_tool("__t__", symbol="Z")
+    M._CACHE_TTL = old
+    assert calls["n"] == 2                          # expired → refetched
+    M.TOOLS.pop("__t__", None); M.TOOLS.pop("__e__", None)
+
+
 def test_device_selection_returns_valid_value():
     from finagent.device import get_device
 
