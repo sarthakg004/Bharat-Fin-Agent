@@ -199,6 +199,126 @@ class SecFilingFetcher(BaseTool):
             "years": [r.get("year") for r in ok],
         }
 
+    # --- dated event-filing fetch (8-K by date) --------------------------------
+
+    # The submissions index + archive documents both require the SEC identity
+    # header; a small timeout keeps a dead SEC endpoint from stalling the turn.
+    _SEC_TIMEOUT = 20
+
+    def _sec_get(self, url: str):
+        import requests
+
+        name, email = _sec_identity()
+        return requests.get(url, headers={"User-Agent": f"{name} {email}"},
+                            timeout=self._SEC_TIMEOUT)
+
+    @staticmethod
+    def _html_to_text(html: str) -> str:
+        import html as html_mod
+        import re
+
+        txt = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", html)
+        txt = re.sub(r"(?is)</(?:p|div|tr|li|h[1-6]|table|br)>", "\n", txt)
+        txt = re.sub(r"(?s)<[^>]+>", " ", txt)
+        txt = html_mod.unescape(txt)
+        txt = re.sub(r"[ \t\xa0]+", " ", txt)
+        return re.sub(r"\n\s*\n+", "\n\n", txt).strip()
+
+    def fetch_dated_filing(self, company: str, form: str, date,
+                           window_days: int = 7, max_chunks: int = 40) -> dict:
+        """Fetch the text of the SPECIFIC filing `company` made on (or nearest
+        to) `date` with the given `form` (e.g. an 8-K event disclosure).
+
+        Event filings are never in the indexed corpus (only annual reports are),
+        and web search can't reliably surface a years-old dated disclosure — but
+        the SEC submissions API lists every filing with its exact date, so we
+        can pull the named document directly. Returns
+        ``{"ok", "form", "filing_date", "url", "chunks": [...]}`` with chunks
+        shaped for the ephemeral `fetched_chunks` path.
+        """
+        from datetime import date as _date, timedelta
+
+        r = self.resolver.resolve(company)
+        cik = r.get("cik")
+        if not cik:
+            return {"ok": False, "error": f"could not resolve '{company}' to a CIK"}
+        cik10 = str(cik).zfill(10)
+
+        target = date if isinstance(date, _date) else _date.fromisoformat(str(date))
+        form_norm = form.upper().replace(" ", "").replace("-", "")
+
+        def _scan(block: dict) -> list[dict]:
+            forms = block.get("form", []) or []
+            dates = block.get("filingDate", []) or []
+            accs = block.get("accessionNumber", []) or []
+            docs = block.get("primaryDocument", []) or []
+            out = []
+            for i, f in enumerate(forms):
+                if not (f or "").upper().replace(" ", "").replace("-", "").startswith(form_norm):
+                    continue
+                try:
+                    d = _date.fromisoformat(dates[i])
+                except Exception:
+                    continue
+                if abs((d - target).days) <= window_days:
+                    out.append({"form": f, "date": d, "accession": accs[i],
+                                "doc": docs[i] if i < len(docs) else ""})
+            return out
+
+        resp = self._sec_get(f"https://data.sec.gov/submissions/CIK{cik10}.json")
+        resp.raise_for_status()
+        sub = resp.json()
+        recent = (sub.get("filings", {}) or {}).get("recent", {}) or {}
+        matches = _scan(recent)
+
+        # Older than the ~1000-filing "recent" window → walk the paged archives
+        # whose [filingFrom, filingTo] range covers the target date.
+        if not matches:
+            for page in (sub.get("filings", {}) or {}).get("files", []) or []:
+                try:
+                    lo = _date.fromisoformat(page.get("filingFrom", "9999-12-31"))
+                    hi = _date.fromisoformat(page.get("filingTo", "0001-01-01"))
+                except Exception:
+                    continue
+                if lo - timedelta(days=window_days) <= target <= hi + timedelta(days=window_days):
+                    pr = self._sec_get(f"https://data.sec.gov/submissions/{page['name']}")
+                    pr.raise_for_status()
+                    matches = _scan(pr.json())
+                    if matches:
+                        break
+
+        if not matches:
+            return {"ok": False, "error": (f"no {form} filing within {window_days} days "
+                                           f"of {target} for CIK {cik}")}
+
+        best = min(matches, key=lambda m: abs((m["date"] - target).days))
+        acc = best["accession"].replace("-", "")
+        doc = best["doc"] or f"{best['accession']}.txt"
+        url = f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/{acc}/{doc}"
+        dr = self._sec_get(url)
+        dr.raise_for_status()
+        text = self._html_to_text(dr.text)
+
+        # Paragraph-preserving ~1500-char chunks, shaped for `fetched_chunks`.
+        pieces: list[str] = []
+        buf = ""
+        for para in text.split("\n\n"):
+            if len(buf) + len(para) > 1500 and buf:
+                pieces.append(buf.strip())
+                buf = ""
+            buf += para + "\n\n"
+        if buf.strip():
+            pieces.append(buf.strip())
+        company_name = r.get("company") or sub.get("name") or company
+        shaped = [{"text": c, "company": company_name,
+                   "ticker": r.get("ticker", ""), "year": str(best["date"].year),
+                   "page": i + 1, "filing_type": best["form"],
+                   "source_url": url}
+                  for i, c in enumerate(pieces[:max_chunks])]
+        return {"ok": True, "form": best["form"],
+                "filing_date": best["date"].isoformat(), "url": url,
+                "chunks": shaped}
+
     # --- orchestration -------------------------------------------------------
 
     def run(self, ticker: str, filing_type: str = "10-K", n: int = 1) -> dict:

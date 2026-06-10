@@ -1,0 +1,132 @@
+[
+  {
+    "financebench_id": "financebench_id_04103",
+    "question": "What is the FY2019 cash conversion cycle (CCC) for General Mills? CCC is defined as: DIO + DSO - DPO. DIO is defined as: 365 * (average inventory between FY2018 and FY2019) / (FY2019 COGS). DSO is defined as: 365 * (average accounts receivable between FY2018 and FY2019) / (FY2019 Revenue). DPO is defined as: 365 * (average accounts payable between FY2018 and FY2019) / (FY2019 COGS + change in inventory between FY2018 and FY2019). Round your answer to two decimal places. Address the question by using the line items and information shown within the income statement and the balance sheet.",
+    "answer": "**General Mills**' FY2019 cash conversion cycle (CCC) cannot be calculated as there is no available data on the income statement and balance sheet line items [1]. \n*No information is available to calculate DIO, DSO, and DPO.*\n\n*_Confidence: 62% \u2014 moderate. Some figures or claims are only partially corroborated by the available sources; verify against the primary filing before relying on them._*",
+    "gold": "-3.7",
+    "retrieved_chunks": [
+      "Computed: No matching tables retrieved.\nCode:\n"
+    ],
+    "qtype": "comparison",
+    "company": "General Mills",
+    "error": null
+  },
+  {
+    "financebench_id": "financebench_id_01328",
+    "question": "What is the quantity of restructuring costs directly outlined in Pepsico's income statements for FY2022? If restructuring costs are not explicitly outlined then state 0.",
+    "answer": "I'm not confident enough to present this answer directly (confidence 47%, below the 60% bar). A lower-confidence draft is available below if you'd like to see it.",
+    "gold": "Pepsico's restructuring costs in FY2022 amounted to $411 million .",
+    "retrieved_chunks": [
+      "Computed: No matching tables retrieved.\nCode:\n"
+    ],
+    "qtype": "narrative",
+    "company": "PepsiCo",
+    "error": null
+  },
+  {
+    "financebench_id": "financebench_id_01935",
+    "question": "What was the key agenda of the AMCOR's 8k filing dated 1st July 2022?",
+    "answer": "I don't have enough information to answer this from the available filings. The retrieval and numeric verification steps could not ground the requested figures (unverified figures: 8k).",
+    "gold": "Amcor Finance (USA), Inc. and Amcor Flexibles North America, Inc., entered into supplemental indentures relating to Guaranteed Senior Notes due 2026 and 2028. This involved the substitution of the Substitute Issuer (Amcor Flexibles North America) for the Former Issuer (Amcor Finance) and the assumption of covenants under the indentures. (In essence a novation agreement)",
+    "retrieved_chunks": [
+      "Date of Report (Date of earliest event reported): July 1, 2022 ( June 30, 2022 ). AMCOR PLC. (Exact name of registrant as specified in its charter). Jersey, 001",
+      "... Report on Form 10-K for the fiscal year ended June 30, 2022, as updated by our quarterly reports on Form 10-Q. You can obtain copies of Amcor's filings with",
+      "... Report on Form 10-K for the fiscal year ended June 30, 2022, as updated by our quarterly reports on Form 10-Q. You can obtain copies of Amcor's filings with",
+      "Purpose. Progress. At Amcor, we put people at the center, endeavoring to provide a safe and engaging work environment for the.",
+      "The Company adopted the disclosure requirements in ASU 2022-04 on July 1 ... Report on Form 8-K filed on September 4, 2024).*. 10 .2. COO Letter Agreement",
+      "In July 2022, the Company reached a settlement with the Commission relating to the Commission's investigation, pursuant to which the Company agreed to pay a",
+      "The Company adopted ASU 2021-10 on July 1, 2022 ... Russia's invasion of Ukraine that began in February 2022 continues as of the date of the filing of this",
+      "... Report on Form 10-K for the fiscal year ended June 30, 2021. You can obtain copies of Amcor's filings with the SEC for free at the SEC's website (www.sec",
+      "... Report on Form 10-K for the fiscal year ended June 30, 2020. You can obtain copies of Amcor's filings with the SEC for free at the SEC's website (www.sec.gov).",
+      "- Safety has long been a core value at Amcor. From a statistical perspective, fiscal 2023 was our safest on record, with a 31% reduction in"
+    ],
+    "qtype": "narrative",
+    "company": "Amcor",
+    "error": null
+  },
+  {
+    "financebench_id": "financebench_id_02119",
+    "question": "If JPM went bankrupted by the end by 2021 Q1 and liquidated all of its assets to pay its shareholders, how much could each shareholder get?",
+    "answer": "**JPMorgan Chase & Co.**'s total assets were $3,743,567,000,000 (FY2021) [1] and total liabilities were $3,449,440,000,000 (FY2021) [2]. The total amount available to shareholders would be the total assets minus the total liabilities, which is $294,127,000,000 (FY2021) [3]. This figure is directly available as the total shareholder equity [3]. \n\nIf **JPMorgan Chase & Co.** went bankrupt by the end of 2021 Q1 and liquidated all of its assets to pay its shareholders, each shareholder could get a proportion of the $294,127,000,000 (FY2021) [3] based on their ownership stake. However, the exact amount per shareholder cannot be determined without knowing the total number of shares outstanding at that time. \n\n_*Note: The calculation is based on FY2021 data, and the actual amount available to shareholders in 2021 Q1 might have been different due to changes in the company's financial position during the quarter.*_",
+    "gold": "They could receive $66.56 per share.",
+    "retrieved_chunks": [
+      "total assets (FY2021) = $3,743,567,000,000\nExact figure as filed \u2014 us-gaap:Assets, 10-K 2021-12-31.",
+      "total liabilities (FY2021) = $3,449,440,000,000\nExact figure as filed \u2014 us-gaap:Liabilities, 10-K 2021-12-31.",
+      "total shareholder equity (FY2021) = $294,127,000,000\nExact figure as filed \u2014 us-gaap:StockholdersEquity, 10-K 2021-12-31.",
+      "4. [8-K] JPMORGAN CHASE & CO Reports Material Event. # JPMorgan Chase (NYSE: JPM) grows Q1 2026 earnings to $16.5B on $50.5B revenue. **JPMorgan Chase** reported strong first-quarter 2026 results in an investor presentation. Net income was **$16.5B**, up 13% year over year, with diluted EPS of **$5.94**. Firmwide managed revenue reached **$50.5B**, up 10%, driven by balanced growth in net interest income and fees. The firm delivered a **19%** return on equity and **23%** return on tangible common equity, supported by robust capital. Common equity Tier 1 capital was **$291B**, with a standardized CET1 ratio of **14.3%** and advanced CET1 ratio of **14.1%**. Shareholder returns remained substantial, with a common dividend of **$4.1B** (or **$1.50** per share) and **$8.1B** of net share repurchases over the last twelve months, contributing to a net payout ratio of **82%**. **JPMorgan Chase** shows solid momentum, with Q1 2026 net income of $16.5B and managed revenue of $50.5B, both growing double digits year over year.",
+      "JPMORGANCHASE REPORTS FIRST-QUARTER 2026 NET INCOME OF $16.5 BILLION ($5.94 PER SHARE). FIRST-QUARTER 2026 RESULTS 1. | Firmwide Metrics | n | Reported revenue of $49.8 billion and managed revenue of $50.5 billion2 |. | n | Credit costs of $2.5 billion with $2.3 billion of net charge-offs and a $191 million net reserve build |. | CCB  ROE 32% | n | Average deposits up 2% YoY and QoQ; client investment assets up 18% YoY |. | CIB    ROE 21% | n | Investment Banking fees up 28% YoY, up 23% QoQ; #1 ranking for Global Investment Banking fees with 9.8% wallet share in 1Q26 |. | n | Markets revenue up 20% YoY, with Fixed Income Markets up 21% and Equity Markets up 17% |. | n | Average Banking & Payments loans up 10% YoY, up 4% QoQ; average client deposits7 up 13% YoY, up 1% QoQ |.",
+      "# JPMorgan tops estimates on Wall Street results, Dimon flags 'increasingly complex' economic risks. * JPMorgan Chase's fixed income trading revenue climbed 21% during the first quarter on rising activity in commodities, credit, currencies and emerging markets. * The bank beat Wall Street expectations for revenue and earnings per share. * JPM lowered its guidance for full-year 2026 net interest income, a key driver of bank earnings, from the previous $104.5 billion to about $103 billion. JPMorgan Chase on Tuesday posted first-quarter results that topped expectations on stronger-than-expected fixed income and investment banking revenue. The bank's fixed income trading revenue rose 21% to $7.08 billion, or about $370 million more than the StreetAccount estimate, on rising activity in commodities, credit, currencies and emerging markets. Of note, the bank lowered its guidance for full-year 2026 net interest income, a key driver of bank earnings, from the previous $104.5 billion to about $103 billion.",
+      "## JPMorganChase Reports First-Quarter 2026 Financial Results. NEW YORK--(BUSINESS WIRE)--Apr. 14, 2026-- JPMorgan Chase & Co. has released its first-quarter 2026 financial results. Results can be found at the Firm\u2019s Investor Relations website at jpmorganchase.com/ir/quarterly-earnings. (NYSE: JPM) is a leading financial services firm based in the United States of America (\u201cU.S.\u201d), with operations worldwide. The Firm is a leader in investment banking, financial services for consumers and small businesses, commercial banking, financial transaction processing and asset management. Under the J.P. Morgan and Chase brands, the Firm serves millions of customers in the U.S., and many of the world\u2019s most prominent corporate, institutional and government clients globally. Information about JPMorgan Chase & Co. is available at www.jpmorganchase.com. Sign up for updates on the ways we are using our expertise, data, resources and scale to open new pathways to economic opportunity and drive inclusive growth in communities around the world. JPMorganChase's website terms, privacy and security policies don't apply to the site or app you're about to visit.",
+      "Financial Statements Consolidated Financial Statements \u2013 JPMorgan Chase & Co.: Consolidated statements of income (unaudited) for the three months ended March 31, 2026 and 2025 80 Consolidated statements of comprehensive income (unaudited) for the three months ended March 31, 2026 and 2025 81 Consolidated balance sheets (unaudited) at March 31, 2026 and December 31, 2025 82 Consolidated statements of changes in stockholders' equity (unaudited) for the three months ended March 31, 2026 and 2025 83 Consolidated statements of cash flows (unaudited) for the three months ended March 31, 2026 and 2025 84 Notes to Consolidated Financial Statements (unaudited) Note 1 - Basis of presentation 85 Note 2 - Fair value measurement 86 Note 3 - Fair value option 98 Note 4 - Derivative instruments 101 Note 5 - Noninterest revenue and noninterest expense 113 Note 6 - Interest income and interest expense 115 Note 7 - Pension and other postretirement employee benefit plans 116 Note 8 - Employee share-based incentives 116 Note 9 - Investment securities 117 Note 10 - Securities financing activities 121 Note 11 - Loans 123 Note 12 - Allowance for credit losses 139 Note 13 - Variable interest entities 142 Note 14 - Goodwill and mortgage servicing rights 149 Note 15 - Deposits 152 Note 16 - Leases 152 Note 17 - Preferred stock 153 Note 18 - Earnings per share 154 Note 19 - Accumulated other comprehensive income/(loss) 155 Note 20 - Restricted cash and other restricted assets 156 Note 21 - Regulatory c",
+      "Revenue for Q4 was $46.8 billion, up 7% year-on-year and slightly ahead of forecasts. Markets revenue surged 17% on strong fixed-income and equity trading, offsetting a 5% dip in investment banking fees. Notably, JPMorgan took a $2.2 billion credit reserve charge related to its acquisition of the Apple Card portfolio, which reduced reported net income to $13.0 billion (EPS $4.63). Absent that one-time item, net income was about $14.7 billion (EPS $5.23), up 9% from a year ago. Despite the earnings beat, the stock pulled back ~2% after the report as management struck a cautious tone on the economic outlook and outlined higher expenses for 2026. Quarterly net income was $13.0 billion (or $14.7 billion excluding the Apple Card reserve build). **Consumer & Community Banking:** CCB delivered $3.6 billion of net income in Q4, or $5.3 billion excluding the Apple Card reserve build. Revenue rose 6% year-on-year to $19.4 billion on higher net interest income from robust card loan growth and solid deposit margins.",
+      "*   [Rates](https://www.jpmorgan.com/insights/global-research/outlook/market-outlook#section-header#3). *   [Rates](https://www.jpmorgan.com/insights/global-research/outlook/market-outlook#section-header#3). This bullish outlook is buttressed by factors including robust earnings growth, lower rates, declining policy headwinds and the continued [rise of AI](https://www.jpmorgan.com/insights/global-research/artificial-intelligence/generative-ai). In turn, weak labor demand is starting to erode purchasing power, particularly in the U.S., where softening private sector labor income growth is combining with firming [inflation](https://www.jpmorgan.com/videos/unpacked-explainer-videos/inflation-explained) and a concentrated near-term public sector drag,\u201d said Bruce Kasman, chief global economist at J.P.Morgan. To this end, J.P.Morgan Global Research sees consumption downshifting in DM in the fourth quarter of 2025, with a 35% probability of a U.S. and global [recession](https://www.jpmorgan.com/insights/global-research/economy/recession-probability) in 2026. J.P.Morgan Global Research continues to be bearish on the [dollar](https://www.jpmorgan.com/insights/global-research/currencies/currency-volatility-dollar-strength) in the coming year. \u201cWhile there are no imminent signs of shortage or supply-side stress \u2014 outside of the livestock sector and, to a degree, [cocoa markets](https://www.jpmorgan.com/insights/global-research/commodities/cocoa-prices) \u2014 over the coming seasons, our pr",
+      "UNITED STATES SECURITIES AND EXCHANGE COMMISSION WASHINGTON, D.C. 20549 FORM 10-K Annual report pursuant to Section 13 or 15(d) of the Securities Exchange Act of 1934 For the fiscal year ended Commission file December 31, 2025 number 1-5805 JPMorgan Chase & Co. \u2610 Yes \u2612 No Indicate by check mark if the registrant is not required to file reports pursuant to Section 13 or Section 15(d) of the Act. \u2610 Yes \u2612 No Indicate by check mark whether the registrant (1) has filed all reports required to be filed by Section 13 or 15(d) of the Securities Exchange Act of 1934 during the preceding 12 months (or for such shorter period that the registrant was required to file such reports), and (2) has been subject to such filing requirements for the past 90 days.",
+      "Fees and Expenses of the Fund. This table describes the fees and expenses that you may pay if you buy, hold, and sell shares of the Fund.",
+      "[BCRED | Blackstone Private Credit Fund](https://www.bcred.com/). *   [Performance](https://www.bcred.com/performance/). *   [Why Invest in BCRED](https://www.bcred.com/why-invest-in-bcred/). *   [Why Invest in BCRED](https://www.bcred.com/why-invest-in-bcred/). *   [Blackstone Value Creation](https://www.bcred.com/blackstone-value-creation/). *   [Why Blackstone](https://www.bcred.com/why-blackstone/). *   [Why Blackstone](https://www.bcred.com/why-blackstone/). *   [Portfolio](https://www.bcred.com/portfolio/). *   [Portfolio](https://www.bcred.com/portfolio/). ## Institutional-quality private credit for income-focused investors[[ 1 ]](https://www.bcred.com/#footnote1). Annualized distribution rate[[ 2 ]](https://www.bcred.com/#footnote2). Annualized ITD total return from January 2021[[ 3 ]](https://www.bcred.com/#footnote3). Total investments [[ 4 ]](https://www.bcred.com/#footnote4). Annualized distribution rate[[ 2 ]](https://www.bcred.com/#footnote2). (no upfront placement fee)[[ 3 ]](https://www.bcred.com/#footnote3). Total investments [[ 4 ]](https://www.bcred.com/#footnote4). Annualized distribution rate[[ 2 ]](https://www.bcred.com/#footnote2). (no upfront placement fee)[[ 3 ]](https://www.bcred.com/#footnote3). Total investments [[ 4 ]](https://www.bcred.com/#footnote4). [Read Now](https://www.bcred.com/q1-2026-update/)   ![Image 3: BCRED: Shareholder's Letter - Q1 2026](https://blackstone.scene7.com/is/image/blackstone/thm_bcred_shareholder_letter_Q1_2026_2048x115",
+      "Computed: No matching tables retrieved.\nCode:\n"
+    ],
+    "qtype": "narrative",
+    "company": "JPMorgan",
+    "error": null
+  },
+  {
+    "financebench_id": "financebench_id_03069",
+    "question": "Answer the following question as if you are an equity research analyst and have lost internet connection so you do not have access to financial metric providers. According to the details clearly outlined within the P&L statement and the statement of cash flows, what is the FY2015 depreciation and amortization (D&A from cash flow statement) % margin for AMD?",
+    "answer": "I don't have enough information to answer this from the available filings. The retrieval and numeric verification steps could not ground the requested figures (unverified figures: 4.2%, 0.042, 4.2%).",
+    "gold": "4.2%",
+    "retrieved_chunks": [
+      "depreciation and amortization (FY2015) = $167,000,000\nExact figure as filed \u2014 us-gaap:DepreciationDepletionAndAmortization, 10-K 2015-12-26.",
+      "revenue (FY2015) = $3,991,000,000\nExact figure as filed \u2014 us-gaap:SalesRevenueNet, 10-K 2015-12-26.",
+      "depreciation and amortization (FY2015) = $167,000,000\nExact figure as filed \u2014 us-gaap:DepreciationDepletionAndAmortization, 10-K 2015-12-26.",
+      "revenue (FY2015) = $3,991,000,000\nExact figure as filed \u2014 us-gaap:SalesRevenueNet, 10-K 2015-12-26.",
+      "ASBISc Enterprises Plc ANNUAL REPORT, 2025 1 ANNUAL REPORT FOR THE FISCAL YEAR ENDED DECEMBER 31, 2025 Limassol, March 24th, 2026 ASBISc Enterprises Plc ANNUAL REPORT, 2025 2 DEAR SHAREHOLDERS, PARTNERS, AND COLLEAGUES, On behalf of the Board of Directors of ASBIS Group, I am thrilled and honored to share with you our Consolidated Annual Report for the year 2025. It was the year marking our 35 Year anniversary and it was a record-breaking year in many aspects of our business. We have experienced dynamic growth, marked by an explosive revenue increase, historic monthly sales driven mainly by the boom in AI server components and data centers building blocks, as well as smartphones. We have been engaged with a variety of customers in multiple layers of the supply value chain in a growing number of countries. This was also a year of expansion into new markets of Africa and the US, new strategic partnerships and new product launches under own brands solidifying our position in EMEA as a leading value-add distributor.",
+      "Computed: No matching tables retrieved.\nCode:\n"
+    ],
+    "qtype": "numeric",
+    "company": "AMD",
+    "error": null
+  },
+  {
+    "financebench_id": "financebench_id_02608",
+    "question": "In agreement with the information outlined in the income statement, what is the FY2015 - FY2017 3 year average net profit margin (as a %) for Best Buy? Answer in units of percents and round to one decimal place.",
+    "answer": "I don't have enough information to answer this from the available filings or recent web sources. The retrieval and numeric verification steps could not ground the requested figures (unverified figures: -   3, 2.8%, 2.8%).",
+    "gold": "2.8%",
+    "retrieved_chunks": [
+      "net profit margin (FY2015) = $1,233,000,000\nExact figure as filed \u2014 us-gaap:NetIncomeLoss, 10-K 2015-01-31.",
+      "net profit margin (FY2016) = $897,000,000\nExact figure as filed \u2014 us-gaap:NetIncomeLoss, 10-K 2016-01-30.",
+      "net profit margin (FY2017) = $1,228,000,000\nExact figure as filed \u2014 us-gaap:NetIncomeLoss, 10-K 2017-01-28.",
+      "BBY net margin = 3.1%\ncomputed from XBRL: $1,233,000,000 / $40,339,000,000 (net_income/revenue, FY2015)",
+      "BBY net margin = 2.3%\ncomputed from XBRL: $897,000,000 / $39,528,000,000 (net_income/revenue, FY2016)",
+      "BBY net margin = 3.1%\ncomputed from XBRL: $1,228,000,000 / $39,403,000,000 (net_income/revenue, FY2017)",
+      "BBY net margin trend: FY2015=3.1%, FY2016=2.3%, FY2017=3.1% \u2014 net margin rose from 3.1% (FY2015) to 3.1% (FY2017)"
+    ],
+    "qtype": "numeric",
+    "company": "Best Buy",
+    "error": null
+  },
+  {
+    "financebench_id": "financebench_id_00790",
+    "question": "Is CVS Health a capital-intensive business based on FY2022 data?",
+    "answer": "**CVS Health** is not a capital-intensive business based on FY2022 data, with a capital expenditures to revenue ratio of **0.8%** [1]. \nThis ratio is computed from exact XBRL inputs, where capital expenditures were **$2,727,000,000** and revenue was **$322,467,000,000** in FY2022 [1].",
+    "gold": "Yes, CVS Health requires an extensive asset base to operate, which is evident from its ROA of only 1.82% in 2022 and 3.39% in 2021, though it should be noted that a significant portion of this asset base is goodwill, and CVS's fixed assets/total assets ratio is on the lower side of 5.6%.",
+    "retrieved_chunks": [
+      "CVS capex to revenue = 0.8%\ncomputed from XBRL: $2,727,000,000 / $322,467,000,000 (capex/revenue, FY2022)"
+    ],
+    "qtype": "numeric",
+    "company": "CVS Health",
+    "error": null
+  },
+  {
+    "financebench_id": "financebench_id_00799",
+    "question": "Has AMCOR's quick ratio improved or declined between FY2023 and FY2022? If the quick ratio is not something that a financial analyst would ask about a company like this, then state that and explain why.",
+    "answer": "**AMCOR**'s quick ratio has improved from 0.67\u00d7 (FY2022) [2] to 1.19\u00d7 (FY2023) [1]. \nThe quick ratio is computed from XBRL inputs as (current_assets \u2212 (inventory)) / current_liabilities [1, 2]. \n*The provided evidence does not discuss the relevance of the quick ratio for a company like **AMCOR**.*",
+    "gold": "The quick ratio has slightly improved from 0.67 times to 0.69 times between FY 2023 and FY 2022.(3.4% jump)",
+    "retrieved_chunks": [
+      "AMCR quick ratio = 1.19\u00d7\ncomputed from XBRL: (current_assets \u2212 (inventory)) / current_liabilities (FY2023)",
+      "AMCR quick ratio = 0.67\u00d7\ncomputed from XBRL: (current_assets \u2212 (inventory)) / current_liabilities (FY2022)"
+    ],
+    "qtype": "numeric",
+    "company": "Amcor",
+    "error": null
+  }
+]

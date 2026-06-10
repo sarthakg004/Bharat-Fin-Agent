@@ -298,6 +298,7 @@ class AgenticRAGv2(AgenticRAG):
             for i, c in enumerate(chunks)
         )
         llm = self._get_grader_llm().with_structured_output(GraderReport)
+        graded_ok = True
         try:
             report: GraderReport = llm.invoke(
                 GRADER_PROMPT.format(question=state["question"], excerpts=excerpts)
@@ -308,8 +309,15 @@ class AgenticRAGv2(AgenticRAG):
         except Exception as e:
             self._log(state, f"grader failed ({e}); assuming neutral score 3")
             scores = [3] * len(chunks)
+            graded_ok = False
 
         avg = round(sum(scores) / len(scores), 2) if scores else 0.0
+
+        # A fallback score carries no per-chunk signal — filtering on it would
+        # throw away the ENTIRE evidence set whenever the grader LLM hiccups
+        # (that exact failure once discarded a freshly fetched 8-K wholesale).
+        if not graded_ok:
+            return {"grades": scores, "avg_grade": avg, "retrieved_chunks": chunks}
 
         kept_chunks: list[dict] = []
         kept_grades: list[int] = []
@@ -326,6 +334,15 @@ class AgenticRAGv2(AgenticRAG):
                 f"grader dropped {dropped}/{len(chunks)} chunks below "
                 f"grade {self.min_keep_grade}",
             )
+        # Never starve the synthesizer: if EVERY chunk fell below the bar, keep
+        # the best few instead of synthesising from nothing — the critic and
+        # numeric verifier still guard whatever gets written from them.
+        if not kept_chunks and chunks:
+            order = sorted(range(len(chunks)), key=lambda i: -scores[i])[:5]
+            kept_chunks = [chunks[i] for i in sorted(order)]
+            kept_grades = [scores[i] for i in sorted(order)]
+            self._log(state, f"all chunks below grade {self.min_keep_grade}; "
+                             f"keeping top {len(kept_chunks)} by score")
         return {
             "grades": kept_grades,
             "avg_grade": avg,

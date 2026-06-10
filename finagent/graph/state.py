@@ -22,7 +22,9 @@ from finagent.agents.state import (  # noqa: F401
     NumericVerification,
     MarketIntent,
     XBRLQuery,
+    XBRLQueryBatch,
     CalcQuery,
+    CalcQueryBatch,
     CorpusGateQuery,
     EdgarQuery,
 )
@@ -31,5 +33,5 @@ __all__ = [
     "AgentState", "SubQueries", "ClaimVerdict", "CriticReport", "ChunkScore",
     "GraderReport", "RewrittenQuery", "QueryRoute", "RouterReport", "TableTitle",
     "PandasCode", "Translation", "NumericClaim", "NumericVerification", "MarketIntent",
-    "XBRLQuery", "CalcQuery", "CorpusGateQuery", "EdgarQuery",
+    "XBRLQuery", "XBRLQueryBatch", "CalcQuery", "CalcQueryBatch", "CorpusGateQuery", "EdgarQuery",
 ]

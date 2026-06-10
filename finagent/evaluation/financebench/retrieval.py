@@ -74,6 +74,9 @@ class RetrievalEvaluator:
         self.hit_ks = hit_ks
         self._bm25 = None
         self._all_texts: list[str] = []
+        self._all_metas: list[dict] = []
+        self._vocab: dict = {}
+        self._years_by_co: dict = {}
         self._reranker = None
 
     # ------------------------------------------------------------------ #
@@ -85,15 +88,20 @@ class RetrievalEvaluator:
             from rank_bm25 import BM25Okapi
 
             col = self.store._collection
-            texts, offset = [], 0
+            texts, metas, offset = [], [], 0
             while True:
-                batch = col.get(include=["documents"], limit=2000, offset=offset)
+                batch = col.get(include=["documents", "metadatas"],
+                                limit=2000, offset=offset)
                 docs = batch.get("documents") or []
                 if not docs:
                     break
                 texts.extend(docs)
+                metas.extend(batch.get("metadatas") or [{}] * len(docs))
                 offset += len(docs)
             self._all_texts = texts
+            self._all_metas = metas
+            from finagent.retrieval.filters import build_company_vocab
+            self._vocab, self._years_by_co = build_company_vocab(metas)
             self._bm25 = BM25Okapi([_tokenize(t) for t in texts])
         return self._bm25
 
@@ -109,15 +117,31 @@ class RetrievalEvaluator:
     # ------------------------------------------------------------------ #
 
     def _fused_pool(self, query: str) -> list[str]:
-        """RRF-fused BM25 ∪ dense ranked list of chunk texts (deduped)."""
+        """RRF-fused BM25 ∪ dense ranked list of chunk texts (deduped).
+
+        Mirrors production: the candidate pool is restricted to the company /
+        year the question names (inferred from the collection's own metadata,
+        no LLM) so one filing's question doesn't compete with 83 other
+        filings' boilerplate. Questions naming no indexed company search the
+        whole collection, exactly as the deployed retriever does.
+        """
+        from finagent.retrieval.filters import (
+            chroma_where, infer_filter, metadata_matches)
+
         bm25 = self._ensure_bm25()
+        flt = infer_filter(query, self._vocab, self._years_by_co)
+
         scores = bm25.get_scores(_tokenize(query))
-        bm25_rank = sorted(range(len(scores)), key=lambda i: -scores[i])[:POOL_DEPTH]
+        idx_pool = (range(len(scores)) if not flt else
+                    [i for i in range(len(self._all_texts))
+                     if metadata_matches(self._all_metas[i], flt)])
+        bm25_rank = sorted(idx_pool, key=lambda i: -scores[i])[:POOL_DEPTH]
         bm25_texts = [self._all_texts[i] for i in bm25_rank]
 
         dense_texts = [
             d.page_content
-            for d in self.store.similarity_search(query, k=POOL_DEPTH)
+            for d in self.store.similarity_search(query, k=POOL_DEPTH,
+                                                  filter=chroma_where(flt))
         ]
 
         # Reciprocal Rank Fusion across the two ranked lists.

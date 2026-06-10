@@ -92,7 +92,11 @@ CONCEPT_TAGS: dict[str, list[str]] = {
     "cash": ["CashAndCashEquivalentsAtCarryingValue",
              "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents"],
     "inventory": ["InventoryNet"],
-    "accounts_receivable": ["AccountsReceivableNetCurrent"],
+    "accounts_receivable": ["AccountsReceivableNetCurrent",
+                            "ReceivablesNetCurrent",
+                            "AccountsNotesAndLoansReceivableNetCurrent"],
+    "accounts_payable": ["AccountsPayableCurrent", "AccountsPayableTradeCurrent",
+                         "AccountsPayableAndAccruedLiabilitiesCurrent"],
     "long_term_debt": ["LongTermDebtNoncurrent", "LongTermDebt"],
     "total_debt": ["DebtLongtermAndShorttermCombinedAmount", "LongTermDebt"],
     "goodwill": ["Goodwill"],
@@ -105,6 +109,21 @@ CONCEPT_TAGS: dict[str, list[str]] = {
     "shares_outstanding": ["CommonStockSharesOutstanding",
                            "WeightedAverageNumberOfDilutedSharesOutstanding",
                            "WeightedAverageNumberOfSharesOutstandingBasic"],
+}
+
+# Component tags that SUM to a concept when a filer reports the split lines
+# instead of the total (e.g. Amcor FY2023+ reports raw-materials and
+# finished-goods inventory lines but no InventoryNet). Tried in order; a group
+# is used only when EVERY component resolves for the same period-end.
+CONCEPT_COMPONENT_SUMS: dict[str, list[list[str]]] = {
+    "inventory": [
+        ["InventoryFinishedGoodsAndWorkInProcessNetOfReserves",
+         "InventoryRawMaterialsAndSuppliesNetOfReserves"],
+        ["InventoryFinishedGoodsNetOfReserves",
+         "InventoryRawMaterialsAndSuppliesNetOfReserves"],
+        ["InventoryRawMaterials", "InventoryWorkInProcess",
+         "InventoryFinishedGoods"],
+    ],
 }
 
 # Free-text concept → canonical key. Matched by longest keyword found in the
@@ -137,6 +156,7 @@ _CONCEPT_KEYWORDS: list[tuple[str, str]] = [
     ("total equity", "stockholders_equity"), ("book value", "stockholders_equity"),
     ("cash and cash equivalents", "cash"), ("cash equivalents", "cash"),
     ("inventory", "inventory"), ("inventories", "inventory"),
+    ("accounts payable", "accounts_payable"), ("payable", "accounts_payable"),
     ("accounts receivable", "accounts_receivable"), ("receivable", "accounts_receivable"),
     ("long-term debt", "long_term_debt"), ("long term debt", "long_term_debt"),
     ("total debt", "total_debt"),
@@ -410,6 +430,30 @@ class XBRLClient(BaseTool):
         # Latest period-end wins (the most recent data).
         return max(cands, key=lambda f: f.get("end", ""))
 
+    def _component_sum_fact(self, usgaap: dict, key: Optional[str],
+                            year: Optional[int], quarterly: bool):
+        """Resolve a concept reported only as split component lines: the first
+        group in `CONCEPT_COMPONENT_SUMS[key]` whose EVERY tag yields a fact at
+        the same period-end. Returns [(tag, unit_key, fact), ...] or None."""
+        for group in CONCEPT_COMPONENT_SUMS.get(key or "", []):
+            picked: list[tuple] = []
+            for tag in group:
+                if tag not in usgaap:
+                    break
+                units = usgaap[tag].get("units", {}) or {}
+                ukey = self._primary_unit(units)
+                if not ukey:
+                    break
+                f = self._select_fact(units[ukey], year, quarterly=quarterly)
+                if f is None or not isinstance(f.get("val"), (int, float)):
+                    break
+                picked.append((tag, ukey, f))
+            else:
+                ends = {p[2].get("end") for p in picked}
+                if picked and len(ends) == 1:        # same balance-sheet date
+                    return picked
+        return None
+
     # --- public API ----------------------------------------------------------
 
     def run(self, ticker: str, concept: str, period: Optional[str] = None,
@@ -447,7 +491,14 @@ class XBRLClient(BaseTool):
         # figure under ...ExcludingAcquiredInProcessCost) — so a non-zero hit on
         # a later candidate beats a zero on an earlier one. We remember the first
         # zero/placeholder hit only as a last resort.
+        # For revenue, the consolidated top line is by definition the LARGEST
+        # revenue disclosure — so collect every candidate tag's fact and take
+        # the max. Tag order alone is not safe: e.g. General Mills carries a
+        # non-consolidated $2.0B fact under `Revenues` for FY2019 while the real
+        # $16.9B top line sits under RevenueFromContractWithCustomer.
+        pick_max = self.canonical_concept(concept) == "revenue"
         tag = unit_key = fact = None
+        hits: list[tuple[str, str, dict]] = []
         fallback: Optional[tuple[str, str, dict]] = None
         for cand in candidates:
             units = usgaap[cand].get("units", {}) or {}
@@ -458,12 +509,27 @@ class XBRLClient(BaseTool):
             if f is None:
                 continue
             if f.get("val"):                        # truthy → real, non-zero value
-                tag, unit_key, fact = cand, ukey, f
-                break
-            if fallback is None:
+                hits.append((cand, ukey, f))
+                if not pick_max:                    # first real hit wins
+                    break
+            elif fallback is None:
                 fallback = (cand, ukey, f)
-        if fact is None and fallback is not None:
+        if hits:
+            tag, unit_key, fact = (
+                max(hits, key=lambda h: h[2].get("val") or 0) if pick_max else hits[0])
+        elif fallback is not None:
             tag, unit_key, fact = fallback
+
+        # Component-sum rescue: the filer reports the concept's split lines but
+        # not the total for this period — sum a complete component group.
+        if fact is None:
+            comp = self._component_sum_fact(
+                usgaap, self.canonical_concept(concept), year, quarterly)
+            if comp:
+                tags, ukeys, facts_ = zip(*comp)
+                fact = {**facts_[0], "val": sum(f["val"] for f in facts_)}
+                tag = " + ".join(tags)
+                unit_key = ukeys[0]
 
         if fact is None:
             first = candidates[0]

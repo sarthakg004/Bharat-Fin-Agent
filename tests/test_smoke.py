@@ -378,3 +378,129 @@ def test_device_selection_returns_valid_value():
     from finagent.device import get_device
 
     assert get_device() in {"cpu", "cuda", "mps"}
+
+
+def test_derived_figures_are_not_falsely_refused():
+    """Regression (FinanceBench refusal sweep): figures the draft legitimately
+    COMPUTES from evidence values — a D&A margin, a 3-year average via chained
+    per-year ratios, a 365-day working-capital metric — must ground, while a
+    figure with no arithmetic path to the evidence must stay ungrounded."""
+    agent = _build_agent()
+    by_kind = {"xbrl": [167e6, 3.991e9], "const": list(agent._MATH_CONSTANTS)}
+    base = agent._derivation_base(by_kind)
+    # margin = a / b (×100 percent form)
+    assert agent._derivable({4.2, 0.042}, base)
+    # DSO-style: 365 × a / b
+    ar, rev = 1.679e9, 16.865e9
+    assert agent._derivable({36.34}, agent._derivation_base({"xbrl": [ar, rev]}))
+    # two-period average, then a chained ratio over it (worked CCC steps)
+    inv18, inv19, cogs = 1.642e9, 1.560e9, 11.108e9
+    b = agent._derivation_base({"xbrl": [inv18, inv19, cogs]})
+    avg = (inv18 + inv19) / 2
+    assert agent._derivable({avg}, b)
+    assert agent._derivable({round(365 * avg / cogs, 2)}, b + [avg])
+    # a hallucinated figure must NOT be rescued
+    assert not agent._derivable({7.77, 0.0777},
+                                agent._derivation_base({"xbrl": [ar, rev]}))
+
+
+def test_label_tokens_are_not_extracted_as_figures():
+    """Regression: '8k'/'10K' form names, 'FY2015 - FY2017' ranges, and
+    '3 year average' period labels were extracted as numeric claims and caused
+    wrongful refusals ('unverified figures: 8k')."""
+    agent = _build_agent()
+    texts = [
+        "The key agenda of AMCOR's 8k filing dated 1 July 2022 was the merger.",
+        "Per the 10-K, 10K and 10 Q filings.",
+        "The FY2015 - FY2017 3 year average margin.",
+        "A 5-year CAGR per the 8-K.",
+    ]
+    for t in texts:
+        raws = [d["raw"] for d in agent._extract_numbers(t)
+                if d["raw"] not in ("1",)]          # bare day-of-month is a const
+        assert not raws, f"label tokens extracted as figures: {raws} in {t!r}"
+
+
+def test_mostly_grounded_answer_is_not_hard_refused():
+    """Partial ungrounding goes to the confidence gate (warn/withhold keeps the
+    draft); only a substantially fabricated answer (< refuse_below_grounding
+    share grounded) still hard-refuses at the retry cap."""
+    agent = _build_agent()
+    out_of_retries = {"critic_iterations": 99, "verify_iterations": 99}
+    mostly = {"numeric_verification": {
+        "numbers_total": 10, "unverified": [{"number": "7"}], "score": 0.9},
+        **out_of_retries}
+    assert agent._verify_router(mostly) == "end"
+    fabricated = {"numeric_verification": {
+        "numbers_total": 10, "unverified": [{"number": str(i)} for i in range(6)],
+        "score": 0.4}, **out_of_retries}
+    assert agent._verify_router(fabricated) == "refuse"
+
+
+def test_working_capital_days_metrics_are_supported():
+    """dio/dso/dpo/ccc must be recognised derived metrics, and the LAST period
+    named is year t (periods[0] is the prior averaging year, not the target)."""
+    from finagent.tools.calculator import WC_DAYS_METRICS, _canonical_metric
+    assert _canonical_metric("cash conversion cycle") == "ccc"
+    assert _canonical_metric("days inventory outstanding") == "dio"
+    assert _canonical_metric("days payables outstanding") == "dpo"
+    assert WC_DAYS_METRICS == {"dio", "dso", "dpo", "ccc"}
+
+
+def test_tools_lane_corpus_fallback_is_wired():
+    """A tools-path run whose lanes all return empty must route back through
+    fetch_filing → retrieve once (and only once) instead of synthesising from
+    nothing."""
+    agent = _build_agent()
+    empty_tools_state = {
+        "question": "q", "query_routes": ["numeric"],
+        "retrieved_chunks": [], "xbrl_facts": [], "calc_results": [],
+        "table_results": [], "web_results": [], "market_data": [],
+        "edgar_results": [],
+    }
+    out = agent.evidence_builder_node(dict(empty_tools_state))
+    assert out.get("corpus_fallback_pending") is True
+    assert agent._evidence_router({**empty_tools_state, **out}) == "retrieve"
+    # second pass: the latch prevents a loop even if retrieval found nothing
+    out2 = agent.evidence_builder_node({**empty_tools_state, **out})
+    assert out2.get("corpus_fallback_pending") is False
+    assert agent._evidence_router({**empty_tools_state, **out, **out2}) == "synthesize"
+
+
+def test_dated_form_request_detection():
+    """A question naming an event filing + date must be detected (and routed to
+    the retrieval path so fetch_filing can pull the document from EDGAR by
+    date); ordinary numeric questions must not."""
+    from datetime import date
+    from finagent.graph.agent import AgenticRAGv4 as A
+    assert A._dated_form_request(
+        "What was the key agenda of the AMCOR's 8k filing dated 1st July 2022?"
+    ) == ("8-K", date(2022, 7, 1))
+    assert A._dated_form_request(
+        "Summarize Apple's 10-Q for July 1, 2022") == ("10-Q", date(2022, 7, 1))
+    assert A._dated_form_request("What is AMD's FY2015 D&A margin?") is None
+    assert A._dated_form_request("Best Buy 8-K filings in general") is None
+
+
+def test_insufficient_draft_escalates_to_web_once():
+    """A draft admitting the evidence can't answer must trigger the one-shot
+    web escalation; an answered draft, a run with web results, or a spent latch
+    must not."""
+    agent = _build_agent()
+    insufficient = {"draft_answer": "The key agenda is not explicitly stated "
+                                    "in the provided evidence."}
+    sig = agent._web_fallback_signal(insufficient)
+    assert sig == {"web_fallback_pending": True, "web_fallback_used": True}
+    assert agent._critic_router({**insufficient, **sig}) == "websearch"
+    # latch spent → no second escalation
+    assert agent._web_fallback_signal(
+        {**insufficient, "web_fallback_used": True}
+    ) == {"web_fallback_pending": False}
+    # web already ran → no escalation
+    assert agent._web_fallback_signal(
+        {**insufficient, "web_results": [{"content": "x"}]}
+    ) == {"web_fallback_pending": False}
+    # confident draft → no escalation
+    assert agent._web_fallback_signal(
+        {"draft_answer": "Revenue was $10 billion [1]."}
+    ) == {"web_fallback_pending": False}

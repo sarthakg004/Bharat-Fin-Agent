@@ -38,6 +38,7 @@ class HybridRetriever(BaseRetriever):
         final_top_k: int = 5,
         fetch_batch_size: int = 1000,
         use_mmr: bool = True,
+        auto_filter: bool = True,
     ):
         self.store = chroma_store
         self.reranker_model = reranker_model
@@ -49,11 +50,17 @@ class HybridRetriever(BaseRetriever):
         # the pool is diverse, not five near-identical passages. Falls back to
         # plain similarity if the store doesn't support MMR.
         self.use_mmr = use_mmr
+        # Company/year metadata filtering inferred from the query text (no LLM).
+        # Without it, one company's question competes against every other
+        # filing's near-identical accounting language.
+        self.auto_filter = auto_filter
 
         self._bm25 = None
         self._bm25_empty = False          # True once we've seen an empty collection
         self._all_docs: Optional[list[tuple[str, dict]]] = None
         self._reranker = None
+        self._company_vocab: Optional[dict] = None
+        self._years_by_co: Optional[dict] = None
 
     # ------------------------------------------------------------------ #
     # Public
@@ -61,10 +68,27 @@ class HybridRetriever(BaseRetriever):
 
     def search(self, query: str) -> list[tuple[str, dict]]:
         """Return up to `final_top_k` (text, metadata) pairs for the query."""
-        union = self._bm25_then_dense(query)
+        flt = self.infer_filter(query) if self.auto_filter else None
+        union = self._bm25_then_dense(query, flt)
+        if not union and flt:
+            # The filter can over-narrow (e.g. a year the corpus lacks under a
+            # differently-labelled fiscal calendar) — retry unfiltered rather
+            # than return nothing.
+            union = self._bm25_then_dense(query, None)
         if not union:
             return []
         return self._rerank(query, union)[: self.final_top_k]
+
+    def infer_filter(self, query: str) -> Optional[dict]:
+        """Company/year filter inferred from the query against the collection's
+        own metadata vocabulary. None when no indexed company is named."""
+        from finagent.retrieval.filters import build_company_vocab, infer_filter
+
+        if self._company_vocab is None:
+            _, docs = self._ensure_bm25()
+            self._company_vocab, self._years_by_co = build_company_vocab(
+                m for _, m in docs)
+        return infer_filter(query, self._company_vocab, self._years_by_co)
 
     # ------------------------------------------------------------------ #
     # Demonstration / inspection API (used by the reference notebook).
@@ -122,7 +146,8 @@ class HybridRetriever(BaseRetriever):
     # Internals
     # ------------------------------------------------------------------ #
 
-    def _bm25_then_dense(self, query: str) -> list[tuple[str, dict]]:
+    def _bm25_then_dense(self, query: str,
+                         flt: Optional[dict] = None) -> list[tuple[str, dict]]:
         bm25, docs = self._ensure_bm25()
         # Empty collection (e.g. a not-yet-ingested corpus): nothing to retrieve.
         # Guard here so BM25Okapi is never built over an empty corpus (which
@@ -130,13 +155,18 @@ class HybridRetriever(BaseRetriever):
         if not docs:
             return []
 
+        from finagent.retrieval.filters import metadata_matches
+
         scores = bm25.get_scores(self._tokenize(query))
-        # argsort descending for top-k
-        top_idx = sorted(range(len(scores)), key=lambda i: -scores[i])[: self.bm25_top_k]
+        # Rank only the indices the metadata filter allows (the BM25 index is
+        # global; masking the candidate set per query is cheap).
+        idx_pool = (range(len(scores)) if not flt else
+                    [i for i in range(len(docs)) if metadata_matches(docs[i][1], flt)])
+        top_idx = sorted(idx_pool, key=lambda i: -scores[i])[: self.bm25_top_k]
         bm25_hits = [docs[i] for i in top_idx]
 
         dense_hits = [
-            (d.page_content, d.metadata) for d in self._dense_docs(query)
+            (d.page_content, d.metadata) for d in self._dense_docs(query, flt)
         ]
 
         # Dedupe by (local_path, page, prefix) — same key the rest of the
@@ -150,22 +180,26 @@ class HybridRetriever(BaseRetriever):
             union.append((text, meta))
         return union
 
-    def _dense_docs(self, query: str):
+    def _dense_docs(self, query: str, flt: Optional[dict] = None):
         """Dense candidates — MMR (diverse) when enabled, else plain similarity.
 
         MMR over-fetches `fetch_k` and greedily picks `dense_top_k` that balance
         relevance with novelty, so the pool isn't five paraphrases of one
         passage. Any error (older Chroma, embedding quirk) falls back cleanly.
         """
+        from finagent.retrieval.filters import chroma_where
+
+        where = chroma_where(flt)
         if self.use_mmr:
             try:
                 return self.store.max_marginal_relevance_search(
                     query, k=self.dense_top_k,
                     fetch_k=max(20, self.dense_top_k * 4), lambda_mult=0.5,
+                    filter=where,
                 )
             except Exception:
                 pass
-        return self.store.similarity_search(query, k=self.dense_top_k)
+        return self.store.similarity_search(query, k=self.dense_top_k, filter=where)
 
     def _rerank(self, query: str, candidates: list[tuple[str, dict]]):
         reranker = self._ensure_reranker()

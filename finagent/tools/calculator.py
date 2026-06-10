@@ -14,6 +14,7 @@ Supported metrics:
   margins   — gross_margin, operating_margin, net_margin
   ratios    — current_ratio, debt_to_equity, return_on_equity, return_on_assets,
               asset_turnover, interest_coverage
+  wc days   — dio, dso, dpo, ccc (working-capital days; two-period averages)
   growth    — period-over-period % change of any concept
   cagr      — compound annual growth rate of any concept across N years
   trend     — any of the above metrics computed across a list of periods
@@ -59,7 +60,20 @@ COMPOSITE_RATIOS: dict[str, dict] = {
         "add": ["current_assets"], "sub": ["inventory"],
         "den": "current_liabilities", "pct": False, "optional": {"inventory"},
     },
+    # Unadjusted EBITDA margin = (operating income + D&A) / revenue.
+    "ebitda_margin": {
+        "add": ["operating_income", "depreciation_amortization"], "sub": [],
+        "den": "revenue", "pct": True,
+    },
 }
+
+# Working-capital "days" metrics (the FinanceBench convention): each uses the
+# two-period AVERAGE of its balance-sheet input against a flow denominator.
+#   dio = 365 × avg(inventory)            / COGS
+#   dso = 365 × avg(accounts receivable)  / revenue
+#   dpo = 365 × avg(accounts payable)     / (COGS + Δinventory)
+#   ccc = dio + dso − dpo
+WC_DAYS_METRICS = {"dio", "dso", "dpo", "ccc"}
 
 # Friendly synonyms → canonical metric name.
 ALIASES: dict[str, str] = {
@@ -87,6 +101,16 @@ ALIASES: dict[str, str] = {
     "sg&a as % of revenue": "sga_to_revenue", "sga as % of revenue": "sga_to_revenue",
     "capex as % of revenue": "capex_to_revenue",
     "capital expenditure as % of revenue": "capex_to_revenue",
+    "ebitda margin": "ebitda_margin", "ebitda % margin": "ebitda_margin",
+    "unadjusted ebitda margin": "ebitda_margin",
+    "unadjusted_ebitda_margin": "ebitda_margin", "ebitda": "ebitda_margin",
+    "cash conversion cycle": "ccc", "cash_conversion_cycle": "ccc",
+    "days inventory outstanding": "dio", "days_inventory_outstanding": "dio",
+    "inventory days": "dio",
+    "days sales outstanding": "dso", "days_sales_outstanding": "dso",
+    "receivable days": "dso", "days of sales outstanding": "dso",
+    "days payable outstanding": "dpo", "days_payable_outstanding": "dpo",
+    "days payables outstanding": "dpo", "payable days": "dpo",
 }
 
 
@@ -201,6 +225,96 @@ class FinancialCalculator(BaseTool):
             "inputs": inputs,
             "source": (f"computed from XBRL: {num['value_str']} / {den['value_str']} "
                        f"({num_c}/{den_c}, FY{num.get('fy')})"),
+        }
+
+    # --- working-capital days (DIO / DSO / DPO / CCC) -------------------------
+
+    def working_capital_days(self, ticker: str, metric: str,
+                             period: Optional[str]) -> dict:
+        """Compute a working-capital days metric for fiscal year t, averaging
+        each balance-sheet input over (t−1, t) — the FinanceBench convention.
+
+        `period` names year t; the prior year is derived from it (or from the
+        latest filed year when no period is given).
+        """
+        name = _canonical_metric(metric)
+        year = _year_of(period)
+        if year is None:
+            probe = self._input(ticker, "inventory", None)   # latest filed year
+            if not probe["ok"] or not probe.get("fy"):
+                return self._fail(name, ticker, [probe],
+                                  "could not determine the fiscal year")
+            year = probe["fy"]
+        cur, prior = f"FY{year}", f"FY{year - 1}"
+
+        # Pull every input the metric family needs once; reuse across components.
+        need = {
+            "dio": [("inventory", prior), ("inventory", cur), ("cost_of_revenue", cur)],
+            "dso": [("accounts_receivable", prior), ("accounts_receivable", cur),
+                    ("revenue", cur)],
+            "dpo": [("accounts_payable", prior), ("accounts_payable", cur),
+                    ("inventory", prior), ("inventory", cur), ("cost_of_revenue", cur)],
+        }
+        wanted = need[name] if name in need else need["dio"] + need["dso"] + need["dpo"]
+        got: dict[tuple, dict] = {}
+        for c, p in dict.fromkeys(wanted):
+            got[(c, p)] = self._input(ticker, c, p)
+        inputs = list(got.values())
+        missing = [f"{c} {p}" for (c, p), inp in got.items() if not inp["ok"]]
+        if missing:
+            return self._fail(name, ticker, inputs,
+                              f"missing XBRL input(s): {missing}")
+
+        v = {k: float(inp["value"]) for k, inp in got.items()}
+
+        def days(avg_a: float, avg_b: float, den: float, label: str):
+            if not den:
+                raise ZeroDivisionError(f"{label} denominator is zero")
+            return 365.0 * ((avg_a + avg_b) / 2.0) / den
+
+        components: dict[str, float] = {}
+        try:
+            if name in ("dio", "ccc"):
+                components["dio"] = days(v[("inventory", prior)], v[("inventory", cur)],
+                                         v[("cost_of_revenue", cur)], "dio")
+            if name in ("dso", "ccc"):
+                components["dso"] = days(v[("accounts_receivable", prior)],
+                                         v[("accounts_receivable", cur)],
+                                         v[("revenue", cur)], "dso")
+            if name in ("dpo", "ccc"):
+                d_inv = v[("inventory", cur)] - v[("inventory", prior)]
+                components["dpo"] = days(v[("accounts_payable", prior)],
+                                         v[("accounts_payable", cur)],
+                                         v[("cost_of_revenue", cur)] + d_inv, "dpo")
+        except ZeroDivisionError as e:
+            return self._fail(name, ticker, inputs, str(e))
+
+        value = (components["dio"] + components["dso"] - components["dpo"]
+                 if name == "ccc" else components[name])
+        formulas = {
+            "dio": "365 × avg(inventory) / COGS",
+            "dso": "365 × avg(accounts receivable) / revenue",
+            "dpo": "365 × avg(accounts payable) / (COGS + Δinventory)",
+            "ccc": "DIO + DSO − DPO",
+        }
+        comp_str = ", ".join(f"{k.upper()} = {x:.2f} days"
+                             for k, x in components.items())
+        # Components ride along as audit inputs so the verifier can ground the
+        # intermediate DIO/DSO/DPO figures a worked answer states.
+        for k, x in components.items():
+            inputs.append({"ok": True, "concept": k, "value": x,
+                           "value_str": f"{x:.2f} days", "fy": year,
+                           "source": f"computed: {formulas[k]}"})
+        any_inp = next(iter(got.values()))
+        return {
+            "ok": True, "metric": name, "ticker": self._tkr(any_inp),
+            "period": cur, "fy": year,
+            "value": value, "value_str": f"{value:.2f} days", "is_percent": False,
+            "components": components,
+            "formula": formulas[name],
+            "inputs": inputs,
+            "source": (f"computed from XBRL: {formulas[name]} "
+                       f"(FY{year}, averaging FY{year - 1}–FY{year}; {comp_str})"),
         }
 
     # --- growth / CAGR -------------------------------------------------------
@@ -322,6 +436,14 @@ class FinancialCalculator(BaseTool):
         - else                -> ratio(metric, period)
         """
         m = _canonical_metric(metric)
+        if m in WC_DAYS_METRICS:
+            # The LAST period named is year t (the averaging year t−1 is derived
+            # internally), so ["FY2018", "FY2019"] computes the FY2019 metric.
+            # `periods[-1]` outranks `period`: callers pass period=periods[0],
+            # which for a two-period averaging question is the PRIOR year.
+            return self.working_capital_days(
+                ticker, m, (periods[-1] if periods else None) or period
+                or period_to or end_period)
         if m == "growth":
             return self.growth(ticker, concept or "revenue",
                                period_from or start_period, period_to or end_period)

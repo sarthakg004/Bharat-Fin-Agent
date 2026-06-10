@@ -104,6 +104,24 @@ class AgentState(TypedDict, total=False):
                                        # offered to the user on demand (NOT set for a
                                        # hallucination refusal — that draft is unsafe)
 
+    # --- Tools-lane corpus fallback ---------------------------------------- #
+    # Set by `evidence_builder_node` when a tools-path question (which skipped
+    # retrieval) produced NO evidence — routes back through fetch_filing →
+    # retrieve so the corpus gets a chance before synthesis. `pending` is the
+    # one-shot routing signal (cleared every evidence_builder pass); `used`
+    # latches so the fallback can only fire once per run.
+    corpus_fallback_pending: bool
+    corpus_fallback_used: bool
+
+    # --- Insufficient-draft web escalation --------------------------------- #
+    # Set by `critic_node` when the draft ADMITS the evidence can't answer
+    # ("not specified in the sources", "no information available") and the web
+    # lane hasn't run — routes critic → web_search → re-synthesize so the agent
+    # exhausts its tools before telling the user it doesn't know. Same
+    # pending/used pattern as the corpus fallback above.
+    web_fallback_pending: bool
+    web_fallback_used: bool
+
 
 # --------------------------------------------------------------------------- #
 # Structured-output schemas (used with llm.with_structured_output(...))
@@ -310,7 +328,7 @@ class CalcQuery(BaseModel):
         description="Canonical metric: gross_margin, operating_margin, net_margin, "
                     "current_ratio, quick_ratio, cash_ratio, debt_to_equity, "
                     "return_on_equity, return_on_assets, asset_turnover, "
-                    "interest_coverage, growth, cagr.",
+                    "interest_coverage, dio, dso, dpo, ccc, growth, cagr.",
     )
     concept: str = Field(
         default="",
@@ -321,6 +339,26 @@ class CalcQuery(BaseModel):
         default_factory=list,
         description="Fiscal periods involved, e.g. ['FY2020','FY2021','FY2022']. "
                     "Two periods for growth/cagr (earliest first); 2-5 for a trend.",
+    )
+
+
+class XBRLQueryBatch(BaseModel):
+    """Batch form of `XBRLQuery`: one extraction per numbered sub-query, in the
+    same order. Lets the agent extract ALL numeric sub-queries in ONE LLM call
+    instead of one call each."""
+
+    queries: list[XBRLQuery] = Field(
+        default_factory=list,
+        description="Exactly one XBRLQuery per numbered sub-query, in order.",
+    )
+
+
+class CalcQueryBatch(BaseModel):
+    """Batch form of `CalcQuery`: one extraction per numbered sub-query, in order."""
+
+    queries: list[CalcQuery] = Field(
+        default_factory=list,
+        description="Exactly one CalcQuery per numbered sub-query, in order.",
     )
 
 

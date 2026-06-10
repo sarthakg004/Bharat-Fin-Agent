@@ -186,14 +186,17 @@ class AgenticRAG:
     """
 
     # Groq tier picks:
-    #   planner / grader / router (fast, structured output)  → llama-3.1-8b-instant
-    #   synth + critic  (long-form writing, reasoning)        → openai/gpt-oss-120b
-    # 120B has its own TPD bucket on Groq so it relieves the 70B-versatile
-    # quota that was getting hammered, and produces noticeably better
-    # multi-section / markdown / citation output.
+    #   planner / grader / router (structured output)  → llama-3.3-70b-versatile
+    #   synth + critic  (long-form writing, reasoning) → openai/gpt-oss-120b
+    # The planner's decomposition drives retrieval and the grader DROPS chunks,
+    # so both sit on the quality path — 8b-instant there was measurably
+    # mis-decomposing multi-hop questions and mis-grading relevant chunks
+    # (and its structured-output calls fail more often, which used to discard
+    # whole evidence sets). 70B-versatile keeps these calls on a different
+    # quota bucket from the 120B synth/critic.
     DEFAULTS = {
         "groq": {
-            "planner": "llama-3.1-8b-instant",
+            "planner": "llama-3.3-70b-versatile",
             "synth":   "openai/gpt-oss-120b",
             "critic":  "openai/gpt-oss-120b",
         },

@@ -49,8 +49,8 @@ from finagent.graph.full import (
 )
 from finagent.graph.market_tools import call_tool as call_market_tool
 from finagent.graph.state import (
-    AgentState, MarketIntent, NumericVerification, XBRLQuery, CalcQuery,
-    CorpusGateQuery, EdgarQuery,
+    AgentState, MarketIntent, NumericVerification, XBRLQuery, XBRLQueryBatch,
+    CalcQuery, CalcQueryBatch, CorpusGateQuery, EdgarQuery,
 )
 from finagent.graph.translate import detect_language, language_name, translate_text
 from finagent.graph.web_search import WebSearcher
@@ -72,6 +72,10 @@ _WEB_NEWS_MARKERS = (
     "acquisition", "acquisitions", "acquire", "acquired", "merger", "merged",
     "takeover", "divestiture", "divest", "spin-off", "spinoff", "joint venture",
     "partnership", "deal", "buyout",
+    # Event filings: only annual reports are indexed in the corpus, so a
+    # question about a SPECIFIC 8-K (a dated event disclosure) needs the web
+    # to supplement the 10-K text that merely references it.
+    "8-k", "8k",
 )
 
 
@@ -263,7 +267,13 @@ public company. A DERIVED metric is one computed from reported figures: a margin
 (gross/operating/net), a liquidity ratio (current ratio, quick/acid-test ratio,
 cash ratio), a leverage/return ratio (debt-to-equity, ROE, ROA, asset
 turnover, interest coverage), an intensity ratio (rd_to_revenue = R&D as % of
-revenue, sga_to_revenue, capex_to_revenue), period-over-period GROWTH, a CAGR,
+revenue, sga_to_revenue, capex_to_revenue), an EBITDA margin (ebitda_margin =
+(operating income + D&A) / revenue), a working-capital days metric
+(dio = days inventory outstanding, dso = days sales outstanding, dpo = days
+payable outstanding, ccc = cash conversion cycle = DIO + DSO − DPO — each uses
+the two-period average of its balance-sheet input, so a "FY2019 CCC averaging
+FY2018-FY2019" question is metric='ccc' with periods ['FY2018','FY2019']),
+period-over-period GROWTH, a CAGR,
 or a multi-year TREND of any of those. Set is_derived=true and fill ticker, the
 canonical metric name, periods (fiscal years, earliest first), and — for
 growth/cagr only — the underlying concept. Set is_derived=false for a single reported figure (revenue,
@@ -336,6 +346,10 @@ class AgenticRAGv4(AgenticRAGv3):
         dedupe: bool = True,
         dedupe_threshold: float = 0.93,
         strict_numeric: bool = True,
+        # Hard-refuse only when LESS than this share of the draft's figures is
+        # grounded; a mostly-grounded answer falls through to the confidence
+        # gate instead (warn band, or the withhold path that keeps the draft).
+        refuse_below_grounding: float = 0.6,
         persist_fetch: bool = True,
         confidence_gating: bool = True,
         confidence_answer: float = 0.80,
@@ -362,6 +376,7 @@ class AgenticRAGv4(AgenticRAGv3):
         # ungrounded figure re-routes then refuses. Set False to A/B against the
         # prior LLM-only numeric check.
         self.strict_numeric = strict_numeric
+        self.refuse_below_grounding = refuse_below_grounding
         # Dynamic fetch: persist the fetched filing into the on-disk index (True,
         # local) or use it ephemerally in memory for this session (False, cloud).
         self.persist_fetch = persist_fetch
@@ -515,6 +530,49 @@ class AgenticRAGv4(AgenticRAGv3):
             )
         return self._llms["market_planner"]
 
+    # A question about a SPECIFIC dated event filing ("the 8-K dated 1st July
+    # 2022"). These documents are never in the indexed corpus (only annual
+    # reports are) and rarely on the news web — they must be pulled from EDGAR
+    # by (form, date) directly.
+    _FORM_REQ_RE = re.compile(r"\b(8[\s-]?K|10[\s-]?Q|6[\s-]?K|DEF\s?14A)\b", re.I)
+    _MONTHS = {m: i + 1 for i, m in enumerate(
+        ["jan", "feb", "mar", "apr", "may", "jun",
+         "jul", "aug", "sep", "oct", "nov", "dec"])}
+    _DATE_RES = (
+        re.compile(r"\b(?P<d>\d{1,2})(?:st|nd|rd|th)?\s+of\s+"
+                   r"(?P<m>jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?,?\s+"
+                   r"(?P<y>\d{4})\b", re.I),
+        re.compile(r"\b(?P<d>\d{1,2})(?:st|nd|rd|th)?\s+"
+                   r"(?P<m>jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?,?\s+"
+                   r"(?P<y>\d{4})\b", re.I),
+        re.compile(r"\b(?P<m>jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+"
+                   r"(?P<d>\d{1,2})(?:st|nd|rd|th)?,?\s+(?P<y>\d{4})\b", re.I),
+        re.compile(r"\b(?P<y>\d{4})-(?P<mn>\d{2})-(?P<d>\d{2})\b"),
+    )
+
+    @classmethod
+    def _dated_form_request(cls, question: str) -> Optional[tuple]:
+        """(form, date) when the question names an event filing AND a date."""
+        qm = cls._FORM_REQ_RE.search(question or "")
+        if not qm:
+            return None
+        from datetime import date
+        for rx in cls._DATE_RES:
+            m = rx.search(question)
+            if not m:
+                continue
+            g = m.groupdict()
+            month = int(g["mn"]) if g.get("mn") else cls._MONTHS[g["m"][:3].lower()]
+            try:
+                dt = date(int(g["y"]), month, int(g["d"]))
+            except ValueError:
+                continue
+            squash = re.sub(r"[\s-]", "", qm.group(1).upper())
+            form = {"8K": "8-K", "10Q": "10-Q", "6K": "6-K",
+                    "DEF14A": "DEF 14A"}.get(squash, squash)
+            return form, dt
+        return None
+
     def fetch_filing_node(self, state: AgentState) -> dict:
         """Corpus-membership gate + on-demand SEC fetch (Phase 5).
 
@@ -558,15 +616,35 @@ class AgenticRAGv4(AgenticRAGv3):
         if not company:
             return {"fetch_status": {}}
 
+        # Dated event-filing request ("AMCOR's 8-K dated 1st July 2022"): pull
+        # the named document straight from EDGAR by (form, date) and inject its
+        # text as ephemeral chunks — `hybrid_retrieve_node` ranks them first.
+        # This runs regardless of the corpus gate: the company being indexed
+        # only means its ANNUAL reports are, never its event filings.
+        extra: dict = {}
+        dated = self._dated_form_request(question)
+        if dated:
+            form, dt = dated
+            try:
+                res = self.fetcher.fetch_dated_filing(company, form, dt)
+            except Exception as e:
+                self._log(state, f"dated filing fetch failed ({form} {dt}): {e}")
+                res = {"ok": False}
+            if res.get("ok") and res.get("chunks"):
+                self._log(state, f"fetched {res.get('form')} filed "
+                                 f"{res.get('filing_date')} from EDGAR "
+                                 f"({len(res['chunks'])} chunks)")
+                extra["fetched_chunks"] = res["chunks"]
+
         try:
             gate = self.fetcher.gate(company)
         except Exception as e:
             self._log(state, f"corpus gate failed for {company!r}: {e}")
-            return {"fetch_status": {}}
+            return {"fetch_status": {}, **extra}
 
         if gate["decision"] != "fetch":
             # already_indexed → retrieval handles it; not_us_listed → web branch.
-            return {"fetch_status": gate}
+            return {"fetch_status": gate, **extra}
 
         self._log(state, f"dynamic fetch: pulling latest filing for {gate['ticker']}…")
 
@@ -580,13 +658,14 @@ class AgenticRAGv4(AgenticRAGv3):
                     gate["ticker"], company=gate.get("company") or "")
             except Exception as e:
                 self._log(state, f"ephemeral fetch failed for {gate['ticker']}: {e}")
-                return {"fetch_status": {**gate, "status": "error", "error": str(e)}}
+                return {"fetch_status": {**gate, "status": "error", "error": str(e)},
+                        **extra}
             chunks = res.get("chunks", []) if res.get("ok") else []
             if chunks:
                 self._log(state, f"fetched {len(chunks)} in-memory chunks for {gate['ticker']} "
                                  f"({res.get('form')})")
             return {
-                "fetched_chunks": chunks,
+                "fetched_chunks": extra.get("fetched_chunks", []) + chunks,
                 "fetch_status": {**gate, "status": "fetched" if chunks else "error",
                                  "ephemeral": True, "form": res.get("form"),
                                  "chunks_fetched": len(chunks)},
@@ -598,13 +677,14 @@ class AgenticRAGv4(AgenticRAGv3):
                 gate["ticker"], company=gate.get("company") or "")
         except Exception as e:
             self._log(state, f"dynamic fetch failed for {gate['ticker']}: {e}")
-            return {"fetch_status": {**gate, "status": "error", "error": str(e)}}
+            return {"fetch_status": {**gate, "status": "error", "error": str(e)},
+                    **extra}
 
         if res.get("ok"):
             self._hybrids = None       # invalidate cached BM25/dense over old corpus
             self._log(state, f"ingested {res['chunks_added']} chunks for {gate['ticker']}")
         return {"fetch_status": {**gate, "status": "fetched" if res.get("ok") else "error",
-                                 **res}}
+                                 **res}, **extra}
 
     def hybrid_retrieve_node(self, state: AgentState) -> dict:
         """Persistent-corpus retrieval, plus in-memory ranking of an ephemerally
@@ -671,6 +751,54 @@ class AgenticRAGv4(AgenticRAGv3):
     def _fetched_source(c: dict) -> str:
         return f"[{c.get('company', c.get('ticker', '?'))} filing {c.get('year', '?')}]"
 
+    def _extract_batch(self, state: AgentState, sub_queries: list[str],
+                       batch_schema, system: str, single_prompt: str,
+                       single_schema, history_block: str) -> list[tuple]:
+        """Run ONE structured-output extraction over all `sub_queries`,
+        returning [(sub_query, extraction-or-None), ...] aligned by position.
+
+        The batch call replaces N per-sub-query LLM calls. If it fails or the
+        model returns a misaligned list, fall back to the per-sub-query loop so
+        behaviour degrades to the legacy path, never to silent skips.
+        """
+        from langchain_core.messages import HumanMessage, SystemMessage
+
+        if len(sub_queries) > 1:
+            numbered = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(sub_queries))
+            batch_prompt = (
+                f"Numbered sub-queries:\n{numbered}\n\n"
+                f"Return EXACTLY one extraction per numbered sub-query, in the "
+                f"same order ({len(sub_queries)} entries)."
+            )
+            try:
+                out = self._get_router_llm().with_structured_output(batch_schema).invoke([
+                    SystemMessage(content=system),
+                    HumanMessage(content=history_block + batch_prompt),
+                ])
+                queries = list(out.queries or [])
+                if len(queries) == len(sub_queries):
+                    return list(zip(sub_queries, queries))
+                self._log(state, f"batch extract misaligned "
+                                 f"({len(queries)} for {len(sub_queries)}); "
+                                 f"falling back to per-sub-query extraction")
+            except Exception as e:
+                self._log(state, f"batch extract failed ({e}); "
+                                 f"falling back to per-sub-query extraction")
+
+        extractor = self._get_router_llm().with_structured_output(single_schema)
+        pairs: list[tuple] = []
+        for sub_q in sub_queries:
+            try:
+                q = extractor.invoke([
+                    SystemMessage(content=system),
+                    HumanMessage(content=history_block + single_prompt.format(sub_query=sub_q)),
+                ])
+            except Exception as e:
+                self._log(state, f"extract failed for {sub_q!r}: {e}")
+                q = None
+            pairs.append((sub_q, q))
+        return pairs
+
     def xbrl_node(self, state: AgentState) -> dict:
         """Answer numeric sub-queries from SEC XBRL structured facts (Phase 3).
 
@@ -702,18 +830,17 @@ class AgenticRAGv4(AgenticRAGv3):
             ]
             history_block = "Recent conversation:\n" + "\n".join(lines) + "\n\n"
 
-        extractor = self._get_router_llm().with_structured_output(XBRLQuery)
+        # ONE batched extraction call for all numeric sub-queries (was one call
+        # per sub-query — the dominant tool-lane latency on multi-input
+        # questions). Falls back to per-sub-query extraction if the batch
+        # call fails or comes back misaligned.
+        extracted = self._extract_batch(
+            state, numeric_subs, XBRLQueryBatch, XBRL_EXTRACT_SYSTEM,
+            XBRL_EXTRACT_PROMPT, XBRLQuery, history_block)
+
         facts: list[dict] = []
-        for sub_q in numeric_subs:
-            try:
-                q: XBRLQuery = extractor.invoke([
-                    SystemMessage(content=XBRL_EXTRACT_SYSTEM),
-                    HumanMessage(content=history_block + XBRL_EXTRACT_PROMPT.format(sub_query=sub_q)),
-                ])
-            except Exception as e:
-                self._log(state, f"xbrl extract failed for {sub_q!r}: {e}")
-                continue
-            if not q.answerable or not (q.ticker and q.concept):
+        for sub_q, q in extracted:
+            if q is None or not q.answerable or not (q.ticker and q.concept):
                 continue
             try:
                 res = self.xbrl.run(ticker=q.ticker, concept=q.concept,
@@ -757,18 +884,13 @@ class AgenticRAGv4(AgenticRAGv3):
             ]
             history_block = "Recent conversation:\n" + "\n".join(lines) + "\n\n"
 
-        extractor = self._get_router_llm().with_structured_output(CalcQuery)
+        extracted = self._extract_batch(
+            state, numeric_subs, CalcQueryBatch, CALC_EXTRACT_SYSTEM,
+            CALC_EXTRACT_PROMPT, CalcQuery, history_block)
+
         results: list[dict] = []
-        for sub_q in numeric_subs:
-            try:
-                q: CalcQuery = extractor.invoke([
-                    SystemMessage(content=CALC_EXTRACT_SYSTEM),
-                    HumanMessage(content=history_block + CALC_EXTRACT_PROMPT.format(sub_query=sub_q)),
-                ])
-            except Exception as e:
-                self._log(state, f"calc extract failed for {sub_q!r}: {e}")
-                continue
-            if not q.is_derived or not (q.ticker and q.metric):
+        for sub_q, q in extracted:
+            if q is None or not q.is_derived or not (q.ticker and q.metric):
                 continue
             try:
                 res = self.calc.run(
@@ -1005,6 +1127,14 @@ class AgenticRAGv4(AgenticRAGv3):
             if s not in external_subs:
                 external_subs.append(s)
 
+        # Insufficient-draft escalation: the critic flagged that the draft
+        # admits the gathered evidence can't answer — search the original
+        # question regardless of routes/markers.
+        if state.get("web_fallback_pending"):
+            fq = state.get("query_original") or state["question"]
+            if fq not in external_subs:
+                external_subs.append(fq)
+
         # Corrective dispatch (CRAG): no explicit external sub-queries, but a
         # NARRATIVE retrieval was attempted and came back empty/poorly graded →
         # escalate to web. We gate on a narrative route having run: under the
@@ -1221,10 +1351,32 @@ class AgenticRAGv4(AgenticRAGv3):
             # Never let evidence normalisation break the run — synth still has
             # its own assembly to fall back on.
             self._log(state, f"evidence_builder failed ({e}); continuing without normalised evidence")
-            return {"evidence": []}
-        self._log(state, f"evidence_builder: normalised {len(ev)} items across "
-                         f"{len({e['kind'] for e in ev})} source kinds")
-        return {"evidence": ev}
+            ev = []
+        else:
+            self._log(state, f"evidence_builder: normalised {len(ev)} items across "
+                             f"{len({e['kind'] for e in ev})} source kinds")
+
+        # Corpus fallback: a tools-path question (which SKIPPED retrieval) whose
+        # XBRL/calc/table/market/web/EDGAR lanes ALL came back empty would reach
+        # the synthesizer with nothing and produce a content-free "no data
+        # available" answer. Route it back through fetch_filing → retrieve ONCE
+        # (`corpus_fallback_used` guards the loop), so the filing corpus gets a
+        # chance before we give up. `corpus_fallback_pending` is the one-shot
+        # routing signal `_evidence_router` consumes; it is re-cleared here on
+        # every pass (this node is its only writer and always precedes the
+        # router).
+        out: dict = {"evidence": ev, "corpus_fallback_pending": False}
+        if not ev and not state.get("retrieved_chunks") \
+                and not state.get("corpus_fallback_used"):
+            routes = state.get("query_routes") or []
+            took_tools_path = (self.dispatch and routes
+                               and not any(r == "narrative" for r in routes))
+            if took_tools_path:
+                self._log(state, "tools lanes produced no evidence; "
+                                 "falling back to corpus retrieval")
+                out["corpus_fallback_pending"] = True
+                out["corpus_fallback_used"] = True
+        return out
 
     def critic_node(self, state: AgentState) -> dict:
         """v3 critic with web-search hits AND market-data tool results added to
@@ -1303,11 +1455,45 @@ class AgenticRAGv4(AgenticRAGv3):
             })
 
         if not pseudo_chunks:
-            return super().critic_node(state)
+            out = super().critic_node(state)
+        else:
+            proxy = dict(state)
+            proxy["retrieved_chunks"] = list(state.get("retrieved_chunks", [])) + pseudo_chunks
+            out = super().critic_node(proxy)
+        out.update(self._web_fallback_signal(state))
+        return out
 
-        proxy = dict(state)
-        proxy["retrieved_chunks"] = list(state.get("retrieved_chunks", [])) + pseudo_chunks
-        return super().critic_node(proxy)
+    # The draft conceding the evidence can't answer ("not specified in the
+    # provided sources", "no information is available"). Grades can't catch
+    # this: the chunks may be topically relevant (a 10-K MENTIONING an 8-K)
+    # yet still not contain the answer — the draft's own admission is the
+    # reliable insufficiency signal.
+    _INSUFFICIENT_RE = re.compile(
+        r"not (?:explicitly )?(?:specified|stated|provided|available|disclosed"
+        r"|described|outlined|mentioned)"
+        r"|no (?:specific )?(?:information|data|details?|mention)"
+        r"|not enough information"
+        r"|cannot be (?:determined|calculated|computed|answered)"
+        r"|unable to (?:determine|find|locate)"
+        r"|do(?:es)? not (?:contain|state|specify|describe|disclose|provide"
+        r"|discuss|mention|cover)",
+        re.I,
+    )
+
+    def _web_fallback_signal(self, state: AgentState) -> dict:
+        """One-shot escalation signal: the draft admits the gathered evidence
+        can't answer, and the web lane hasn't run yet — so route to web search
+        and re-synthesize instead of shipping an "I couldn't find it" answer
+        while a whole tool lane sits unused. `used` latches so a question the
+        web genuinely can't answer either doesn't loop."""
+        draft = state.get("draft_answer", "") or ""
+        if (not state.get("web_results")
+                and not state.get("web_fallback_used")
+                and self._INSUFFICIENT_RE.search(draft)):
+            self._log(state, "draft admits the evidence can't answer; "
+                             "escalating to web search")
+            return {"web_fallback_pending": True, "web_fallback_used": True}
+        return {"web_fallback_pending": False}
 
     def synthesize_node(self, state: AgentState) -> dict:
         """v3 synth + web results, presented as one unified numbered evidence list.
@@ -1597,10 +1783,24 @@ single item is irrelevant."""
                 for n in self._extract_numbers(str(c.get("number", "")) + " " + str(c.get("evidence", ""))):
                     evidence_mags.extend(n["magnitudes"])
 
-        ungrounded = [
-            {"number": d["raw"], "claim": d["ctx"]}
-            for d in draft_nums if not self._grounded(d["magnitudes"], evidence_mags)
-        ]
+        # Walk the draft's figures in order, letting each grounded figure feed
+        # the pool (`chained`) so a worked calculation grounds stepwise: the
+        # average grounds from its two inputs, the ratio from that average, the
+        # final metric from the ratios. Derivation (`_derivable`) rescues
+        # figures the draft legitimately computed from evidence values.
+        derive_base = self._derivation_base(by_kind)
+        chained: list[float] = []
+        ungrounded = []
+        for d in draft_nums:
+            ok = (
+                self._grounded(d["magnitudes"], evidence_mags)
+                or self._grounded(d["magnitudes"], chained)
+                or self._derivable(d["magnitudes"], derive_base + chained)
+            )
+            if ok:
+                chained.extend(d["magnitudes"])
+            else:
+                ungrounded.append({"number": d["raw"], "claim": d["ctx"]})
         ungrounded_raws = {u["number"] for u in ungrounded}
         total = len(draft_nums)
         grounded = total - len(ungrounded)
@@ -1780,7 +1980,7 @@ single item is irrelevant."""
         masked = self._CITE_RE.sub(_blank, answer)
         masked = re.sub(r"\bFY\s?\d{2,4}\b", _blank, masked, flags=re.I)
         masked = re.sub(r"\bQ[1-4]\b", _blank, masked, flags=re.I)
-        masked = re.sub(r"\b10-[KQ]\b|\b8-K\b", _blank, masked, flags=re.I)
+        masked = re.sub(r"\b10\s?-?\s?[KQ]\b|\b8\s?-?\s?K\b", _blank, masked, flags=re.I)
         masked = re.sub(r"\bp\.?\s*\d+\b", _blank, masked, flags=re.I)
 
         fig_ends = [m.end() for m in self._NUM_RE.finditer(masked) if m.group("num")]
@@ -1940,6 +2140,12 @@ single item is irrelevant."""
         With `self.dispatch` False the router always takes the retrieval path —
         the legacy "retrieve everything" behaviour — for A/B measurement.
         """
+        # A dated event-filing question MUST take the retrieval path: only
+        # fetch_filing can pull the named 8-K/10-Q from EDGAR, and the tools
+        # chain (XBRL/calc/market/web) has no lane that reads a specific dated
+        # document.
+        if self._dated_form_request(state.get("query_original") or state["question"]):
+            return "retrieval"
         routes = state.get("query_routes") or []
         has_narrative = (not routes) or any(r == "narrative" for r in routes)
         return "retrieval" if (not self.dispatch or has_narrative) else "tools"
@@ -1965,9 +2171,14 @@ single item is irrelevant."""
             or state.get("verify_iterations", 0) > self.max_critic_retries
         )
 
-        # Phase 11: an ungrounded figure is a hallucination — every number must
-        # trace to a source. Under strict numeric verification, re-route once to
-        # try to ground it, then refuse rather than ship a fabricated figure.
+        # Phase 11: an ungrounded figure is a potential hallucination. Under
+        # strict numeric verification, re-route to try to ground it; once out of
+        # retries, hard-refuse ONLY when most of the draft's figures failed to
+        # ground (a substantially fabricated answer). A mostly-grounded draft
+        # proceeds to the confidence gate, where the depressed verification
+        # sub-score lands it in the warn band (answer + caveat) or the withhold
+        # path (which preserves the draft for opt-in) — a refusal there would
+        # throw away an answer whose figures overwhelmingly trace to sources.
         if self.strict_numeric:
             has_ungrounded = (nv.get("numbers_total", 0) > 0 and len(ungrounded) > 0)
             if state.get("needs_retry") and not out_of_retries:
@@ -1975,7 +2186,9 @@ single item is irrelevant."""
             if has_ungrounded and not out_of_retries:
                 return "retrieve"          # re-route to re-ground the figure(s)
             if has_ungrounded and out_of_retries:
-                return "refuse"            # "not in the filings" beats fabrication
+                severely_ungrounded = (
+                    score is not None and score < self.refuse_below_grounding)
+                return "refuse" if severely_ungrounded else "end"
             return "end"
 
         # Legacy LLM-only path.
@@ -1986,6 +2199,11 @@ single item is irrelevant."""
         if out_of_retries and verify_failed and claims:
             return "refuse"
         return "end"
+
+    def _evidence_router(self, state: AgentState) -> str:
+        """After evidence_builder: proceed to synthesis, or (one-shot) fall back
+        to corpus retrieval when the tools lanes all came back empty."""
+        return "retrieve" if state.get("corpus_fallback_pending") else "synthesize"
 
     def _confidence_gate(self, state: AgentState) -> str:
         """Route on the band `confidence_node` already chose: answer / warn /
@@ -2006,6 +2224,11 @@ single item is irrelevant."""
         `needs_retry` True while under the cap, so this can re-draft at most
         `max_critic_retries` times before it must proceed.
         """
+        # Insufficient-draft escalation outranks a re-draft: when the draft
+        # admits the evidence can't answer, re-writing over the SAME evidence
+        # can't help — gather web evidence first, then re-synthesize.
+        if state.get("web_fallback_pending"):
+            return "websearch"
         if not self.active_critic or not state.get("needs_retry"):
             return "verify"
         has_evidence = bool(
@@ -2091,14 +2314,24 @@ single item is irrelevant."""
         g.add_edge("market_data", "evidence_builder")
         g.add_edge("web_search", "evidence_builder")
         g.add_edge("edgar_search", "evidence_builder")
-        g.add_edge("evidence_builder", "synthesize")
+        # Corpus fallback (one-shot): a tools-path run whose lanes all came back
+        # empty re-enters at fetch_filing → retrieve instead of synthesising
+        # from nothing.
+        g.add_conditional_edges(
+            "evidence_builder", self._evidence_router,
+            {"retrieve": "fetch_filing", "synthesize": "synthesize"},
+        )
         g.add_edge("synthesize", "critic")
         # #6: the critic can actively route to a focused re-draft (resynthesize)
         # when the draft over-claimed against otherwise-good evidence, instead of
         # always deferring recovery to the verify→retrieve path.
         g.add_conditional_edges(
             "critic", self._critic_router,
-            {"resynthesize": "synthesize", "verify": "verify_numbers"},
+            {"resynthesize": "synthesize", "verify": "verify_numbers",
+             # Insufficient-draft escalation: gather web evidence, then the
+             # existing web_search → evidence_builder → synthesize edges
+             # re-draft with it.
+             "websearch": "web_search"},
         )
         # Verifier settles hard refusals (ungrounded figures) and retries; an
         # answerable draft ("end") then flows into the confidence gate (#8/9).
@@ -2181,16 +2414,19 @@ single item is irrelevant."""
         })
         # Remove things that look numeric but aren't financial claims.
         scrubbed = cls._CITE_RE.sub(" ", scrubbed)             # [1], [1, 3], 【1】
-        # Fiscal-year RANGES first ("FY2023-24", "2023-2024"), then single years.
-        scrubbed = re.sub(r"\bFY\s?\d{4}\s?-\s?\d{2,4}\b", " ", scrubbed, flags=re.I)
+        # Fiscal-year RANGES first ("FY2023-24", "2023-2024", "FY2015 - FY2017"),
+        # then single years. Without the optional second "FY" the range scrub
+        # missed "FY2015 - FY2017", leaving a stray "- 3" style artifact.
+        scrubbed = re.sub(r"\bFY\s?\d{4}\s?-\s?(?:FY\s?)?\d{2,4}\b", " ", scrubbed, flags=re.I)
         scrubbed = re.sub(r"\b(?:19|20)\d{2}\s?-\s?\d{2,4}\b", " ", scrubbed)
         scrubbed = re.sub(r"\bFY\s?\d{2,4}\b", " ", scrubbed, flags=re.I)
-        # Window labels: "52-week", "52 wk", "200-day" — the count names the
-        # metric, it isn't a reported figure.
-        scrubbed = re.sub(r"\b\d{1,3}\s?-?\s?(?:week|wk|day|month|mo)s?\b",
+        # Window labels: "52-week", "52 wk", "200-day", "3 year average" — the
+        # count names the metric/period, it isn't a reported figure.
+        scrubbed = re.sub(r"\b\d{1,3}\s?-?\s?(?:week|wk|day|month|mo|year|yr|quarter|qtr)s?\b",
                           " ", scrubbed, flags=re.I)
         scrubbed = re.sub(r"\bQ[1-4]\b", " ", scrubbed, flags=re.I)
-        scrubbed = re.sub(r"\b10-[KQ]\b|\b8-K\b", " ", scrubbed, flags=re.I)
+        # SEC form names in every spelling the models emit: 10-K, 10K, 8-K, 8k.
+        scrubbed = re.sub(r"\b10\s?-?\s?[KQ]\b|\b8\s?-?\s?K\b", " ", scrubbed, flags=re.I)
         scrubbed = re.sub(r"\bp\.?\s*\d+\b", " ", scrubbed, flags=re.I)  # p. 12
 
         out: list[dict] = []
@@ -2238,6 +2474,54 @@ single item is irrelevant."""
     def _grounded(cls, magnitudes: set, evidence_mags: list[float]) -> bool:
         return any(cls._num_close(mag, ev) for mag in magnitudes for ev in evidence_mags)
 
+    # Cap on the deduped evidence pool used for derived grounding — keeps the
+    # pairwise scan (~ cap² / 2 pairs per figure) cheap.
+    _DERIVE_MAX_BASE = 160
+
+    @classmethod
+    def _derivation_base(cls, by_kind: dict[str, list[float]]) -> list[float]:
+        """Deduped, capped pool of evidence magnitudes for `_derivable`.
+        Exact structured lanes first so they survive the cap."""
+        order = ("xbrl", "calc", "table", "filing", "market", "web", "const")
+        seen: set[str] = set()
+        base: list[float] = []
+        for kind in order + tuple(k for k in by_kind if k not in order):
+            for v in by_kind.get(kind, []):
+                key = f"{v:.6g}"
+                if key not in seen:
+                    seen.add(key)
+                    base.append(v)
+                    if len(base) >= cls._DERIVE_MAX_BASE:
+                        return base
+        return base
+
+    @classmethod
+    def _derivable(cls, magnitudes: set, base: list[float]) -> bool:
+        """A figure absent from the evidence VERBATIM may still be correct if it
+        is a one-step combination of evidence values — a ratio/margin (a/b, with
+        the ×100 percent and ×365 days-outstanding forms), a sum, a change
+        (a−b), or a two-period average. Without this, every answer that does the
+        arithmetic the question asked for (margins, averages, working-capital
+        days) self-refutes: the derived figure is "ungrounded" even though all
+        its inputs are in the evidence.
+        """
+        close = cls._num_close
+        for t in magnitudes:
+            n = len(base)
+            for i in range(n):
+                a = base[i]
+                for j in range(i + 1, n):
+                    b = base[j]
+                    if close(t, a + b) or close(t, abs(a - b)) or close(t, (a + b) / 2.0):
+                        return True
+                    for num, den in ((a, b), (b, a)):
+                        if den == 0.0:
+                            continue
+                        r = num / den
+                        if close(t, r) or close(t, r * 100.0) or close(t, r * 365.0):
+                            return True
+        return False
+
     # Powers of ten by which an exact figure may be RESTATED in prose. A filed
     # value of 135,987,000,000 is the same fact whether the answer writes it as
     # "$135.987 billion" (×1), "135,987" million (×1e-6), or a scale-free
@@ -2247,10 +2531,13 @@ single item is irrelevant."""
     _RESTATE_SCALES = (1.0, 1e-3, 1e-6, 1e-9, 1e-12)
 
     # Structural constants that appear in growth / CAGR / margin DERIVATIONS
-    # (×100 to render a percent, the 1 in `(b/a)^(1/n) − 1`, a leading 0). They
-    # are math scaffolding the synthesizer writes out, never financial claims —
-    # so they must count as grounded or every shown calculation self-refutes.
-    _MATH_CONSTANTS = (0.0, 1.0, 100.0)
+    # (×100 to render a percent, the 1 in `(b/a)^(1/n) − 1`, a leading 0), plus
+    # time-period constants from working-capital formulas (365 in DSO/DIO/DPO,
+    # 360-day conventions, 52 weeks, 12 months, 4 quarters, 2 in an average).
+    # They are math scaffolding the synthesizer writes out, never financial
+    # claims — so they must count as grounded or every shown calculation
+    # self-refutes.
+    _MATH_CONSTANTS = (0.0, 1.0, 2.0, 100.0, 365.0, 360.0, 52.0, 12.0, 4.0)
 
     def _evidence_numbers_by_kind(self, state: AgentState) -> dict[str, list[float]]:
         """Grounding magnitudes bucketed BY SOURCE KIND, so cross-source

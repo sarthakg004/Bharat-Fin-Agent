@@ -73,14 +73,26 @@ def run_agent_outputs(
                 provider=provider,
                 synth_model=synth_model,
             )
+            meta = res.get("metadata") or {}
+            answer = res.get("answer", "")
+            # When the confidence gate withheld a draft ("I'm not confident
+            # enough…"), evaluate the draft itself — a low-confidence answer
+            # scores what the system actually produced; the withhold notice
+            # scores as no answer at all.
+            suppressed = (meta.get("suppressed_answer") or "").strip()
+            if suppressed:
+                answer = suppressed
             row = {
                 "financebench_id": fb_id,
                 "question": q["question"],
-                "answer": res.get("answer", ""),                 # generated (RAGAS response)
+                "answer": answer,                                # generated (RAGAS response)
                 "gold": q.get("answer", ""),                     # gold (RAGAS reference)
                 "retrieved_chunks": [c.get("text", "") for c in res.get("chunks", [])],
                 "qtype": q.get("qtype", ""),
                 "company": q.get("company", ""),
+                "confidence": meta.get("confidence"),
+                "answer_status": meta.get("answer_status"),
+                "used_suppressed_draft": bool(suppressed),
                 "error": None,
             }
         except Exception as e:  # keep going; record the failure
@@ -106,6 +118,9 @@ def score_answers(
     judge_provider: str = "groq",
     judge_model: Optional[str] = None,
     sample: Optional[int] = None,
+    max_workers: int = 4,
+    timeout: int = 300,
+    batch_size: int = 10,
 ) -> dict:
     """RAGAS the saved outputs; return overall + per-qtype metric means.
 
@@ -116,15 +131,21 @@ def score_answers(
                       context_recall},
           "by_type": {qtype: {...same four...}, ...},
         }
+
+    On free-tier judges (Groq/Gemini) the default parallelism can trip
+    `TimeoutError`s; pass `max_workers=1` (serialize), a larger `timeout`, and
+    a smaller `batch_size` to keep the run stable.
     """
     from finagent.evaluation.ragas import RAGASEvaluator
 
-    ev = RAGASEvaluator(judge_provider=judge_provider, judge_model=judge_model)
+    ev = RAGASEvaluator(judge_provider=judge_provider, judge_model=judge_model,
+                        max_workers=max_workers, timeout=timeout)
     scores_df = ev.evaluate(
         outputs_path=str(outputs_path),
         output_csv=str(scores_csv),
         ground_truth_col="gold",
         sample=sample,
+        batch_size=batch_size,
     )
 
     metric_cols = [
