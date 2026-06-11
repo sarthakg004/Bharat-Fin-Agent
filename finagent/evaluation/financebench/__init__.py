@@ -26,6 +26,7 @@ from .indexing import build_manifest, index_eval_corpus, EVAL_COLLECTION
 from .gold import build_gold_map
 from .retrieval import RetrievalEvaluator, RetrievalResult
 from .runner import run_agent_outputs, score_answers
+from .parallel import run_parallel, final_report, summarize_outputs
 from .ledger import append_row, load_ledger
 
 __all__ = [
@@ -42,6 +43,9 @@ __all__ = [
     "RetrievalResult",
     "run_agent_outputs",
     "score_answers",
+    "run_parallel",
+    "final_report",
+    "summarize_outputs",
     "append_row",
     "load_ledger",
 ]

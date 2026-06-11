@@ -6,7 +6,7 @@ for the notebook's end-to-end walkthrough. Nothing here re-implements the agent 
 it drives the compiled graph (`builder.build_graph`) and formats the result.
 
     run_with_trace(question)        — stream the full graph, capture each node.
-    run_with_route_trace(question)  — just planner + router (cheap), show routing.
+    run_with_route_trace(question)  — just the fused plan+route call (cheap), show routing.
     run_with_full_trace(question)   — full run, returns decomposition + answer.
     format_trace(result)            — pretty multi-section string for printing.
 """
@@ -51,7 +51,8 @@ def run_with_trace(
 def run_with_route_trace(
     question: str, market: str = "us", provider: str = "groq"
 ) -> dict:
-    """Run only planner + router (2 LLM calls) and return the routing decision."""
+    """Run only the fused plan+route step (ONE LLM call; the router is a
+    no-op when the plan already carries routes) and return the routing decision."""
     agent = build_agent(market=market, provider=provider)
     state = {"question": question, "iteration_count": 0, "errors": []}
     state.update(agent.planner_node(state) or {})

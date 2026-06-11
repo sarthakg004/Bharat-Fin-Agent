@@ -1,33 +1,44 @@
 # FinAgent · Agentic RAG over financial filings
 
-FinAgent answers questions about **SEC 10-Ks (US)** and **Indian annual reports**.
-A LangGraph agent plans the query, retrieves from the filings, runs a numeric
-**table agent**, pulls **live market data** (Yahoo Finance) and **web results**
-(Tavily) when needed, answers in **English or Hindi** with inline `[N]` citations,
-and **verifies every number against the evidence** — refusing rather than
-fabricating when it can't ground a claim. A React UI streams the answer with the
-source chunks shown alongside.
+FinAgent answers questions about **SEC filings and listed companies**. A
+LangGraph agent plans and routes the query in one pass, retrieves from the
+filings, pulls **exact XBRL figures** from SEC company-facts, computes derived
+metrics **deterministically**, runs a numeric **table agent**, fetches **live
+market data** (Yahoo Finance) and **web results** (Tavily) when needed, and
+**verifies every figure against the evidence** — refusing rather than
+fabricating when it can't ground a claim. A React UI streams the answer with
+live agent progress and the source chunks shown alongside.
 
 ---
 
 ## Features
 
 - **Grounded answers over filings** — hybrid retrieval (BM25 + dense `bge-small` +
-  cross-encoder rerank) with inline `[N]` citations linking to the source chunk.
+  cross-encoder rerank) with company/year metadata filtering and inline `[N]`
+  citations linking to the source chunk.
+- **Exact numbers, not paraphrases** — numeric questions hit SEC **XBRL
+  company-facts** first (the figure as filed), then a deterministic
+  **calculator** for derived metrics (margins, ratios, growth, CAGR, working-
+  capital days), then the pandas **table agent** as a fallback.
 - **Corrective RAG** — each chunk is graded 1–5; weak ones are dropped and the
   query is rewritten + retried when retrieval is poor.
-- **Numeric table agent** — writes and runs sandboxed pandas over extracted tables
-  instead of guessing numbers from prose.
-- **Live market data + charts** — price / return / market-cap questions hit Yahoo
-  Finance; history requests render an inline candlestick chart.
-- **Web search fallback** — Tavily (trusted finance domains, recency windows) for
-  things the corpus doesn't cover.
-- **Bilingual** — Hindi questions are detected, translated in, answered, translated out.
-- **Anti-hallucination** — a critic plus a numeric verifier gate the answer.
-- **Per-session memory** — multi-chat threads kept in the browser for the session;
-  the agent gets the last few turns for follow-ups and pronouns.
-- **Bring-your-own-key** — Groq by default; switch to OpenAI / Anthropic / Gemini
-  per-request from the model picker (keys stay in your browser).
+- **Self-expanding corpus** — a company missing from the index gets its 10-K
+  fetched from EDGAR on the fly (in-memory on Cloud Run, ingested locally),
+  walking back enough filings to cover the fiscal year asked about.
+- **Cross-document search** — "which companies disclosed X" runs EDGAR
+  full-text search across all filers.
+- **Live market data + charts** — price / return / market-cap questions hit
+  Yahoo Finance; history requests render an inline candlestick chart.
+- **Web search fallback** — Tavily (trusted finance domains, recency windows),
+  with automatic escalation when retrieval comes back empty or the draft
+  admits it can't answer.
+- **Anti-hallucination** — a claim-checking critic, a deterministic numeric
+  verifier (every figure must trace to the evidence or derive from it), and a
+  blended **confidence gate** that answers, caveats, or refuses.
+- **Per-session memory** — multi-chat threads kept in the browser; the agent
+  gets the last few turns for follow-ups and pronouns.
+- **Bring-your-own-key** — Groq by default; switch to OpenAI / Anthropic /
+  Gemini per-request from the model picker (keys stay in your browser).
 
 ---
 
@@ -40,37 +51,94 @@ layer adds a capability ([`finagent/graph/`](finagent/graph/)):
 |---|---|---|
 | `base.py` | `AgenticRAG` | planner → retrieve → synthesize → critic |
 | `corrective.py` | `AgenticRAGv2` | hybrid retrieval, relevance grader, rewrite loop |
-| `full.py` | `AgenticRAGv3` | sub-query **router**, table agent |
-| `agent.py` | `AgenticRAGv4` | market data, web search, bilingual, numeric verify, memory |
+| `full.py` | `AgenticRAGv3` | fused **plan+route** call, table agent |
+| `agent.py` | `AgenticRAGv4` | XBRL facts, calculator, dynamic SEC fetch, EDGAR FTS, market data, web search, numeric verifier, confidence gate |
 
 `AgenticRAGv4` is the deployed agent. The runtime graph:
 
 ```
-START → detect_lang → translate_in → planner → router → retrieve → grader
-      → { rewrite → retrieve | table_agent }
-      → table_agent → market_data → web_search → synthesize → critic
-      → verify_numbers → { retrieve | refuse | translate_out } → END
+START → planner(+routes) → router ─┬─ retrieval path: fetch_filing → retrieve → grader → {rewrite ↺ | proceed}
+                                   └─ tools path (no narrative sub-query): skip retrieval
+      → xbrl → calculator → table_agent → market_data ∥ web_search ∥ edgar_search   (parallel fan-out)
+      → evidence_builder → synthesize → critic → verify_numbers
+      → confidence → {answer | answer + caveat | low-confidence caveat}
+                   ↘ refuse (ungrounded figures)                         → END
 ```
 
-**The router classifies, it doesn't branch.** It tags each sub-query as
-`narrative | numeric | market | external` in shared state; each lane then
-self-selects (retrieve = narrative, table_agent = numeric, market_data = market,
-web_search = external), so a lane only does work when the question needs it.
+**One planning call does everything up front.** The planner decomposes the
+question into sub-queries *and* tags each as
+`narrative | numeric | market | external | cross_document` in a single
+structured-output call; each lane then self-selects, so a lane only does work
+when the question needs it. Purely numeric/market questions skip retrieval
+entirely.
 
-Retrieval uses an on-disk **Chroma** store (`finagent/vectorstore.py`); embeddings
-and the reranker run on GPU when available, else CPU (`finagent/device.py`). The
-FastAPI layer (`finagent/api/`) streams the answer over SSE and serves the React SPA.
+**Numbers are verified deterministically.** Every figure in the draft must
+match the evidence (scale-insensitively) or be derivable from it in one
+arithmetic step; an LLM verifier runs only as a rescue when figures fail to
+ground. Ungrounded figures re-route, then refuse.
+
+Retrieval uses an on-disk **Chroma** store (`finagent/vectorstore.py`);
+embeddings and the reranker run on GPU when available, else CPU
+(`finagent/device.py`). The FastAPI layer (`finagent/api/`) streams the answer
+over SSE — with live per-node progress events driving the UI's thinking trace —
+and serves the React SPA.
+
+### Models (Groq, free tier)
+
+Each role runs the cheapest model that holds its quality bar; roles start on
+different keys of the rotating pool so rate limits don't hit in lockstep.
+
+| Role | Model | Why |
+|---|---|---|
+| plan+route, tool extraction (XBRL/calc/EDGAR/market/gate) | `openai/gpt-oss-120b` | tool selection and decomposition sit on the quality path; weak models mis-route |
+| grader, rewriter | `llama-3.3-70b-versatile` | structured scoring; separate quota bucket from the 120B roles |
+| synthesizer, critic, verifier, table-agent codegen | `openai/gpt-oss-120b` | long-form writing, claim checking, pandas codegen |
 
 ```
 finagent/
-  graph/         the LangGraph agent (base → corrective → full → agent + tools)
+  graph/         the LangGraph agent (base → corrective → full → agent)
+  tools/         XBRL, calculator, SEC fetch, EDGAR FTS, market, web search
+  retrieval/     hybrid retriever (BM25 ∪ dense + rerank), filters, reranker
   api/           FastAPI: SSE streaming + agent service
   vectorstore.py · chroma_client.py · device.py · llm.py
-  ingestion/     corpus builders (PDF parse, SEC/NSE/BSE)
-  evaluation/    RAGAS harness
+  ingestion/     corpus builders (PDF parse, chunk, embed)
+  evaluation/    FinanceBench + RAGAS harness (incl. parallel multi-key runner)
 frontend/        React + TypeScript + Vite + Tailwind SPA
-notebooks/       experimentation.ipynb (end-to-end build notebook)
+notebooks/       experimentation.ipynb (system reference notebook)
 ```
+
+---
+
+## Evaluation
+
+The agent is measured end-to-end on **FinanceBench** (150 open-source
+questions over US filings), scored with RAGAS plus system-behaviour metrics.
+With 8 Groq keys the full set runs in parallel:
+
+```bash
+# answer all 150 questions across the key pool (resumable)
+python -m finagent.evaluation.financebench.parallel --workers 3 \
+    --output results/financebench_full_outputs.json
+
+# RAGAS-score the outputs and write the final metrics report
+python -m finagent.evaluation.financebench.parallel --score \
+    --output results/financebench_full_outputs.json
+```
+
+This produces **one aggregate metrics list** — `results/final_metrics.json` /
+`.md` — covering answer/refusal/error rates, mean confidence, RAGAS
+(faithfulness, answer relevancy, context precision/recall) overall and per
+question type (numeric / comparison / cross-document / narrative).
+
+### Why not a "true" multi-agent system?
+
+FinAgent already runs specialised LLM roles (planner-router, grader, synth,
+critic, verifier, market planner, codegen) orchestrated by a LangGraph state
+machine — the supervisor/specialist pattern without free-form agent chatter.
+A conversational multi-agent layer was evaluated and rejected: it multiplies
+LLM calls (latency + free-tier quota) for no measured quality gain, since the
+failure modes here (retrieval misses, ungrounded figures) are addressed by
+deterministic tools and verification, not by more agent dialogue.
 
 ---
 
@@ -115,14 +183,24 @@ Point `CHROMA_DIR` at an existing store if you already have one.
 
 ---
 
+## Deployment
+
+CI/CD deploys on every push to `main` (`.github/workflows/deploy.yml`): the
+backend builds into a single Cloud Run image (SPA + API + baked Chroma store +
+baked encoder models, scale-to-zero) and the frontend deploys to Firebase
+Hosting. The image stays CPU-only and within the existing 8 GiB / 2 vCPU
+service shape — none of the agent's lanes add resident memory beyond the
+shared encoder models.
+
 ## Configuration
 
 Set in `.env` (see `.env.example`):
 
 | Variable | Purpose |
 |---|---|
-| `GROQ_API_KEY` (+ `…2`–`…8`) | Default LLM provider; extra keys rotate on rate-limit |
+| `GROQ_API_KEY` (+ `…2`–`…8`) | Default LLM provider; roles stagger across keys and rotate on rate-limit |
 | `TAVILY_API_KEY` | Web search (optional) |
 | `CHROMA_DIR` | Chroma directory (default `data/chroma`) |
+| `PERSIST_DYNAMIC_FETCH` | `false` on Cloud Run: fetched filings stay in-memory |
 | `OPENAI_API_KEY` / `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` | Optional; usually set in the UI |
 | `LANGCHAIN_*` | LangSmith tracing (optional) |
