@@ -28,3 +28,6 @@ logs/
 tests/
 # Firebase deploy cache
 .firebase/
+
+# Eval shard intermediates (merged file is the artifact)
+results/shards/

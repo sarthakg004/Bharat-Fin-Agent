@@ -130,6 +130,12 @@ This produces **one aggregate metrics list** — `results/final_metrics.json` /
 (faithfulness, answer relevancy, context precision/recall) overall and per
 question type (numeric / comparison / cross-document / narrative).
 
+Runs are resilient to the free tier: per-minute limits rotate across the key
+pool, revoked keys are dropped from rotation, and when *every* key is
+exhausted the run stops with a clear `LIMIT EXHAUSTED` message — re-running
+the same command resumes where it stopped (the UI surfaces the same condition
+as "Limit exhausted" within seconds instead of hanging).
+
 ### Why not a "true" multi-agent system?
 
 FinAgent already runs specialised LLM roles (planner-router, grader, synth,
@@ -198,7 +204,7 @@ Set in `.env` (see `.env.example`):
 
 | Variable | Purpose |
 |---|---|
-| `GROQ_API_KEY` (+ `…2`–`…8`) | Default LLM provider; roles stagger across keys and rotate on rate-limit |
+| `GROQ_API_KEY` (+ `…2`–`…8`) | Default LLM provider; roles stagger across keys, rotate on rate-limit, drop revoked keys, and fail fast with "limit exhausted" when the whole pool is spent |
 | `TAVILY_API_KEY` | Web search (optional) |
 | `CHROMA_DIR` | Chroma directory (default `data/chroma`) |
 | `PERSIST_DYNAMIC_FETCH` | `false` on Cloud Run: fetched filings stay in-memory |
