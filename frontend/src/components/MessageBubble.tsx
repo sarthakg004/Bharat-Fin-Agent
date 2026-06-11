@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { Check, ChevronRight, ExternalLink, Eye, Gauge, RotateCcw } from "lucide-react";
+import { Check, ChevronRight, ExternalLink, Gauge, RotateCcw } from "lucide-react";
 
 import type { QueryMetadata } from "@/lib/api";
 import type { ChatMessage } from "@/store/chatStore";
@@ -49,9 +49,9 @@ function AssistantBubble({ msg, onRetry }: BubbleProps) {
         <div className="border border-err bg-err-dim px-4 py-3 font-mono text-[12px] text-err">
           {msg.error}
         </div>
-      ) : showStatus && !msg.content && !(msg.steps?.length) ? (
-        <span className="font-mono text-[12px] text-text-muted">…</span>
-      ) : showStatus && !msg.content ? null : (
+      ) : showStatus && !msg.content ? (
+        <AnswerSkeleton />
+      ) : (
         // The MarkdownAnswer handles headings / bullets / tables / inline
         // citation chips (`[N]` and `[N, M]`) end-to-end. The streaming
         // cursor is appended outside so the markdown parser doesn't try to
@@ -71,10 +71,6 @@ function AssistantBubble({ msg, onRetry }: BubbleProps) {
         <ChartView key={`${chart.symbol}-${i}`} spec={chart} />
       ))}
 
-      {/* The confidence gate withheld a low-confidence draft — offer it on
-          demand so the user isn't left with only a refusal notice. */}
-      {!msg.streaming && <SuppressedAnswer msg={msg} />}
-
       {!msg.streaming && msg.metadata && <MetadataFooter msg={msg} />}
 
       {/* Retry — re-runs the last question (shown on the latest answer). */}
@@ -89,6 +85,21 @@ function AssistantBubble({ msg, onRetry }: BubbleProps) {
         </button>
       )}
     </motion.div>
+  );
+}
+
+/**
+ * Placeholder for the incoming answer while the agent is still working —
+ * pulsing skeleton lines where the text will appear, so the loading state
+ * looks like an answer being prepared rather than a stalled chat.
+ */
+function AnswerSkeleton() {
+  return (
+    <div className="flex w-full max-w-[80%] animate-pulse flex-col gap-2 pt-1" aria-hidden>
+      <div className="h-3 w-[88%] rounded-sm bg-border-subtle" />
+      <div className="h-3 w-[72%] rounded-sm bg-border-subtle" />
+      <div className="h-3 w-[55%] rounded-sm bg-border-subtle" />
+    </div>
   );
 }
 
@@ -288,45 +299,6 @@ function MetadataFooter({ msg }: { msg: ChatMessage }) {
       >
         <ExternalLink size={9} /> LangSmith trace
       </a>
-    </div>
-  );
-}
-
-/** When the confidence gate withheld the answer, render an opt-in reveal of the
- * low-confidence draft beneath the refusal notice. */
-function SuppressedAnswer({ msg }: { msg: ChatMessage }) {
-  const [open, setOpen] = useState(false);
-  const m = agenticMeta(msg);
-  const draft = m.suppressed_answer;
-  if (!draft) return null;
-  const pct = m.confidence != null ? `${Math.round(m.confidence * 100)}%` : "low";
-
-  return (
-    <div className="flex flex-col gap-2 border-l-2 border-warning/40 pl-3">
-      <button
-        onClick={() => setOpen((v) => !v)}
-        className="inline-flex w-fit items-center gap-1.5 font-mono text-[10px] uppercase tracking-wider text-warning transition-colors hover:text-warning/80"
-        title="This answer was below the confidence bar; review it with caution"
-      >
-        <Eye size={11} />
-        {open ? "Hide" : "Show"} low-confidence answer ({pct})
-      </button>
-      <AnimatePresence initial={false}>
-        {open && (
-          <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: "auto", opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.2 }}
-            className="overflow-hidden"
-          >
-            <div className="mb-1 font-mono text-[10px] uppercase tracking-wider text-warning/70">
-              Unverified · review against the primary filing
-            </div>
-            <MarkdownAnswer text={draft} />
-          </motion.div>
-        )}
-      </AnimatePresence>
     </div>
   );
 }

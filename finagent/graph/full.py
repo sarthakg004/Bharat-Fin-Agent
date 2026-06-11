@@ -51,7 +51,7 @@ from typing import Optional
 
 from finagent.graph.base import append_comparison_row  # noqa: F401 (re-export)
 from finagent.graph.corrective import AgenticRAGv2, HybridRetriever
-from finagent.graph.state import AgentState, RouterReport
+from finagent.graph.state import AgentState, QueryPlan, RouterReport
 from finagent.graph.table_agent import TableAgent
 
 
@@ -110,6 +110,61 @@ order. Copy the sub-query text verbatim into the `sub_query` field.
 
 Sub-queries:
 {sub_queries}
+"""
+
+# Fused planner+router: ONE structured call both decomposes the question into
+# sub-queries AND routes each to its lane. This replaces two sequential LLM
+# calls (planner, then router) on every question — the single largest fixed
+# latency cost on the hot path — without changing what either step produces.
+PLAN_ROUTE_SYSTEM = """\
+You are the query planner for a financial-filings question-answering system.
+You do TWO things in one pass: decompose the user's question into 1-8 focused,
+self-contained sub-queries, and route each sub-query to the lane that answers it.
+
+Decomposition rules
+-------------------
+- Simple, single-fact questions → return ONE sub-query (often the original).
+- Comparison or multi-hop questions ("compare X and Y", "growth from A to B")
+  → FULLY ENUMERATE one sub-query per (entity × period × metric) combination so
+  nothing is dropped. "Compare Apple and Microsoft R&D as % of revenue over
+  2020-2022" → SIX sub-queries (each company × each of the 3 years).
+- Each sub-query must stand on its own (no pronouns referring to the question).
+- Use precise analyst terms: name the exact line item or metric ("operating
+  margin", "R&D as % of revenue", "diluted EPS") and the exact fiscal period
+  ("FY2022"), so each can be answered from a single XBRL concept or calculation.
+- FOLLOW-UPS: if the question relies on the conversation above ("show me the
+  chart", "what about last year"), rewrite it into a self-contained sub-query
+  naming the company/ticker discussed just before.
+
+Routing lanes (per sub-query)
+-----------------------------
+- narrative: text retrieval over filings. Prose questions (strategy, risks,
+  segment overviews, MD&A commentary) about ONE named company.
+- numeric: exact figures FROM THE FILINGS — reported line items, ratios,
+  margins, growth %, multi-year financial comparisons (answered from XBRL
+  facts, a deterministic calculator, and extracted tables).
+- market: live market data (yfinance). Anything about a listed company's
+  MARKET behaviour — current/premarket/intraday price, OHLC history, charts,
+  52-week range, ticker news. Lean `market` whenever the question is in the
+  direction of the stock ("how is X doing", "is X a good stock", "X stock").
+- cross_document: EDGAR full-text search across MANY companies' filings — the
+  answer is a SET of companies ("which companies disclosed X"), not facts
+  about one named company.
+- external: general web search. Macro news, corporate events, M&A timelines,
+  post-cutoff developments not specifically about market data.
+
+Examples:
+  - "What is HDFC Bank's net interest margin in FY23?"            → numeric
+  - "Describe Infosys' AI strategy"                               → narrative
+  - "What is Wipro's current share price?"                        → market
+  - "Which companies disclosed a material weakness in FY2023?"    → cross_document
+  - "Latest macro headlines from India today"                     → external
+"""
+
+PLAN_ROUTE_PROMPT = """\
+Question: {question}
+
+Return the routed sub-queries (1-8, each with its lane).
 """
 
 SYNTH_V3_SYSTEM = """\
@@ -312,11 +367,62 @@ class AgenticRAGv3(AgenticRAGv2):
     # Nodes
     # ------------------------------------------------------------------ #
 
+    def planner_node(self, state: AgentState) -> dict:
+        """Fused planner+router: ONE structured call decomposes the question
+        AND routes each sub-query, replacing the two sequential LLM calls the
+        v1/v2 path makes. Runs on the router/tool tier (strong model) because
+        both decomposition and routing sit on the quality path. On failure it
+        falls back to the base planner (router_node then classifies)."""
+        from langchain_core.messages import HumanMessage, SystemMessage
+
+        question = state["question"]
+        history = state.get("chat_history") or []
+        history_block = ""
+        if history:
+            lines = [
+                f"{('User' if t.get('role') == 'user' else 'Assistant')}: "
+                f"{(t.get('content') or '')[:400]}"
+                for t in history[-6:]
+            ]
+            history_block = (
+                "Recent conversation (most recent last):\n" + "\n".join(lines) + "\n\n"
+            )
+
+        llm = self._get_router_llm().with_structured_output(QueryPlan)
+        try:
+            out: QueryPlan = llm.invoke([
+                SystemMessage(content=PLAN_ROUTE_SYSTEM),
+                HumanMessage(content=history_block
+                             + PLAN_ROUTE_PROMPT.format(question=question)),
+            ])
+            pairs = [(q.query.strip(), q.route)
+                     for q in (out.queries or []) if (q.query or "").strip()][:8]
+        except Exception as e:
+            self._log(state, f"fused planner failed ({e}); "
+                             f"falling back to plan-then-route")
+            pairs = []
+        if not pairs:
+            # Degrade to the legacy two-call path: base planner decomposes,
+            # router_node classifies (it sees empty routes and runs).
+            out_state = super().planner_node(state)
+            out_state["query_routes"] = []
+            return out_state
+        return {"sub_queries": [q for q, _ in pairs],
+                "query_routes": [r for _, r in pairs]}
+
     def router_node(self, state: AgentState) -> dict:
-        """Classify each sub-query as narrative / numeric / external."""
+        """Classify each sub-query as narrative / numeric / external.
+
+        The fused planner usually routed the plan already — when routes are
+        present and aligned with the sub-queries, this is a no-op (no LLM
+        call). It still classifies after a rewrite (which clears routes) or
+        when the fused call fell back to the bare planner."""
         from langchain_core.messages import HumanMessage, SystemMessage
 
         sub_queries = state.get("sub_queries") or [state["question"]]
+        existing = state.get("query_routes") or []
+        if existing and len(existing) == len(sub_queries):
+            return {}
         numbered = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(sub_queries))
 
         # Conversation context so follow-ups ("show me the chart") route to the

@@ -11,10 +11,17 @@ import paths (`from finagent.graph.corrective import HybridRetriever`) still wor
 
 from __future__ import annotations
 
+import re
 from typing import Optional
 
 from finagent.retrieval.base import BaseRetriever
 from finagent.retrieval.reranker import _get_shared_reranker
+
+# BM25 tokenizer: lowercase alphanumeric tokens. A bare whitespace split left
+# punctuation glued to terms ("revenue," ≠ "revenue", "(loss)" ≠ "loss"),
+# which silently lowered lexical recall on exactly the account-name/figure
+# queries BM25 exists for.
+_TOKEN_RE = re.compile(r"[a-z0-9]+")
 
 
 class HybridRetriever(BaseRetriever):
@@ -257,6 +264,4 @@ class HybridRetriever(BaseRetriever):
 
     @staticmethod
     def _tokenize(text: str) -> list[str]:
-        # Minimal BM25 tokenizer — lowercased whitespace split. Sufficient for
-        # financial-prose retrieval; swap in a real tokenizer if you want.
-        return text.lower().split()
+        return _TOKEN_RE.findall(text.lower())

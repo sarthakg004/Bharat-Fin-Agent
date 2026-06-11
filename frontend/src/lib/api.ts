@@ -47,7 +47,6 @@ export interface QueryMetadata {
     critic?: number | null;
   } | null;
   /** Low-confidence draft the gate withheld; revealed on demand. Empty otherwise. */
-  suppressed_answer?: string | null;
   numeric_verification_score?: number | null;
   unverified_count?: number;
   web_hits?: number;

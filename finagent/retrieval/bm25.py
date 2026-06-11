@@ -11,13 +11,18 @@ internally); this class exists so BM25 can be used or evaluated in isolation.
 
 from __future__ import annotations
 
+import re
 from typing import Optional
 
 from finagent.retrieval.base import BaseRetriever
 
+# Same tokenizer as HybridRetriever: lowercase alphanumeric tokens, so
+# punctuation never glues to terms ("revenue," ≠ "revenue").
+_TOKEN_RE = re.compile(r"[a-z0-9]+")
+
 
 def _tokenize(text: str) -> list[str]:
-    return text.lower().split()
+    return _TOKEN_RE.findall(text.lower())
 
 
 class BM25Retriever(BaseRetriever):

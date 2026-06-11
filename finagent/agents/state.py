@@ -50,8 +50,6 @@ class AgentState(TypedDict, total=False):
     query_routes: list[str]            # one of "narrative" | "numeric" | "external" per sub-query
 
     # --- v4 additions: i18n, web search, numeric verification, refusal ----- #
-    language: str                      # ISO code of the user's question ("en", "hi", ...)
-    query_original: str                # the question as the user typed it (pre-translation)
     web_results: list[Any]             # already declared above; filled by web_search_node
     numeric_verification: dict         # {"claims": [...], "unverified": [...], "score": 0..1}
     verification_report: dict          # #5: {numeric, cross_source, units, sources}
@@ -100,10 +98,6 @@ class AgentState(TypedDict, total=False):
     confidence: float                  # weighted blend of the applicable sub-scores
     confidence_band: str               # "answer" | "warn" | "refuse" (gate routing)
     status: str                        # "answered" | "answered_with_warning" | "refused"
-    suppressed_answer: str             # legacy: the low-confidence band used to
-                                       # withhold the draft here; it now shows the
-                                       # answer in full with a confidence caveat, so
-                                       # this stays empty (kept for API stability)
 
     # --- Tools-lane corpus fallback ---------------------------------------- #
     # Set by `evidence_builder_node` when a tools-path question (which skipped
@@ -227,6 +221,37 @@ class RouterReport(BaseModel):
     routes: list[QueryRoute] = Field(description="One per sub-query, in input order.")
 
 
+class PlannedQuery(BaseModel):
+    """One sub-query plus the lane that should answer it (fused planner+router)."""
+
+    query: str = Field(
+        description=(
+            "A self-contained sub-query naming its company, metric, and period "
+            "explicitly (no pronouns referring back to the question)."
+        )
+    )
+    route: Literal["narrative", "numeric", "market", "external", "cross_document"] = Field(
+        description=(
+            "narrative = text retrieval over filings; numeric = exact figures / "
+            "ratios from filings (XBRL + tables); market = live market data "
+            "(yfinance); cross_document = EDGAR full-text search across many "
+            "companies; external = general web search."
+        )
+    )
+
+
+class QueryPlan(BaseModel):
+    """Fused planner+router output: routed sub-queries in one structured call."""
+
+    queries: list[PlannedQuery] = Field(
+        description=(
+            "1 to 8 routed sub-queries. ONE for simple questions; for "
+            "comparison / multi-hop questions FULLY enumerate one per "
+            "(entity × period × metric) combination."
+        )
+    )
+
+
 class TableTitle(BaseModel):
     """LLM-extracted title for a single table."""
 
@@ -243,12 +268,6 @@ class PandasCode(BaseModel):
 # --------------------------------------------------------------------------- #
 # v4 schemas (translation, numeric verification)
 # --------------------------------------------------------------------------- #
-
-class Translation(BaseModel):
-    """LLM-translation output."""
-
-    text: str = Field(description="The translated text, with no commentary or prefacing.")
-
 
 class NumericClaim(BaseModel):
     """One numeric claim extracted from the draft answer."""

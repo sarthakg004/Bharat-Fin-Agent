@@ -393,10 +393,12 @@ async def _stream_answer(request: QueryRequest) -> AsyncGenerator[str, None]:
         yield _sse({"type": "chart", "chart": chart})
 
     # Word-piece pseudo-stream — gives the UI the live feel without a deep
-    # token-streaming refactor on the LLM side.
-    for piece in _piecewise(answer, words_per_chunk=3):
+    # token-streaming refactor on the LLM side. Pacing is capped so the
+    # artificial tail never adds more than ~1.5s on top of the real latency
+    # (3 words / 25ms used to add ~5s to a long answer).
+    for piece in _piecewise(answer, words_per_chunk=6):
         yield _sse({"type": "chunk", "content": piece})
-        await asyncio.sleep(0.025)
+        await asyncio.sleep(0.012)
 
     latency = round(time.time() - t0, 3)
     meta["latency"] = latency

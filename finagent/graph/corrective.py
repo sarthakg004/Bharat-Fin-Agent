@@ -365,8 +365,12 @@ class AgenticRAGv2(AgenticRAG):
             rewritten = state["question"]
 
         # The next retrieve pass uses the rewrite as the (only) sub-query.
+        # Routes are cleared so the router re-classifies the rewritten query
+        # (in graphs that route after a rewrite) instead of zipping it against
+        # the stale plan's routes.
         return {
             "sub_queries": [rewritten],
+            "query_routes": [],
             "rewrite_history": history + [rewritten],
             "iteration_count": iteration + 1,
         }

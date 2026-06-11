@@ -1,9 +1,10 @@
 """
 RAG service singletons.
 
-Single agentic pipeline (`AgenticRAGv4`): planner → router → hybrid retrieve →
-grader → rewrite/proceed → table_agent → market_data (yfinance) → web_search
-→ synthesize → critic → numeric verification → refusal / translate-out.
+Single agentic pipeline (`AgenticRAGv4`): planner(+routes) → router → hybrid
+retrieve → grader → rewrite/proceed → xbrl → calculator → table_agent →
+market_data (yfinance) ∥ web_search ∥ edgar_search → synthesize → critic →
+numeric verification → confidence gate.
 
 Web search uses Tavily when `TAVILY_API_KEY` is set and falls back to the
 local `news` Chroma collection otherwise; web_search escalates automatically
@@ -514,7 +515,6 @@ def run_agentic(market: str, question: str, top_k: int = 5,
             **_sum_usage(usage_cb),
             "node_latencies": node_latencies,
             "tool_health": _tool_health(state),
-            "language": state.get("language"),
             "sub_queries": state.get("sub_queries", []),
             "query_routes": state.get("query_routes", []),
             "grading_score": state.get("grading_score"),
@@ -535,9 +535,6 @@ def run_agentic(market: str, question: str, top_k: int = 5,
                 "citation": state.get("citation_score"),
                 "critic": state.get("critic_score"),
             },
-            # Low-confidence draft the gate withheld — the UI offers it on demand.
-            # Empty for a hallucination refusal (that draft is unsafe to reveal).
-            "suppressed_answer": state.get("suppressed_answer") or "",
             # Normalised evidence (#3): one common shape across all lanes, capped
             # for payload size. Per-kind counts give a quick provenance summary.
             "evidence_count": len(state.get("evidence", []) or []),

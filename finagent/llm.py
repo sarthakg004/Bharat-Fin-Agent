@@ -163,6 +163,21 @@ from langchain_core.runnables import Runnable  # noqa: E402
 from pydantic import Field, PrivateAttr  # noqa: E402
 
 
+# Round-robin start-index per provider: each RotatingChatModel instance (one
+# per LLM role — planner, synth, critic, grader, …) starts on a DIFFERENT key,
+# so the roles spread across the key pool instead of all hammering key 1 and
+# rotating together on the same 429.
+_START_COUNTERS: dict[str, int] = {}
+
+
+def _next_start_index(provider: str, n_keys: int) -> int:
+    if n_keys <= 1:
+        return 0
+    idx = _START_COUNTERS.get(provider, 0)
+    _START_COUNTERS[provider] = idx + 1
+    return idx % n_keys
+
+
 class RotatingChatModel(BaseChatModel):
     """A `BaseChatModel` holding N keys for one provider/model that swaps to
     the next key on rate-limit errors.
@@ -195,8 +210,9 @@ class RotatingChatModel(BaseChatModel):
     def model_post_init(self, __context: Any) -> None:  # pydantic v2
         if not self.keys:
             raise ValueError("RotatingChatModel needs at least one key")
+        self._idx = _next_start_index(self.provider, len(self.keys))
         self._llm = _build_single(
-            self.provider, self.chat_model, self.keys[0], **self.chat_kwargs
+            self.provider, self.chat_model, self.keys[self._idx], **self.chat_kwargs
         )
 
     @property

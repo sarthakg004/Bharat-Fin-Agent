@@ -75,13 +75,6 @@ def run_agent_outputs(
             )
             meta = res.get("metadata") or {}
             answer = res.get("answer", "")
-            # When the confidence gate withheld a draft ("I'm not confident
-            # enough…"), evaluate the draft itself — a low-confidence answer
-            # scores what the system actually produced; the withhold notice
-            # scores as no answer at all.
-            suppressed = (meta.get("suppressed_answer") or "").strip()
-            if suppressed:
-                answer = suppressed
             row = {
                 "financebench_id": fb_id,
                 "question": q["question"],
@@ -92,7 +85,6 @@ def run_agent_outputs(
                 "company": q.get("company", ""),
                 "confidence": meta.get("confidence"),
                 "answer_status": meta.get("answer_status"),
-                "used_suppressed_draft": bool(suppressed),
                 "error": None,
             }
         except Exception as e:  # keep going; record the failure

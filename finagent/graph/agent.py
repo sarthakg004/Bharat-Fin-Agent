@@ -1,38 +1,31 @@
 """
 agent.py  ·  finagent/graph/agent.py
 
-Full agentic RAG (v4). Adds to v3:
+Full agentic RAG (v4) — the deployed agent. Adds to v3:
 
-  * **Bilingual** — language detection at the entrance; if the user's question
-    is not English, translate to English for retrieval, translate the final
-    answer back at the exit.
+  * **Fused plan+route** (inherited from v3) feeding a query-type dispatcher:
+    purely numeric/market/cross-document/external questions skip retrieval
+    and go straight to the tool chain.
+  * **Structured numeric lanes** — XBRL facts (exact filed figures), a
+    deterministic calculator over them (margins/ratios/growth/CAGR), and the
+    table agent as a fallback.
   * **Web search** — `web_search_node` covers questions the corpus can't (post
     cut-off events, latest news). Tavily if `TAVILY_API_KEY` is set, otherwise
-    the local `news` Chroma collection.
-  * **Numeric verification** — after the critic, every numeric claim in the
-    draft is matched against the supplied evidence (text excerpts, tables,
-    web results). Claims with no match are recorded in
-    `state["numeric_verification"]["unverified"]`.
-  * **Refusal path** — if the critic + numeric verifier both fail at the cap,
-    the final answer is replaced with a clear "I don't have enough information
-    to answer this from the available filings."  rather than hallucinating.
+    the local `news` Chroma collection. Escalates automatically when retrieval
+    comes back empty/weak or the draft admits it can't answer.
+  * **Numeric verification** — every figure in the draft is deterministically
+    grounded against the evidence (with an LLM rescue pass only when figures
+    fail to ground). Ungrounded figures re-route, then refuse.
+  * **Confidence gate** — retrieval/verification/citation/critic sub-scores
+    blend into one confidence; low bands answer with an explicit caveat.
 
 Graph:
 
-    START → detect_lang → translate_in → planner → router → retrieve
-                                                      ↓ (numeric)        ↓ (external)
-                                                  table_agent         web_search
-                                                      └──────┬───────────┘
-                                                             ▼
-                                                  grader → {rewrite|continue}
-                                                             ▼
-                                                       synthesize → critic → verify_numbers
-                                                                                   │
-                                              {retrieve | refuse | translate_out}─┘
-                                                             ▼
-                                                       translate_out → END
-
-`translate_out` is a no-op when language == "en".
+    START → planner(+routes) → router → {fetch_filing → retrieve → grader → rewrite↺ | xbrl}
+          → xbrl → calculator → table_agent → (market_data ∥ web_search ∥ edgar_search)
+          → evidence_builder → synthesize → critic → verify_numbers
+          → confidence → {answer | answer_with_warning | low_confidence} → END
+                       ↘ refuse → END
 """
 
 from __future__ import annotations
@@ -52,7 +45,6 @@ from finagent.graph.state import (
     AgentState, MarketIntent, NumericVerification, XBRLQuery, XBRLQueryBatch,
     CalcQuery, CalcQueryBatch, CorpusGateQuery, EdgarQuery,
 )
-from finagent.graph.translate import detect_language, language_name, translate_text
 from finagent.graph.web_search import WebSearcher
 from finagent.tools.calculator import FinancialCalculator
 from finagent.tools.edgar_search import EdgarFullTextSearch
@@ -328,7 +320,7 @@ REFUSAL_TEMPLATE = (
 # --------------------------------------------------------------------------- #
 
 class AgenticRAGv4(AgenticRAGv3):
-    """v3 + language detection + web search + numeric verification + refusal."""
+    """v3 + structured numeric lanes + web search + numeric verification + confidence gate."""
 
     def __init__(
         self,
@@ -338,7 +330,6 @@ class AgenticRAGv4(AgenticRAGv3):
         # questions ("performance over the last year"); a single article rarely
         # covers the full ground. Tavily allows up to 20 per call.
         web_top_k: int = 10,
-        translator_model: Optional[str] = None,
         verifier_model: Optional[str] = None,
         min_verify_score: float = 0.5,
         dispatch: bool = True,
@@ -398,10 +389,6 @@ class AgenticRAGv4(AgenticRAGv3):
         # existing critic_iterations cap. Set False to A/B against the prior
         # "critic always proceeds to verify" behaviour.
         self.active_critic = active_critic
-        # Translation is sensitive to model quality (especially Indian languages
-        # with their digit grouping and proper-noun handling). Default to the
-        # strong tier; override via translator_model for cheap-tier runs.
-        self.translator_model = translator_model or self.synth_model
         self.verifier_model = verifier_model or self.critic_model
         self.min_verify_score = min_verify_score
         self._web: Optional[WebSearcher] = None
@@ -482,15 +469,6 @@ class AgenticRAGv4(AgenticRAGv3):
         except Exception:
             return None
 
-    def _get_translator_llm(self):
-        if "translator" not in self._llms:
-            from finagent.llm import build_llm
-
-            self._llms["translator"] = build_llm(
-                self.provider, self.translator_model, self.api_key, temperature=0.0
-            )
-        return self._llms["translator"]
-
     def _get_verifier_llm(self):
         if "verifier" not in self._llms:
             from finagent.llm import build_llm
@@ -503,23 +481,6 @@ class AgenticRAGv4(AgenticRAGv3):
     # ------------------------------------------------------------------ #
     # Nodes
     # ------------------------------------------------------------------ #
-
-    def detect_language_node(self, state: AgentState) -> dict:
-        """Detect the question's language; preserve the original for the exit."""
-        question = state["question"]
-        lang = detect_language(question)
-        return {"language": lang, "query_original": question}
-
-    def translate_in_node(self, state: AgentState) -> dict:
-        """If the question isn't English, translate to English for retrieval."""
-        lang = state.get("language", "en")
-        if lang == "en":
-            return {}
-        translated = translate_text(
-            state["question"], target_code="en",
-            llm=self._get_translator_llm(), source_code=lang,
-        )
-        return {"question": translated}
 
     def _get_market_planner_llm(self):
         """Same LLM as the router/planner tier — structured output, fast."""
@@ -590,7 +551,7 @@ class AgenticRAGv4(AgenticRAGv3):
         """
         from langchain_core.messages import HumanMessage, SystemMessage
 
-        question = state.get("query_original") or state["question"]
+        question = state["question"]
 
         # Resolve the company (with conversation context for follow-ups).
         history = state.get("chat_history") or []
@@ -1179,7 +1140,7 @@ class AgenticRAGv4(AgenticRAGv3):
         # admits the gathered evidence can't answer — search the original
         # question regardless of routes/markers.
         if state.get("web_fallback_pending"):
-            fq = state.get("query_original") or state["question"]
+            fq = state["question"]
             if fq not in external_subs:
                 external_subs.append(fq)
 
@@ -1197,7 +1158,7 @@ class AgenticRAGv4(AgenticRAGv3):
                 avg_grade is not None and avg_grade < 2.0
             )
             if retrieval_was_poor:
-                fallback = state.get("query_original") or state["question"]
+                fallback = state["question"]
                 self._log(
                     state,
                     f"web_search escalation: chunks={len(chunks)} "
@@ -1795,20 +1756,23 @@ single item is irrelevant."""
         if not self._has_numbers(answer):
             return {"numeric_verification": clean, **vi}
 
-        evidence = self._build_evidence_block(state)
-        llm = self._get_verifier_llm().with_structured_output(NumericVerification)
-        claims: list[dict] = []
-        try:
-            report: NumericVerification = llm.invoke([
-                SystemMessage(content=NUM_VERIFY_SYSTEM),
-                HumanMessage(content=NUM_VERIFY_PROMPT.format(answer=answer, evidence=evidence)),
-            ])
-            claims = [c.model_dump() for c in report.claims]
-        except Exception as e:
-            self._log(state, f"verifier failed ({e})")
+        def _run_llm_verifier() -> list[dict]:
+            evidence = self._build_evidence_block(state)
+            llm = self._get_verifier_llm().with_structured_output(NumericVerification)
+            try:
+                report: NumericVerification = llm.invoke([
+                    SystemMessage(content=NUM_VERIFY_SYSTEM),
+                    HumanMessage(content=NUM_VERIFY_PROMPT.format(
+                        answer=answer, evidence=evidence)),
+                ])
+                return [c.model_dump() for c in report.claims]
+            except Exception as e:
+                self._log(state, f"verifier failed ({e})")
+                return []
 
         # Legacy LLM-only path (A/B baseline).
         if not self.strict_numeric:
+            claims = _run_llm_verifier()
             llm_unverified = [c for c in claims if not c.get("matched")]
             score = ((len(claims) - len(llm_unverified)) / len(claims)) if claims else 1.0
             return {"numeric_verification": {"claims": claims, "unverified": llm_unverified,
@@ -1817,38 +1781,52 @@ single item is irrelevant."""
                                              "numbers_grounded": len(claims) - len(llm_unverified),
                                              "hallucination_rate": round(1 - score, 3)}, **vi}
 
-        # Deterministic, exhaustive grounding.
+        # Deterministic, exhaustive grounding — runs FIRST and without any LLM.
         draft_nums = self._extract_numbers(answer)
         if not draft_nums:
-            return {"numeric_verification": {**clean, "claims": claims}, **vi}
+            return {"numeric_verification": dict(clean), **vi}
 
         by_kind = self._evidence_numbers_by_kind(state)
         evidence_mags = [m for vals in by_kind.values() for m in vals]
-        # LLM rescue: figures the verifier matched count as grounded too — pull
-        # their magnitudes from the matched claims and add them to the evidence.
-        for c in claims:
-            if c.get("matched"):
-                for n in self._extract_numbers(str(c.get("number", "")) + " " + str(c.get("evidence", ""))):
-                    evidence_mags.extend(n["magnitudes"])
-
-        # Walk the draft's figures in order, letting each grounded figure feed
-        # the pool (`chained`) so a worked calculation grounds stepwise: the
-        # average grounds from its two inputs, the ratio from that average, the
-        # final metric from the ratios. Derivation (`_derivable`) rescues
-        # figures the draft legitimately computed from evidence values.
         derive_base = self._derivation_base(by_kind)
-        chained: list[float] = []
-        ungrounded = []
-        for d in draft_nums:
-            ok = (
-                self._grounded(d["magnitudes"], evidence_mags)
-                or self._grounded(d["magnitudes"], chained)
-                or self._derivable(d["magnitudes"], derive_base + chained)
-            )
-            if ok:
-                chained.extend(d["magnitudes"])
-            else:
-                ungrounded.append({"number": d["raw"], "claim": d["ctx"]})
+
+        def _walk(extra_mags: list[float]) -> list[dict]:
+            """Walk the draft's figures in order, letting each grounded figure
+            feed the pool (`chained`) so a worked calculation grounds stepwise:
+            the average grounds from its two inputs, the ratio from that
+            average, the final metric from the ratios. Derivation (`_derivable`)
+            rescues figures the draft legitimately computed from evidence."""
+            pool = evidence_mags + extra_mags
+            chained: list[float] = []
+            missing: list[dict] = []
+            for d in draft_nums:
+                ok = (
+                    self._grounded(d["magnitudes"], pool)
+                    or self._grounded(d["magnitudes"], chained)
+                    or self._derivable(d["magnitudes"], derive_base + chained)
+                )
+                if ok:
+                    chained.extend(d["magnitudes"])
+                else:
+                    missing.append({"number": d["raw"], "claim": d["ctx"]})
+            return missing
+
+        ungrounded = _walk([])
+        claims: list[dict] = []
+        if ungrounded:
+            # LLM rescue — invoked ONLY when deterministic grounding left
+            # figures unaccounted for (skipping it on the fully-grounded common
+            # path saves a strong-tier LLM call per answer). Figures the
+            # verifier matched count as grounded too.
+            claims = _run_llm_verifier()
+            rescued: list[float] = []
+            for c in claims:
+                if c.get("matched"):
+                    for n in self._extract_numbers(
+                            str(c.get("number", "")) + " " + str(c.get("evidence", ""))):
+                        rescued.extend(n["magnitudes"])
+            if rescued:
+                ungrounded = _walk(rescued)
         ungrounded_raws = {u["number"] for u in ungrounded}
         total = len(draft_nums)
         grounded = total - len(ungrounded)
@@ -1968,17 +1946,6 @@ single item is irrelevant."""
         msg = REFUSAL_TEMPLATE.format(web_clause=web_clause, detail=detail)
         return {"final_answer": msg, "refused": True, "needs_retry": False,
                 "status": "refused"}
-
-    def translate_out_node(self, state: AgentState) -> dict:
-        """Translate the final answer back to the user's language."""
-        lang = state.get("language", "en")
-        if lang == "en":
-            return {}
-        translated = translate_text(
-            state.get("final_answer", ""), target_code=lang,
-            llm=self._get_translator_llm(), source_code="en",
-        )
-        return {"final_answer": translated}
 
     # ------------------------------------------------------------------ #
     # Confidence framework (#8/9)
@@ -2144,7 +2111,6 @@ single item is irrelevant."""
         )
         return {
             "final_answer": ans + note,
-            "suppressed_answer": "",
             "refused": False,
             "needs_retry": False,
             "status": "answered_low_confidence",
@@ -2192,14 +2158,14 @@ single item is irrelevant."""
         # fetch_filing can pull the named 8-K/10-Q from EDGAR, and the tools
         # chain (XBRL/calc/market/web) has no lane that reads a specific dated
         # document.
-        if self._dated_form_request(state.get("query_original") or state["question"]):
+        if self._dated_form_request(state["question"]):
             return "retrieval"
         routes = state.get("query_routes") or []
         has_narrative = (not routes) or any(r == "narrative" for r in routes)
         return "retrieval" if (not self.dispatch or has_narrative) else "tools"
 
     def _verify_router(self, state: AgentState) -> str:
-        """After numeric verification: refuse / retry retrieval / continue to translate-out.
+        """After numeric verification: refuse / retry retrieval / continue to the confidence gate.
 
         The **verifier** is the source of truth for refusal: it does a precise
         per-number match against ALL evidence (text + tables + web). The
@@ -2316,7 +2282,6 @@ single item is irrelevant."""
         g.add_node("low_confidence", self.withhold_low_confidence_node)
         g.add_node("refuse", self.refuse_node)
 
-        # English-only: no language detection / translation nodes.
         g.add_edge(START, "planner")
         g.add_edge("planner", "router")
         # Phase 7 dispatcher: route to the cheapest path. Narrative (and the
@@ -2767,7 +2732,6 @@ def _build_cli() -> argparse.ArgumentParser:
     p.add_argument("--grader-model", default=None)
     p.add_argument("--router-model", default=None)
     p.add_argument("--code-model", default=None)
-    p.add_argument("--translator-model", default=None)
     p.add_argument("--verifier-model", default=None)
     p.add_argument("--embedding-model", default="BAAI/bge-small-en-v1.5")
     p.add_argument("--reranker-model", default="BAAI/bge-reranker-large")
@@ -2817,7 +2781,6 @@ def main():
         grader_model=args.grader_model,
         router_model=args.router_model,
         code_model=args.code_model,
-        translator_model=args.translator_model,
         verifier_model=args.verifier_model,
         reranker_model=args.reranker_model,
         bm25_top_k=args.bm25_top_k,
@@ -2848,8 +2811,7 @@ def main():
 
     state = agent.run(args.question)
     print("\n" + "=" * 60)
-    print(f"Question (orig):  {state.get('query_original')}")
-    print(f"Language:         {state.get('language')} ({language_name(state.get('language', 'en'))})")
+    print(f"Question:         {state['question']}")
     print(f"Sub-queries:      {state.get('sub_queries')}")
     print(f"Routes:           {state.get('query_routes')}")
     ev = state.get("evidence") or []
