@@ -40,6 +40,12 @@ RATIOS: dict[str, tuple[str, str, bool]] = {
     "return_on_equity": ("net_income", "stockholders_equity", True),
     "return_on_assets": ("net_income", "total_assets", True),
     "asset_turnover": ("revenue", "total_assets", False),
+    # Efficiency ratios FinanceBench asks for by name (year-end balance-sheet
+    # convention, matching the dataset's gold answers).
+    "fixed_asset_turnover": ("revenue", "ppe_net", False),
+    "inventory_turnover": ("cost_of_revenue", "inventory", False),
+    # Operating cash flow ratio = CFO / current liabilities (liquidity).
+    "operating_cash_flow_ratio": ("operating_cash_flow", "current_liabilities", False),
     "interest_coverage": ("operating_income", "interest_expense", False),
     # cash ratio is a simple two-concept ratio (most conservative liquidity ratio).
     "cash_ratio": ("cash", "current_liabilities", False),
@@ -93,6 +99,16 @@ ALIASES: dict[str, str] = {
     "cash ratio": "cash_ratio",
     "asset turnover": "asset_turnover", "times_interest_earned": "interest_coverage",
     "interest coverage": "interest_coverage",
+    "fixed asset turnover": "fixed_asset_turnover",
+    "fixed asset turnover ratio": "fixed_asset_turnover",
+    "fixed assets turnover": "fixed_asset_turnover",
+    "fixed_asset_turnover_ratio": "fixed_asset_turnover",
+    "inventory turnover": "inventory_turnover",
+    "inventory turnover ratio": "inventory_turnover",
+    "stock turnover": "inventory_turnover",
+    "operating cash flow ratio": "operating_cash_flow_ratio",
+    "ocf ratio": "operating_cash_flow_ratio",
+    "cash flow ratio": "operating_cash_flow_ratio",
     "r&d as % of revenue": "rd_to_revenue", "r&d as a percentage of revenue": "rd_to_revenue",
     "r&d intensity": "rd_to_revenue", "rd as % of revenue": "rd_to_revenue",
     "research and development as % of revenue": "rd_to_revenue",

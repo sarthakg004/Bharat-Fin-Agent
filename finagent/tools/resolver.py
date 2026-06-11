@@ -44,6 +44,23 @@ SEC_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 DEFAULT_CACHE = "data/cache/company_tickers.json"
 DEFAULT_TTL_DAYS = 7
 
+# Major delisted/acquired filers. SEC's company_tickers.json only lists CURRENT
+# registrants, so these vanish from it — but their historical XBRL facts and
+# filings remain fully available by CIK. Without this map, "ATVI" fuzzy-matched
+# to "ATI INC" and the agent answered with the WRONG COMPANY's figures.
+# Live listings always win (applied with setdefault); this only fills gaps.
+DELISTED: dict[str, str] = {
+    # ticker: (cik, registrant title)
+    "ATVI": ("0000718877", "Activision Blizzard, Inc."),
+    "TWTR": ("0001418091", "Twitter, Inc."),
+    "VMW":  ("0001124610", "VMware, Inc."),
+    "XLNX": ("0000743988", "Xilinx, Inc."),
+    "SPLK": ("0001353283", "Splunk Inc."),
+    "SGEN": ("0001060736", "Seagen Inc."),
+    "FRC":  ("0001132979", "First Republic Bank"),
+    "SIVB": ("0000719739", "SVB Financial Group"),
+}
+
 # Corporate suffixes / filler stripped before name matching so "Apple" matches
 # "Apple Inc." and "Microsoft" matches "MICROSOFT CORP".
 _SUFFIXES = {
@@ -155,6 +172,14 @@ class TickerCIKResolver(BaseTool):
             # (share classes like GOOG/GOOGL share a normalized title).
             if norm and norm not in self._by_name:
                 self._by_name[norm] = entry
+        # Delisted filers: fill gaps only — a live listing that reuses the
+        # ticker keeps priority.
+        for ticker, (cik, title) in DELISTED.items():
+            entry = {"cik": cik, "ticker": ticker, "title": title}
+            self._by_ticker.setdefault(ticker, entry)
+            norm = _normalize_name(title)
+            if norm:
+                self._by_name.setdefault(norm, entry)
         self._norm_names = list(self._by_name.keys())
 
     # --- lookup --------------------------------------------------------------
@@ -183,6 +208,14 @@ class TickerCIKResolver(BaseTool):
         if norm and norm in self._by_name:
             return {"query": query, **self._by_name[norm], "match": "name_exact",
                     "score": 1.0}
+
+        # A ticker-shaped query (short, uppercase, single token) that missed the
+        # exact-ticker and exact-name lookups must NOT fall through to prefix /
+        # fuzzy NAME matching — that's how "ATVI" landed on "ATI INC" and the
+        # agent answered with another company's figures. A miss here correctly
+        # hands the question to retrieval / web instead.
+        if q.isupper() and q.isalpha() and len(q) <= 5:
+            return miss
 
         # 3. Prefix match: a short query is often a prefix of the full
         #    normalized title — "Amazon"→"amazon com", "JPMorgan"→"jpmorgan

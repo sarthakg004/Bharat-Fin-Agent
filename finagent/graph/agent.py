@@ -257,8 +257,10 @@ CALC_EXTRACT_SYSTEM = """\
 You extract a derived-metric computation from a numeric sub-query about a US
 public company. A DERIVED metric is one computed from reported figures: a margin
 (gross/operating/net), a liquidity ratio (current ratio, quick/acid-test ratio,
-cash ratio), a leverage/return ratio (debt-to-equity, ROE, ROA, asset
-turnover, interest coverage), an intensity ratio (rd_to_revenue = R&D as % of
+cash ratio, operating_cash_flow_ratio = CFO / current liabilities), a
+leverage/return/efficiency ratio (debt-to-equity, ROE, ROA, asset turnover,
+fixed_asset_turnover = revenue / net PP&E, inventory_turnover = COGS /
+inventory, interest coverage), an intensity ratio (rd_to_revenue = R&D as % of
 revenue, sga_to_revenue, capex_to_revenue), an EBITDA margin (ebitda_margin =
 (operating income + D&A) / revenue), a working-capital days metric
 (dio = days inventory outstanding, dso = days sales outstanding, dpo = days
