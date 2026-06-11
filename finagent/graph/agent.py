@@ -384,9 +384,10 @@ class AgenticRAGv4(AgenticRAGv3):
         # sub-scores into a single confidence, then gate the answer on it. With
         # `confidence_gating` False the score is still computed (observability) but
         # the gate always answers — for A/B against the ungated path. Bands:
-        #   confidence >= confidence_answer            → answer
-        #   confidence_warn <= confidence < answer     → answer_with_warning
-        #   confidence <  confidence_warn              → refuse
+        #   confidence >= confidence_answer            → answer as-is
+        #   confidence_warn <= confidence < answer     → answer + moderate caveat
+        #   confidence <  confidence_warn              → answer + LOW-confidence
+        #                                                caveat (full draft shown)
         self.confidence_gating = confidence_gating
         self.confidence_answer = confidence_answer
         self.confidence_warn = confidence_warn
@@ -642,11 +643,47 @@ class AgenticRAGv4(AgenticRAGv3):
             self._log(state, f"corpus gate failed for {company!r}: {e}")
             return {"fetch_status": {}, **extra}
 
+        # Year-aware depth: a question about FY2019 can't be answered from the
+        # LATEST 10-K alone — walk back enough annual filings that the asked
+        # year is covered (each 10-K carries the prior year's comparatives,
+        # hence the −1). Capped to bound a one-time ingest.
+        n_filings = 1
+        yrs = [int(y) for y in re.findall(r"\b((?:19|20)\d{2})\b", question)]
+        if yrs:
+            from datetime import date
+            n_filings = max(1, min(5, date.today().year - min(yrs) - 1))
+
         if gate["decision"] != "fetch":
+            # "Indexed" is COMPANY-level. If the question names a year the
+            # index doesn't cover (e.g. only the latest 10-K was dynamically
+            # fetched but the question asks about FY2021), deepen the index by
+            # walking back to the filing that carries that year. Without this,
+            # retrieval returns nothing useful and the company looks "covered".
+            if (gate["decision"] == "already_indexed" and yrs
+                    and self.persist_fetch):
+                covered = self._indexed_years(gate.get("ticker") or company)
+                target = min(yrs)
+                digit_years = {int(y) for y in covered if y.isdigit()}
+                if digit_years and not ({target, target + 1} & digit_years):
+                    n_deep = max(1, min(5, max(digit_years) - target))
+                    self._log(state, f"index covers {sorted(digit_years)} for "
+                                     f"{gate.get('ticker')} but the question needs "
+                                     f"{target}; fetching {n_deep} older filing(s)")
+                    try:
+                        res = self.fetcher.fetch_and_ingest(
+                            gate["ticker"], company=gate.get("company") or "",
+                            n=n_deep)
+                        if res.get("ok"):
+                            self._hybrids = None    # re-index for this turn
+                            self._log(state, f"deepened index with "
+                                             f"{res.get('chunks_added')} chunks")
+                    except Exception as e:
+                        self._log(state, f"index deepening failed: {e}")
             # already_indexed → retrieval handles it; not_us_listed → web branch.
             return {"fetch_status": gate, **extra}
 
-        self._log(state, f"dynamic fetch: pulling latest filing for {gate['ticker']}…")
+        self._log(state, f"dynamic fetch: pulling latest {n_filings} filing(s) "
+                         f"for {gate['ticker']}…")
 
         # Ephemeral path (cloud / per-session): parse + chunk the filing in
         # memory and rank it against the question later — NOTHING is written to
@@ -655,7 +692,7 @@ class AgenticRAGv4(AgenticRAGv3):
         if not self.persist_fetch:
             try:
                 res = self.fetcher.fetch_chunks(
-                    gate["ticker"], company=gate.get("company") or "")
+                    gate["ticker"], company=gate.get("company") or "", n=n_filings)
             except Exception as e:
                 self._log(state, f"ephemeral fetch failed for {gate['ticker']}: {e}")
                 return {"fetch_status": {**gate, "status": "error", "error": str(e)},
@@ -674,7 +711,7 @@ class AgenticRAGv4(AgenticRAGv3):
         # Persistent path (local): fetch + ingest into the live collection.
         try:
             res = self.fetcher.fetch_and_ingest(
-                gate["ticker"], company=gate.get("company") or "")
+                gate["ticker"], company=gate.get("company") or "", n=n_filings)
         except Exception as e:
             self._log(state, f"dynamic fetch failed for {gate['ticker']}: {e}")
             return {"fetch_status": {**gate, "status": "error", "error": str(e)},
@@ -685,6 +722,17 @@ class AgenticRAGv4(AgenticRAGv3):
             self._log(state, f"ingested {res['chunks_added']} chunks for {gate['ticker']}")
         return {"fetch_status": {**gate, "status": "fetched" if res.get("ok") else "error",
                                  **res}, **extra}
+
+    def _indexed_years(self, ticker: str) -> set[str]:
+        """Metadata `year` values indexed for `ticker` (empty when unknowable —
+        e.g. baseline corpora keyed by company name rather than ticker)."""
+        try:
+            col = self.fetcher._get_store()._collection
+            res = col.get(where={"ticker": ticker},
+                          include=["metadatas"], limit=2000)
+            return {str(m.get("year", "")) for m in (res.get("metadatas") or [])}
+        except Exception:
+            return set()
 
     def hybrid_retrieve_node(self, state: AgentState) -> dict:
         """Persistent-corpus retrieval, plus in-memory ranking of an ephemerally
@@ -1471,7 +1519,7 @@ class AgenticRAGv4(AgenticRAGv3):
     _INSUFFICIENT_RE = re.compile(
         r"not (?:explicitly )?(?:specified|stated|provided|available|disclosed"
         r"|described|outlined|mentioned)"
-        r"|no (?:specific )?(?:information|data|details?|mention)"
+        r"|no (?:specific )?(?:information|data|details?|mention|evidence|figures?)"
         r"|not enough information"
         r"|cannot be (?:determined|calculated|computed|answered)"
         r"|unable to (?:determine|find|locate)"
@@ -2076,30 +2124,30 @@ single item is irrelevant."""
         }
 
     def withhold_low_confidence_node(self, state: AgentState) -> dict:
-        """Low-confidence band: don't present the draft as the answer, but DON'T
-        throw it away either. We replace `final_answer` with a short notice and
-        stash the draft in `suppressed_answer` so the UI can offer it on demand
-        ("a lower-confidence answer is available").
-
-        This is distinct from `refuse_node`: that path fires when the verifier
-        found an ungrounded/fabricated figure, where surfacing the draft would
-        leak a hallucinated number. Here the figures may be grounded — we're just
-        below the overall confidence bar — so letting the user opt in is safe.
+        """Low-confidence band: show the draft IN FULL with the confidence
+        score appended — the same presentation as the warn band, with a
+        stronger caveat. (Previously this hid the draft behind a "low-
+        confidence answer available" notice, which buried answers that were
+        often correct; hallucinated-figure refusals are handled separately by
+        `refuse_node`, so the figures here are grounded — the uncertainty is
+        about completeness/corroboration, which the caveat conveys.)
         """
-        draft = state.get("draft_answer", "") or state.get("final_answer", "") or ""
+        ans = state.get("draft_answer", "") or state.get("final_answer", "") or ""
+        if "_Confidence:" in ans:                      # idempotent on a re-entry
+            return {"status": "answered_low_confidence"}
         conf = state.get("confidence")
         pct = f"{conf:.0%}" if isinstance(conf, (int, float)) else "low"
-        notice = (
-            f"I'm not confident enough to present this answer directly "
-            f"(confidence {pct}, below the {self.confidence_warn:.0%} bar). "
-            f"A lower-confidence draft is available below if you'd like to see it."
+        note = (
+            f"\n\n*_Confidence: {pct} — low. Parts of this answer are weakly "
+            f"corroborated by the available sources; verify against the "
+            f"primary filing before relying on it._*"
         )
         return {
-            "final_answer": notice,
-            "suppressed_answer": draft,
-            "refused": True,
+            "final_answer": ans + note,
+            "suppressed_answer": "",
+            "refused": False,
             "needs_retry": False,
-            "status": "refused_low_confidence",
+            "status": "answered_low_confidence",
         }
 
     def answer_with_warning_node(self, state: AgentState) -> dict:
@@ -2340,7 +2388,8 @@ single item is irrelevant."""
             {"retrieve": "retrieve", "refuse": "refuse", "end": "confidence"},
         )
         # Confidence gate: high → answer, moderate → answer + caveat, low →
-        # withhold (keep the draft as `suppressed_answer` for opt-in reveal).
+        # answer + a stronger low-confidence caveat (the full draft is always
+        # shown; only hallucinated-figure refusals suppress an answer).
         g.add_conditional_edges(
             "confidence", self._confidence_gate,
             {"answer": END, "warn": "answer_with_warning", "refuse": "low_confidence"},

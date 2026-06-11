@@ -50,6 +50,15 @@ _LEGAL_SUFFIXES = (
     "group", "corp", "inc", "plc", "ltd", "llc", "co", "sa", "nv", "ag",
 )
 
+# Words too generic to identify a company on their own — never used as a
+# single-token alias ("general" must not match General Mills).
+_GENERIC_TOKENS = {
+    "american", "general", "united", "national", "international", "first",
+    "best", "new", "the", "and", "company", "water", "works", "health",
+    "communications", "financial", "global", "world", "home", "air", "buy",
+    "motors", "mills", "express", "depot", "foot", "locker", "resorts",
+} | set(_LEGAL_SUFFIXES)
+
 
 def _name_variants(name: str) -> list[str]:
     """Normalised name plus progressively suffix-stripped variants."""
@@ -104,6 +113,19 @@ def build_company_vocab(metadatas) -> tuple[dict, dict]:
                         vocab.setdefault(v, t)
         except Exception:
             pass
+
+    # Single-token aliases: a distinctive word that belongs to exactly ONE
+    # company becomes an alias for it ("jpmorgan" → JPMORGAN CHASE & CO,
+    # "verizon" → Verizon Communications Inc.) — that's how questions actually
+    # name companies. Generic words and short tokens never qualify.
+    token_owner: dict[str, set] = {}
+    for name, canon in list(vocab.items()):
+        for tok in name.split():
+            if len(tok) >= 5 and tok not in _GENERIC_TOKENS:
+                token_owner.setdefault(tok, set()).add(canon)
+    for tok, owners in token_owner.items():
+        if len(owners) == 1 and tok not in vocab:
+            vocab[tok] = next(iter(owners))
     return vocab, years
 
 

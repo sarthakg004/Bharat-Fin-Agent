@@ -100,9 +100,10 @@ class AgentState(TypedDict, total=False):
     confidence: float                  # weighted blend of the applicable sub-scores
     confidence_band: str               # "answer" | "warn" | "refuse" (gate routing)
     status: str                        # "answered" | "answered_with_warning" | "refused"
-    suppressed_answer: str             # low-confidence draft withheld by the gate,
-                                       # offered to the user on demand (NOT set for a
-                                       # hallucination refusal — that draft is unsafe)
+    suppressed_answer: str             # legacy: the low-confidence band used to
+                                       # withhold the draft here; it now shows the
+                                       # answer in full with a confidence caveat, so
+                                       # this stays empty (kept for API stability)
 
     # --- Tools-lane corpus fallback ---------------------------------------- #
     # Set by `evidence_builder_node` when a tools-path question (which skipped

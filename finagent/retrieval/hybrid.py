@@ -70,11 +70,12 @@ class HybridRetriever(BaseRetriever):
         """Return up to `final_top_k` (text, metadata) pairs for the query."""
         flt = self.infer_filter(query) if self.auto_filter else None
         union = self._bm25_then_dense(query, flt)
-        if not union and flt:
-            # The filter can over-narrow (e.g. a year the corpus lacks under a
-            # differently-labelled fiscal calendar) — retry unfiltered rather
-            # than return nothing.
-            union = self._bm25_then_dense(query, None)
+        if not union and flt and flt.get("years"):
+            # The YEAR can over-narrow (fiscal-calendar labelling) — relax it.
+            # The COMPANY clause is never relaxed: chunks from a different
+            # company are noise that misleads the synthesizer, and an empty
+            # result correctly hands off to the fetch/web fallbacks.
+            union = self._bm25_then_dense(query, {"companies": flt["companies"]})
         if not union:
             return []
         return self._rerank(query, union)[: self.final_top_k]
