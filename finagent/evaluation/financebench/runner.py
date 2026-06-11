@@ -57,7 +57,10 @@ def run_agent_outputs(
     done: dict[str, dict] = {}
     if resume and output_path.exists():
         for row in json.loads(output_path.read_text()):
-            done[row.get("financebench_id", row.get("question"))] = row
+            # Errored rows are NOT done — a resume retries them (a transient
+            # failure like a rate limit or a dead key shouldn't stick).
+            if not row.get("error"):
+                done[row.get("financebench_id", row.get("question"))] = row
 
     outputs: list[dict] = []
     for _, q in tqdm(questions.iterrows(), total=len(questions), desc="agent"):

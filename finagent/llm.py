@@ -127,6 +127,32 @@ def is_rate_limit_error(exc: BaseException) -> bool:
     return False
 
 
+_AUTH_HINTS = (
+    "invalid api key", "invalid_api_key", "incorrect api key",
+    "401", "unauthorized", "authentication",
+)
+
+
+def is_auth_error(exc: BaseException) -> bool:
+    """True if `exc` looks like an invalid/revoked API key (HTTP 401).
+
+    A multi-key pool can contain a key that has been revoked since it was
+    configured; requests landing on it must not fail — `RotatingChatModel`
+    drops such a key from the pool and continues on the remaining ones."""
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    depth = 0
+    while cur is not None and id(cur) not in seen and depth < 10:
+        seen.add(id(cur))
+        if "authenticationerror" in type(cur).__name__.lower():
+            return True
+        if any(hint in (str(cur) or "").lower() for hint in _AUTH_HINTS):
+            return True
+        cur = cur.__cause__ or cur.__context__
+        depth += 1
+    return False
+
+
 def is_daily_quota_error(exc: BaseException) -> bool:
     """True for *daily* quota errors (TPD/RPD) specifically.
 
@@ -226,25 +252,47 @@ class RotatingChatModel(BaseChatModel):
     def _rotate(self, exc: BaseException) -> None:
         self._idx = (self._idx + 1) % len(self.keys)
         print(
-            f"[RotatingChat:{self.provider}] {type(exc).__name__} on key "
-            f"{self._idx}/{len(self.keys)}; switched to key "
-            f"{self._idx + 1}/{len(self.keys)}"
+            f"[RotatingChat:{self.provider}] {type(exc).__name__}; switched to "
+            f"key {self._idx + 1}/{len(self.keys)}"
         )
         self._llm = _build_single(
             self.provider, self.chat_model, self.keys[self._idx], **self.chat_kwargs
         )
 
+    def _drop_current_key(self, exc: BaseException) -> None:
+        """Remove a revoked/invalid key from the pool and continue on the rest.
+        Unlike a rate limit (transient), a 401 never recovers — leaving the key
+        in rotation would keep paying a failed round-trip on every cycle."""
+        bad = self.keys.pop(self._idx)
+        self._idx %= len(self.keys)
+        print(
+            f"[RotatingChat:{self.provider}] {type(exc).__name__}: dropped "
+            f"invalid key …{bad[-4:]}; {len(self.keys)} key(s) remain"
+        )
+        self._llm = _build_single(
+            self.provider, self.chat_model, self.keys[self._idx], **self.chat_kwargs
+        )
+
+    def _recover(self, exc: BaseException) -> bool:
+        """Try to recover from `exc` by switching keys. False → not recoverable."""
+        if is_rate_limit_error(exc):
+            self._rotate(exc)
+            return True
+        if is_auth_error(exc) and len(self.keys) > 1:
+            self._drop_current_key(exc)
+            return True
+        return False
+
     def _retry(self, op):
-        """Run op(self._llm) across all keys, rotating on rate-limit errors."""
+        """Run op(self._llm) across all keys, switching on recoverable errors."""
         last: Any = None
-        for _ in range(len(self.keys)):
+        for _ in range(max(1, len(self.keys))):
             try:
                 return op(self._llm)
             except Exception as e:
                 last = e
-                if not is_rate_limit_error(e):
+                if not self._recover(e):
                     raise
-                self._rotate(e)
         raise last
 
     # ------------------------------------------------------------------ #
@@ -259,16 +307,15 @@ class RotatingChatModel(BaseChatModel):
     async def _agenerate(self, messages, stop=None, run_manager=None, **kw) -> ChatResult:
         # Async variant — same retry loop but awaiting the inner call.
         last: Any = None
-        for _ in range(len(self.keys)):
+        for _ in range(max(1, len(self.keys))):
             try:
                 return await self._llm._agenerate(
                     messages, stop=stop, run_manager=run_manager, **kw
                 )
             except Exception as e:
                 last = e
-                if not is_rate_limit_error(e):
+                if not self._recover(e):
                     raise
-                self._rotate(e)
         raise last
 
     # ------------------------------------------------------------------ #
@@ -298,15 +345,14 @@ class _RotatingBound(Runnable):
 
     async def ainvoke(self, input, config=None, **ikw):
         last: Any = None
-        for _ in range(len(self.rot.keys)):
+        for _ in range(max(1, len(self.rot.keys))):
             try:
                 chain = getattr(self.rot._llm, self.method)(*self.args, **self.kw)
                 return await chain.ainvoke(input, config=config, **ikw)
             except Exception as e:
                 last = e
-                if not is_rate_limit_error(e):
+                if not self.rot._recover(e):
                     raise
-                self.rot._rotate(e)
         raise last
 
 

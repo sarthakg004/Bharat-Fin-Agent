@@ -125,7 +125,8 @@ def run_parallel(
     for prev in [output_path, *sorted(shard_dir.glob(f"{stem}_shard*_outputs.json"))]:
         if prev.exists():
             for row in json.loads(prev.read_text()):
-                done.setdefault(row.get("financebench_id", row.get("question")), row)
+                if not row.get("error"):     # errored rows are retried
+                    done.setdefault(row.get("financebench_id", row.get("question")), row)
     if done:
         print(f"[parallel] resuming: {len(done)} answers carried over")
 
