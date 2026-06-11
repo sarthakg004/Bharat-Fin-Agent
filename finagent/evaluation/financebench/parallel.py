@@ -76,6 +76,24 @@ def _worker_env(keys: list[str], worker_idx: int) -> dict:
     return env
 
 
+def _default_workers(n_keys: int) -> int:
+    """Memory-aware worker default. Each worker process holds torch + the
+    encoder/reranker models + a BM25 index over the corpus (~2.5 GiB), so on a
+    dev laptop too many workers OOMs the *desktop session* (systemd-oomd kills
+    the user slice at 50% pressure — observed killing GNOME mid-run). Budget
+    one worker per ~3 GiB of MemAvailable, capped at 4 and the key count.
+
+    This is local tooling only — it never runs on Cloud Run (the serve path
+    never imports `finagent.evaluation`)."""
+    try:
+        with open("/proc/meminfo") as f:
+            kb = int(next(l for l in f if l.startswith("MemAvailable")).split()[1])
+        by_mem = max(1, kb // (3 * 1024 * 1024))
+    except Exception:
+        by_mem = 2
+    return max(1, min(n_keys, 4, by_mem))
+
+
 def run_parallel(
     questions,
     output_path: Union[str, Path] = DEFAULT_OUTPUT,
@@ -92,12 +110,24 @@ def run_parallel(
     keys = collect_provider_keys(provider)
     if not keys:
         raise RuntimeError(f"No {provider} API keys configured in .env")
-    workers = workers or min(len(keys), 4)
+    workers = workers or _default_workers(len(keys))
+    print(f"[parallel] using {workers} worker(s)")
 
     output_path = Path(output_path)
     shard_dir = Path(_SHARD_DIR)
     shard_dir.mkdir(parents=True, exist_ok=True)
     stem = output_path.stem
+
+    # Resume across re-sharding: answers already in the merged output OR in any
+    # previous shard files count as done, even if the worker count (and thus
+    # the shard cut) changed since the interrupted run.
+    done: dict[str, dict] = {}
+    for prev in [output_path, *sorted(shard_dir.glob(f"{stem}_shard*_outputs.json"))]:
+        if prev.exists():
+            for row in json.loads(prev.read_text()):
+                done.setdefault(row.get("financebench_id", row.get("question")), row)
+    if done:
+        print(f"[parallel] resuming: {len(done)} answers carried over")
 
     # Round-robin shard so slow question types spread evenly across workers.
     rows = questions.reset_index(drop=True)
@@ -110,6 +140,11 @@ def run_parallel(
         shard_in = shard_dir / f"{stem}_shard{w}.jsonl"
         shard_out = shard_dir / f"{stem}_shard{w}_outputs.json"
         shard.to_json(shard_in, orient="records", lines=True)
+        # Pre-fill this shard's output with its already-answered rows so the
+        # serial runner skips them.
+        prefill = [done[i] for i in (
+            shard.get("financebench_id", shard.get("question"))) if i in done]
+        shard_out.write_text(json.dumps(prefill, indent=2))
         shard_outs.append(shard_out)
         cmd = [sys.executable, "-m", "finagent.evaluation.financebench.parallel",
                "--worker", str(shard_in), "--output", str(shard_out),
