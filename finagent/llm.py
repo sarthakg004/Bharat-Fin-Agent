@@ -16,6 +16,7 @@ and instantiates the right client.
 from __future__ import annotations
 
 import os
+import time
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -189,6 +190,24 @@ from langchain_core.runnables import Runnable  # noqa: E402
 from pydantic import Field, PrivateAttr  # noqa: E402
 
 
+class AllKeysExhaustedError(Exception):
+    """Every configured key for a provider is rate-limited right now.
+
+    Raised after a full rotation cycle fails, and immediately (no network)
+    while the provider is in cooldown — so the request fails FAST instead of
+    every node grinding through the whole key pool again. The message contains
+    'rate limit' so `is_rate_limit_error` classifies it, and the original
+    provider error is chained (`from`) so `is_daily_quota_error` still works.
+    """
+
+
+# Provider → unix time until which every key is considered exhausted. Shared
+# process-wide: once one call proves the whole pool is limited, every other
+# call short-circuits for the cooldown window instead of re-proving it.
+_EXHAUSTED_UNTIL: dict[str, float] = {}
+_EXHAUST_COOLDOWN_S = 60.0
+
+
 # Round-robin start-index per provider: each RotatingChatModel instance (one
 # per LLM role — planner, synth, critic, grader, …) starts on a DIFFERENT key,
 # so the roles spread across the key pool instead of all hammering key 1 and
@@ -283,8 +302,29 @@ class RotatingChatModel(BaseChatModel):
             return True
         return False
 
+    def _check_cooldown(self) -> None:
+        """Fail fast while the whole pool is known-exhausted (no network)."""
+        until = _EXHAUSTED_UNTIL.get(self.provider, 0.0)
+        left = until - time.time()
+        if left > 0:
+            raise AllKeysExhaustedError(
+                f"All {self.provider} API keys hit their rate limit; "
+                f"cooling down for another {int(left) + 1}s."
+            )
+
+    def _exhausted(self, last: BaseException) -> AllKeysExhaustedError:
+        """A full rotation cycle failed — latch the cooldown for the provider."""
+        _EXHAUSTED_UNTIL[self.provider] = time.time() + _EXHAUST_COOLDOWN_S
+        print(f"[RotatingChat:{self.provider}] every key rate-limited; "
+              f"failing fast for {_EXHAUST_COOLDOWN_S:.0f}s")
+        return AllKeysExhaustedError(
+            f"All {len(self.keys)} {self.provider} API keys hit their rate "
+            f"limit ({type(last).__name__})."
+        )
+
     def _retry(self, op):
         """Run op(self._llm) across all keys, switching on recoverable errors."""
+        self._check_cooldown()
         last: Any = None
         for _ in range(max(1, len(self.keys))):
             try:
@@ -293,7 +333,7 @@ class RotatingChatModel(BaseChatModel):
                 last = e
                 if not self._recover(e):
                     raise
-        raise last
+        raise self._exhausted(last) from last
 
     # ------------------------------------------------------------------ #
     # BaseChatModel hooks
@@ -306,6 +346,7 @@ class RotatingChatModel(BaseChatModel):
 
     async def _agenerate(self, messages, stop=None, run_manager=None, **kw) -> ChatResult:
         # Async variant — same retry loop but awaiting the inner call.
+        self._check_cooldown()
         last: Any = None
         for _ in range(max(1, len(self.keys))):
             try:
@@ -316,7 +357,7 @@ class RotatingChatModel(BaseChatModel):
                 last = e
                 if not self._recover(e):
                     raise
-        raise last
+        raise self._exhausted(last) from last
 
     # ------------------------------------------------------------------ #
     # Structured-output / tool-binding — must rebuild the chain inside the
@@ -344,6 +385,7 @@ class _RotatingBound(Runnable):
         )
 
     async def ainvoke(self, input, config=None, **ikw):
+        self.rot._check_cooldown()
         last: Any = None
         for _ in range(max(1, len(self.rot.keys))):
             try:
@@ -353,7 +395,7 @@ class _RotatingBound(Runnable):
                 last = e
                 if not self.rot._recover(e):
                     raise
-        raise last
+        raise self.rot._exhausted(last) from last
 
 
 def build_llm(

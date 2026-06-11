@@ -24,6 +24,7 @@ Output-row key convention (matches `finagent.evaluation.ragas.RAGASEvaluator`):
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Optional, Union
 
@@ -62,20 +63,40 @@ def run_agent_outputs(
             if not row.get("error"):
                 done[row.get("financebench_id", row.get("question"))] = row
 
+    from finagent.llm import is_daily_quota_error, is_rate_limit_error
+
     outputs: list[dict] = []
+    stop_reason = ""
     for _, q in tqdm(questions.iterrows(), total=len(questions), desc="agent"):
+        if stop_reason:
+            break
         fb_id = q.get("financebench_id", q["question"])
         if fb_id in done:
             outputs.append(done[fb_id])
             continue
         try:
-            res = run_agentic(
-                market=market,
-                question=q["question"],
-                top_k=top_k,
-                provider=provider,
-                synth_model=synth_model,
-            )
+            # One in-place retry for a per-minute exhaustion: every key being
+            # limited usually clears within the cooldown window. A second
+            # exhaustion (or a daily quota) stops the whole run — grinding the
+            # remaining questions into error rows helps nobody; a resume picks
+            # up exactly here once the limits reset.
+            for attempt in (1, 2):
+                try:
+                    res = run_agentic(
+                        market=market,
+                        question=q["question"],
+                        top_k=top_k,
+                        provider=provider,
+                        synth_model=synth_model,
+                    )
+                    break
+                except Exception as e:
+                    if (attempt == 1 and is_rate_limit_error(e)
+                            and not is_daily_quota_error(e)):
+                        tqdm.write("all keys rate-limited; waiting 65s before retrying…")
+                        time.sleep(65)
+                        continue
+                    raise
             meta = res.get("metadata") or {}
             answer = res.get("answer", "")
             row = {
@@ -90,7 +111,7 @@ def run_agent_outputs(
                 "answer_status": meta.get("answer_status"),
                 "error": None,
             }
-        except Exception as e:  # keep going; record the failure
+        except Exception as e:  # record the failure
             row = {
                 "financebench_id": fb_id,
                 "question": q["question"],
@@ -101,9 +122,17 @@ def run_agent_outputs(
                 "company": q.get("company", ""),
                 "error": f"{type(e).__name__}: {e}",
             }
+            if is_rate_limit_error(e):
+                stop_reason = ("daily quota exhausted on every key"
+                               if is_daily_quota_error(e)
+                               else "every key rate-limited twice in a row")
         outputs.append(row)
         output_path.write_text(json.dumps(outputs, indent=2))
 
+    if stop_reason:
+        print(f"\nLIMIT EXHAUSTED — stopping the run ({stop_reason}). "
+              f"Completed answers are saved; re-run the same command to resume "
+              f"once the limits reset.")
     return outputs
 
 

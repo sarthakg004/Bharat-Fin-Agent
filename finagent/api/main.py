@@ -362,9 +362,10 @@ async def _stream_answer(request: QueryRequest) -> AsyncGenerator[str, None]:
                            "Please try again tomorrow — or add your own API key "
                            "from the model picker to keep going now.")
             else:
-                message = ("The shared API keys are rate-limited right now. "
-                           "Please wait a minute and try again — or add your own "
-                           "API key from the model picker to keep going now.")
+                message = ("Limit exhausted: all shared API keys have hit their "
+                           "rate limit. Please wait a minute and try again — or "
+                           "add your own API key from the model picker to keep "
+                           "going now.")
         else:
             code = "error"
             # Surface a clean provider error (the value may include a key, so the

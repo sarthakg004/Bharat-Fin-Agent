@@ -504,3 +504,31 @@ def test_insufficient_draft_escalates_to_web_once():
     assert agent._web_fallback_signal(
         {"draft_answer": "Revenue was $10 billion [1]."}
     ) == {"web_fallback_pending": False}
+
+
+def test_all_keys_exhausted_circuit_breaker():
+    """When every key is rate-limited, the rotator raises a fast, classified
+    AllKeysExhaustedError and latches a cooldown so subsequent calls fail
+    instantly (no network) — the UI then reports 'limit exhausted' in seconds
+    instead of grinding every node through the whole pool again."""
+    import finagent.llm as L
+
+    # Classified as a rate-limit error (message hint), so the API layer shows
+    # the friendly limit message rather than a raw traceback.
+    assert L.is_rate_limit_error(L.AllKeysExhaustedError("keys hit their rate limit"))
+
+    m = L.RotatingChatModel(provider="groq", chat_model="llama-3.1-8b-instant",
+                            keys=["k1", "k2"], chat_kwargs={"temperature": 0})
+    # A full failed rotation cycle latches the provider cooldown…
+    L._EXHAUSTED_UNTIL.pop("groq", None)
+    exc = m._exhausted(Exception("429 rate limit"))
+    assert isinstance(exc, L.AllKeysExhaustedError)
+    assert L._EXHAUSTED_UNTIL["groq"] > __import__("time").time()
+    # …and while latched, calls fail fast without touching the network.
+    try:
+        m._retry(lambda llm: (_ for _ in ()).throw(AssertionError("network hit")))
+        assert False, "expected AllKeysExhaustedError"
+    except L.AllKeysExhaustedError:
+        pass
+    finally:
+        L._EXHAUSTED_UNTIL.pop("groq", None)   # don't leak the latch to other tests
