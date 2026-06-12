@@ -61,11 +61,10 @@ def _worker_env(keys: list[str], worker_idx: int) -> dict:
     STARTS on key i (workers spread across keys but can still rotate off a
     rate-limited one)."""
     env = dict(os.environ)
-    # Drop every numbered key first so the rotation order is exactly ours.
-    i = 2
-    while f"GROQ_API_KEY{i}" in env:
-        del env[f"GROQ_API_KEY{i}"]
-        i += 1
+    # Drop every numbered key first so the rotation order is exactly ours
+    # (fixed range — the numbering may have gaps or start at 1).
+    for i in range(1, 33):
+        env.pop(f"GROQ_API_KEY{i}", None)
     rotated = keys[worker_idx % len(keys):] + keys[:worker_idx % len(keys)]
     env["GROQ_API_KEY"] = rotated[0]
     for j, k in enumerate(rotated[1:], start=2):

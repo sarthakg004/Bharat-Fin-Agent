@@ -49,6 +49,11 @@ def resolve_api_key(provider: str, api_key: Optional[str] = None) -> str:
     # created with `echo`), which would make an illegal HTTP Authorization header.
     key = (api_key or os.getenv(API_KEY_ENV[provider]) or "").strip()
     if not key:
+        # The pool may be configured as numbered keys only (GROQ_API_KEY1, …)
+        # with no bare GROQ_API_KEY — validate against the first pool key then.
+        pool = collect_provider_keys(provider)
+        if pool:
+            return pool[0]
         raise ValueError(
             f"{API_KEY_ENV[provider]} not found. Set it in your .env file or "
             f"pass api_key= explicitly."
@@ -56,12 +61,19 @@ def resolve_api_key(provider: str, api_key: Optional[str] = None) -> str:
     return key
 
 
+# Highest numbered-key suffix scanned by `collect_provider_keys`. Scanning a
+# fixed range (instead of stopping at the first gap) means GROQ_API_KEY1..N
+# all load even when the bare GROQ_API_KEY is absent or the numbering skips.
+_MAX_KEY_INDEX = 32
+
+
 def collect_provider_keys(provider: str) -> list[str]:
     """All API keys available for a provider, in rotation order.
 
-    Reads `GROQ_API_KEY`, `GROQ_API_KEY2`, `GROQ_API_KEY3`, ... until one is
-    missing (same pattern for the other providers). Set multiple keys in .env
-    to let `RotatingChat` swap to the next one when one hits a rate limit.
+    Reads the bare var (`GROQ_API_KEY`) plus every numbered variant
+    (`GROQ_API_KEY1` … `GROQ_API_KEY32`), tolerating gaps and either naming
+    scheme, deduplicated in order. Set multiple keys in .env to let
+    `RotatingChat` swap to the next one when one hits a rate limit.
     """
     provider = provider.lower()
     if provider not in API_KEY_ENV:
@@ -70,16 +82,12 @@ def collect_provider_keys(provider: str) -> list[str]:
         )
     base = API_KEY_ENV[provider]
     keys: list[str] = []
-    first = (os.getenv(base) or "").strip()      # strip stray newline/space
-    if first:
-        keys.append(first)
-    i = 2
-    while True:
-        k = (os.getenv(f"{base}{i}") or "").strip()
-        if not k:
-            break
-        keys.append(k)
-        i += 1
+    seen: set[str] = set()
+    for name in (base, *(f"{base}{i}" for i in range(1, _MAX_KEY_INDEX + 1))):
+        k = (os.getenv(name) or "").strip()      # strip stray newline/space
+        if k and k not in seen:
+            seen.add(k)
+            keys.append(k)
     return keys
 
 
