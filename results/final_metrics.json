@@ -1,32 +1,32 @@
 {
   "outputs": "results/financebench_full_outputs.json",
   "behaviour": {
-    "questions": 104,
-    "answered": 102,
-    "answer_rate": 0.9808,
+    "questions": 150,
+    "answered": 150,
+    "answer_rate": 1.0,
     "refused": 0,
     "refusal_rate": 0.0,
-    "errors": 2,
-    "error_rate": 0.0192,
-    "mean_confidence": 0.5948,
+    "errors": 0,
+    "error_rate": 0.0,
+    "mean_confidence": 0.6252,
     "by_type": {
       "numeric": {
-        "questions": 56,
-        "answered": 56,
+        "questions": 71,
+        "answered": 71,
         "refused": 0,
         "errors": 0
       },
       "comparison": {
-        "questions": 16,
-        "answered": 15,
+        "questions": 22,
+        "answered": 22,
         "refused": 0,
-        "errors": 1
+        "errors": 0
       },
       "narrative": {
-        "questions": 32,
-        "answered": 31,
+        "questions": 57,
+        "answered": 57,
         "refused": 0,
-        "errors": 1
+        "errors": 0
       }
     }
   },
