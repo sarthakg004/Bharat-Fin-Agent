@@ -128,9 +128,11 @@ function ThinkingTrace({ msg }: { msg: ChatMessage }) {
 
   if (steps.length === 0 && !msg.status) return null;
 
-  // Live view — the agent is still working, no answer text yet.
+  // Live view — the agent is still working, no answer text yet. A vertical
+  // activity feed: every step the agent has run, in order, with a spinner on
+  // the in-flight ones (parallel lanes spin together) and a check + a short
+  // outcome ("12 passages", "2 exact figures") on the finished ones.
   if (thinking) {
-    const current = msg.status || steps[steps.length - 1];
     const startedAt = msg.startedAt ?? msg.createdAt;
     const elapsedS = Math.max(0, (now - startedAt) / 1000);
 
@@ -141,24 +143,15 @@ function ThinkingTrace({ msg }: { msg: ChatMessage }) {
     const reached = (msg.progressIndex ?? 0) + 1;
     const progress = total > 0 ? Math.min(0.99, reached / total) : 0;
 
-    // De-duplicated completed stages (skip the current one), most recent last.
-    const seen = new Set<string>();
-    const done: string[] = [];
-    for (const s of steps) {
-      if (s.stage === current?.stage) continue;
-      if (seen.has(s.stage)) continue;
-      seen.add(s.stage);
-      done.push(s.label);
-    }
+    const anyRunning = steps.some((s) => !s.done);
 
     return (
       <div className="flex w-full max-w-[80%] flex-col gap-2">
-        {/* Current activity + live timer / ETA */}
+        {/* Header: overall state + live elapsed timer */}
         <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2 font-mono text-[12px] text-text-primary">
-            <span className="inline-block h-[11px] w-[11px] animate-spin rounded-full border border-text-muted border-t-accent" />
-            <span>{current?.label ?? "Thinking…"}</span>
-          </div>
+          <span className="font-mono text-[11px] uppercase tracking-wider text-text-secondary">
+            {anyRunning || steps.length === 0 ? "Working…" : "Finalising…"}
+          </span>
           <span className="shrink-0 font-mono text-[10px] uppercase tracking-wider text-text-muted">
             {elapsedS.toFixed(0)}s
           </span>
@@ -176,20 +169,31 @@ function ThinkingTrace({ msg }: { msg: ChatMessage }) {
           </div>
         )}
 
-        {/* Completed stages, de-duplicated and compact (no more repeats). */}
-        {done.length > 0 && (
-          <div className="flex flex-wrap gap-x-2.5 gap-y-1">
-            {done.map((label, i) => (
-              <span
-                key={`${label}-${i}`}
-                className="flex items-center gap-1 font-mono text-[10px] uppercase tracking-wider text-text-muted"
-              >
-                <Check size={9} className="text-accent/70" />
-                {label}
+        {/* Activity feed — newest last; in-flight steps spin, done steps show
+            their outcome. */}
+        <div className="flex flex-col gap-1 border-l border-border-subtle pl-3">
+          {steps.map((s, i) => (
+            <motion.div
+              key={`${s.stage}-${i}`}
+              initial={{ opacity: 0, x: -4 }}
+              animate={{ opacity: 1, x: 0 }}
+              transition={{ duration: 0.15 }}
+              className="flex items-baseline gap-2 font-mono text-[11px]"
+            >
+              {s.done ? (
+                <Check size={10} className="shrink-0 translate-y-[1px] text-accent/70" />
+              ) : (
+                <span className="inline-block h-[9px] w-[9px] shrink-0 translate-y-[1px] animate-spin rounded-full border border-text-muted border-t-accent" />
+              )}
+              <span className={s.done ? "text-text-muted" : "text-text-primary"}>
+                {s.label.replace(/…$/, "")}
               </span>
-            ))}
-          </div>
-        )}
+              {s.detail && (
+                <span className="text-[10px] text-text-secondary">· {s.detail}</span>
+              )}
+            </motion.div>
+          ))}
+        </div>
       </div>
     );
   }
@@ -221,10 +225,11 @@ function ThinkingTrace({ msg }: { msg: ChatMessage }) {
             {steps.map((s, i) => (
               <div
                 key={`${s.stage}-${i}`}
-                className="flex items-center gap-2 py-0.5 font-mono text-[10px] uppercase tracking-wider text-text-muted"
+                className="flex items-baseline gap-2 py-0.5 font-mono text-[10px] text-text-muted"
               >
-                <Check size={10} className="shrink-0 text-accent/70" />
-                <span>{s.label}</span>
+                <Check size={10} className="shrink-0 translate-y-[1px] text-accent/70" />
+                <span className="uppercase tracking-wider">{s.label.replace(/…$/, "")}</span>
+                {s.detail && <span className="text-text-secondary">· {s.detail}</span>}
               </div>
             ))}
           </motion.div>

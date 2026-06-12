@@ -10,13 +10,14 @@ import { InputBar } from "./InputBar";
 import { cls } from "@/lib/utils";
 import type { BackendStatus } from "@/hooks/useBackendStatus";
 
-// Keep these to companies actually in the corpus (us_filings + india_filings):
-// US (Apple, …) and India (Reliance, Wipro, ICICI, Axis, SBI, ITC, HCLTech,
-// Tata Motors, NTPC, L&T, BajajAuto, Maruti, SunPharma, TechMahindra).
+// One example per tool lane, all answerable by the live US corpus + tools
+// (XBRL fact, derived-metric calculator, EDGAR cross-document, market data).
+// Non-corpus companies (e.g. Indian banks) fall through to web search — fine
+// to ask, but not what we showcase on the empty state.
 const EXAMPLE_QUERIES = [
   "What was Apple's R&D spend in FY2023?",
-  "Compare Reliance and Wipro revenue growth",
-  "What was ICICI Bank's net interest margin?",
+  "What was Coca-Cola's operating margin in FY2022?",
+  "Which companies disclosed a material weakness in their 10-K?",
   "How has Tesla performed as a stock this year?",
 ];
 

@@ -256,7 +256,7 @@ PIPELINE_ORDER = list(_STEP_LABELS.keys())
 
 
 async def _run_rag(request: QueryRequest, hist: list[dict],
-                   on_step=None) -> dict:
+                   on_step=None, on_step_done=None) -> dict:
     loop = asyncio.get_event_loop()
     pc = request.provider_config
     provider = (pc.provider if pc else "groq")
@@ -267,7 +267,8 @@ async def _run_rag(request: QueryRequest, hist: list[dict],
         _executor,
         lambda: rag_service.run_agentic(
             request.market, request.question, request.top_k, None, hist,
-            provider, synth_model, api_key, on_step=on_step,
+            provider, synth_model, api_key,
+            on_step=on_step, on_step_done=on_step_done,
         ),
     )
 
@@ -308,6 +309,7 @@ async def _stream_answer(request: QueryRequest) -> AsyncGenerator[str, None]:
     step_queue: asyncio.Queue = asyncio.Queue()
 
     def _on_step(node: str) -> None:
+        # Fired when a node STARTS — drives the spinner's current-activity label.
         label = _STEP_LABELS.get(node)
         if label:
             loop.call_soon_threadsafe(
@@ -318,7 +320,17 @@ async def _stream_answer(request: QueryRequest) -> AsyncGenerator[str, None]:
                  "index": PIPELINE_ORDER.index(node), "total": len(PIPELINE_ORDER)},
             )
 
-    rag_task = asyncio.ensure_future(_run_rag(request, agent_history, on_step=_on_step))
+    def _on_step_done(node: str, detail) -> None:
+        # Fired when a node FINISHES, with a short outcome ("12 passages",
+        # "2 exact figures") — the UI checks the step off and shows the detail.
+        if node in _STEP_LABELS:
+            loop.call_soon_threadsafe(
+                step_queue.put_nowait,
+                {"type": "step_done", "stage": node, "detail": detail},
+            )
+
+    rag_task = asyncio.ensure_future(_run_rag(
+        request, agent_history, on_step=_on_step, on_step_done=_on_step_done))
 
     try:
         while not (rag_task.done() and step_queue.empty()):

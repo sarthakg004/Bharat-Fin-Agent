@@ -8,8 +8,13 @@ export interface ChatMessage {
   role: MessageRole;
   content: string;
   status?: { stage: string; label: string; index?: number; total?: number };
-  /** Accumulated "thinking" trace — one entry per graph node as it runs. */
-  steps?: { stage: string; label: string; index?: number; total?: number }[];
+  /** Accumulated "thinking" trace — one entry per graph node as it runs.
+   * `done` flips when the node finishes; `detail` is its short outcome line
+   * ("12 passages", "2 exact figures from SEC XBRL"). */
+  steps?: {
+    stage: string; label: string; index?: number; total?: number;
+    done?: boolean; detail?: string | null;
+  }[];
   /** Furthest pipeline position reached (0..total) — drives the progress bar. */
   progressIndex?: number;
   progressTotal?: number;
@@ -49,6 +54,8 @@ interface ChatState {
     id: string,
     step: { stage: string; label: string; index?: number; total?: number },
   ) => void;
+  /** Mark the latest unfinished occurrence of a stage as done (+ outcome). */
+  markStepDone: (id: string, stage: string, detail?: string | null) => void;
   appendChartToMessage: (id: string, chart: ChartSpec) => void;
   clear: () => void;
   setHighlight: (id: number | null) => void;
@@ -104,6 +111,20 @@ export const useChatStore = create<ChatState>((set) => ({
           ...msg, steps: [...steps, step], status: step,
           progressIndex, progressTotal,
         };
+      }),
+    })),
+  markStepDone: (id, stage, detail) =>
+    set((s) => ({
+      messages: s.messages.map((msg) => {
+        if (msg.id !== id || !msg.steps?.length) return msg;
+        const steps = [...msg.steps];
+        for (let i = steps.length - 1; i >= 0; i--) {
+          if (steps[i].stage === stage && !steps[i].done) {
+            steps[i] = { ...steps[i], done: true, detail: detail ?? steps[i].detail };
+            return { ...msg, steps };
+          }
+        }
+        return msg;
       }),
     })),
   appendChartToMessage: (id, chart) =>

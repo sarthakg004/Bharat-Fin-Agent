@@ -1146,14 +1146,26 @@ class AgenticRAGv4(AgenticRAGv3):
             if fq not in external_subs:
                 external_subs.append(fq)
 
-        # Corrective dispatch (CRAG): no explicit external sub-queries, but a
-        # NARRATIVE retrieval was attempted and came back empty/poorly graded →
-        # escalate to web. We gate on a narrative route having run: under the
-        # Phase 7 dispatcher a purely numeric/cross-doc question skips retrieval
-        # by design, so empty `retrieved_chunks` there is expected, not a failure
-        # to correct — we must NOT escalate those to web.
-        narrative_attempted = (not routes) or any(r == "narrative" for r in routes)
-        if not external_subs and narrative_attempted:
+        # Corrective dispatch (CRAG): no explicit external sub-queries, but the
+        # corpus was tried and came back empty/poorly graded → escalate to web.
+        # "Tried" means: a narrative route ran (retrieval is its primary lane),
+        # OR a numeric route ran and EVERY structured lane (XBRL, calculator,
+        # tables) came back empty — e.g. a non-US company like ICICI Bank,
+        # where SEC facts don't exist and retrieval only finds off-entity
+        # noise. Without the numeric clause those questions ended with no
+        # answer while the web lane sat unused. A pure tools-path question
+        # whose lanes DID answer is expected to have no chunks — not escalated.
+        tools_answered = bool(
+            state.get("xbrl_facts") or state.get("calc_results")
+            or any(t.get("answer") and not t.get("error")
+                   for t in state.get("table_results") or [])
+        )
+        corpus_attempted = (
+            (not routes)
+            or any(r == "narrative" for r in routes)
+            or (any(r == "numeric" for r in routes) and not tools_answered)
+        )
+        if not external_subs and corpus_attempted:
             chunks = state.get("retrieved_chunks") or []
             avg_grade = state.get("avg_grade")
             retrieval_was_poor = (not chunks) or (

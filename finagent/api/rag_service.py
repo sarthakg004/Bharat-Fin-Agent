@@ -233,6 +233,86 @@ def _build_audit(state: dict, retrieval: Optional[dict] = None) -> dict:
     }
 
 
+def _step_detail(node: str, delta: dict) -> Optional[str]:
+    """One short human-readable outcome line for a finished graph node, built
+    from the partial state the node returned — e.g. "12 passages", "2 exact
+    figures", "9/9 figures grounded". None = nothing worth showing."""
+    try:
+        if node == "planner":
+            n = len(delta.get("sub_queries") or [])
+            return f"{n} sub-quer{'y' if n == 1 else 'ies'}" if n else None
+        if node == "router":
+            routes = delta.get("query_routes") or []
+            if not routes:
+                return None
+            counts: dict[str, int] = {}
+            for r in routes:
+                counts[r] = counts.get(r, 0) + 1
+            return " · ".join(f"{k}×{v}" if v > 1 else k
+                              for k, v in counts.items())
+        if node == "fetch_filing":
+            fs = delta.get("fetch_status") or {}
+            if fs.get("status") == "fetched":
+                n = fs.get("chunks_added") or fs.get("chunks_fetched")
+                return f"fetched latest 10-K ({n} chunks)" if n else "fetched latest 10-K"
+            if fs.get("decision") == "already_indexed":
+                return "already in the index"
+            return None
+        if node == "retrieve":
+            n = len(delta.get("retrieved_chunks") or [])
+            return f"{n} passages" if n else "no relevant passages"
+        if node == "grader":
+            kept = len(delta.get("retrieved_chunks") or [])
+            avg = delta.get("avg_grade")
+            if avg is None:
+                return None
+            return f"kept {kept} · avg grade {avg:g}/5"
+        if node == "rewrite":
+            return "query refined"
+        if node == "xbrl":
+            n = len(delta.get("xbrl_facts") or [])
+            return f"{n} exact figure{'s' if n != 1 else ''} from SEC XBRL" if n else None
+        if node == "calculator":
+            n = len(delta.get("calc_results") or [])
+            return f"{n} derived metric{'s' if n != 1 else ''}" if n else None
+        if node == "table_agent":
+            n = sum(1 for t in delta.get("table_results") or []
+                    if t.get("answer") and not t.get("error"))
+            return f"{n} table computation{'s' if n != 1 else ''}" if n else None
+        if node == "market_data":
+            n = sum(1 for m in delta.get("market_data") or [] if m.get("ok"))
+            chart = " + chart" if delta.get("charts") else ""
+            return f"{n} market call{'s' if n != 1 else ''}{chart}" if n else None
+        if node == "web_search":
+            n = len(delta.get("web_results") or [])
+            return f"{n} web result{'s' if n != 1 else ''}" if n else None
+        if node == "edgar_search":
+            n = sum(len(r.get("companies") or [])
+                    for r in delta.get("edgar_results") or [])
+            return f"{n} compan{'y' if n == 1 else 'ies'} matched" if n else None
+        if node == "evidence_builder":
+            n = len(delta.get("evidence") or [])
+            return f"{n} evidence items" if n else None
+        if node == "synthesize":
+            words = len((delta.get("draft_answer") or "").split())
+            return f"draft written ({words} words)" if words else None
+        if node == "critic":
+            gs = delta.get("grading_score")
+            return f"{gs:.0%} of claims supported" if isinstance(gs, (int, float)) else None
+        if node == "verify_numbers":
+            nv = delta.get("numeric_verification") or {}
+            total = nv.get("numbers_total") or 0
+            if not total:
+                return None
+            return f"{nv.get('numbers_grounded', 0)}/{total} figures grounded"
+        if node == "confidence":
+            c = delta.get("confidence")
+            return f"{c:.0%} confidence" if isinstance(c, (int, float)) else None
+    except Exception:
+        return None      # detail is decoration — never break the stream over it
+    return None
+
+
 def _normalise_chunk(text: str, meta: dict, idx: int) -> dict:
     company = meta.get("company") or meta.get("ticker", "?")
     year = str(meta.get("year", "?"))
@@ -259,7 +339,8 @@ def run_agentic(market: str, question: str, top_k: int = 5,
                 provider: str = "groq",
                 synth_model: Optional[str] = None,
                 api_key: Optional[str] = None,
-                on_step: Optional[Callable[[str], None]] = None) -> dict:
+                on_step: Optional[Callable[[str], None]] = None,
+                on_step_done: Optional[Callable[[str, Optional[str]], None]] = None) -> dict:
     """Synchronous v4 agentic run with optional conversation memory + per-request
     LLM overrides.
 
@@ -270,9 +351,11 @@ def run_agentic(market: str, question: str, top_k: int = 5,
     `chat_history` is the last few (role, content) turns of the active chat —
     the agent uses it to resolve pronouns and follow-ups.
 
-    `on_step(node_name)` — optional callback invoked as each graph node runs, so
-    the API layer can stream live "thinking" progress to the UI. When omitted we
-    fall back to a single blocking `invoke`.
+    `on_step(node_name)` — optional callback invoked as each graph node STARTS
+    (langgraph "tasks" stream events), so the API layer can stream live
+    "thinking" progress to the UI. `on_step_done(node_name, detail)` fires as
+    each node finishes, with a short outcome line ("12 passages", "2 exact
+    figures"). When both are omitted we fall back to a single blocking `invoke`.
     """
     rag = get_agentic(market, provider=provider, synth_model=synth_model, api_key=api_key)
     if top_k:
@@ -308,28 +391,34 @@ def run_agentic(market: str, question: str, top_k: int = 5,
         config["callbacks"] = [usage_cb]
 
     node_latencies: dict[str, float] = {}
-    if on_step is None:
+    if on_step is None and on_step_done is None:
         state = rag.graph.invoke(initial_state, config=config)
     else:
-        # stream_mode=["updates","values"] yields ("updates", {node: delta})
-        # for live progress and ("values", full_state) so we keep the final
-        # accumulated state to build the response from.
+        # "tasks" events fire when a node STARTS (accurate current-stage label
+        # — "updates" only fires on completion, so the old label lagged one
+        # node), "updates" carries each node's delta (for the outcome detail +
+        # latency attribution), and "values" keeps the final accumulated state.
         state: dict = {}
         last_ts = time.time()
         for mode, data in rag.graph.stream(
-            initial_state, stream_mode=["updates", "values"], config=config
+            initial_state, stream_mode=["updates", "values", "tasks"], config=config
         ):
             if mode == "values":
                 state = data
+            elif mode == "tasks" and isinstance(data, dict):
+                # A start event has no "result"/"error" yet.
+                if "result" not in data and "error" not in data and on_step:
+                    on_step(data.get("name", ""))
             elif mode == "updates" and isinstance(data, dict):
                 now = time.time()
                 # Attribute the elapsed wall-clock since the previous update to
                 # the node(s) that just produced one (rough but useful; parallel
                 # lanes that land together share the interval).
-                for node_name in data:
+                for node_name, delta in data.items():
                     node_latencies[node_name] = round(
                         node_latencies.get(node_name, 0.0) + (now - last_ts), 3)
-                    on_step(node_name)
+                    if on_step_done:
+                        on_step_done(node_name, _step_detail(node_name, delta or {}))
                 last_ts = now
 
     chunks: list[dict] = []

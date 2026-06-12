@@ -334,15 +334,24 @@ class AgenticRAGv2(AgenticRAG):
                 f"grader dropped {dropped}/{len(chunks)} chunks below "
                 f"grade {self.min_keep_grade}",
             )
-        # Never starve the synthesizer: if EVERY chunk fell below the bar, keep
-        # the best few instead of synthesising from nothing — the critic and
-        # numeric verifier still guard whatever gets written from them.
+        # Never starve the synthesizer: if EVERY chunk fell below the bar but
+        # the pool is at least borderline-relevant (avg ≥ very_poor_grade),
+        # keep the best few — the critic and numeric verifier still guard
+        # whatever gets written from them. When the average is VERY poor the
+        # pool is off-entity noise (a JPMorgan filing for an ICICI question):
+        # keeping it would show the user wrong-company sources, so drop it all
+        # — empty retrieval is exactly what triggers the web escalation.
         if not kept_chunks and chunks:
-            order = sorted(range(len(chunks)), key=lambda i: -scores[i])[:5]
-            kept_chunks = [chunks[i] for i in sorted(order)]
-            kept_grades = [scores[i] for i in sorted(order)]
-            self._log(state, f"all chunks below grade {self.min_keep_grade}; "
-                             f"keeping top {len(kept_chunks)} by score")
+            if avg >= self.very_poor_grade:
+                order = sorted(range(len(chunks)), key=lambda i: -scores[i])[:5]
+                kept_chunks = [chunks[i] for i in sorted(order)]
+                kept_grades = [scores[i] for i in sorted(order)]
+                self._log(state, f"all chunks below grade {self.min_keep_grade}; "
+                                 f"keeping top {len(kept_chunks)} by score")
+            else:
+                self._log(state, f"all chunks graded off-entity/irrelevant "
+                                 f"(avg {avg}); dropping them so the web "
+                                 f"escalation can take over")
         return {
             "grades": kept_grades,
             "avg_grade": avg,

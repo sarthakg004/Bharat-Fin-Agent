@@ -21,7 +21,7 @@ export function useRAGQuery(market: Market) {
   const { send } = useSSE();
   const {
     appendMessage, patchMessage, appendChunkToMessage,
-    appendStepToMessage, appendChartToMessage, setStreaming,
+    appendStepToMessage, markStepDone, appendChartToMessage, setStreaming,
   } = useChatStore();
 
   // Build chat_history from the messages BEFORE index `upto`.
@@ -48,6 +48,9 @@ export function useRAGQuery(market: Market) {
                 appendStepToMessage(assistantId, {
                   stage: e.stage, label: e.label, index: e.index, total: e.total,
                 });
+                break;
+              case "step_done":
+                markStepDone(assistantId, e.stage, e.detail);
                 break;
               case "sources":
                 patchMessage(assistantId, { chunks: e.chunks, metadata: { ...(e.metadata || {}) } });
@@ -104,7 +107,7 @@ export function useRAGQuery(market: Market) {
         toast.error(msg);
       }
     },
-    [send, market, patchMessage, appendChunkToMessage, appendStepToMessage, appendChartToMessage, setStreaming],
+    [send, market, patchMessage, appendChunkToMessage, appendStepToMessage, markStepDone, appendChartToMessage, setStreaming],
   );
 
   const ask = useCallback(
