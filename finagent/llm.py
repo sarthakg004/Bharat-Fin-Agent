@@ -215,6 +215,12 @@ class AllKeysExhaustedError(Exception):
 _EXHAUSTED_UNTIL: dict[str, float] = {}
 _EXHAUST_COOLDOWN_S = 60.0
 
+# Total exhaustion events per provider across this process lifetime.
+# Incremented every time _exhausted() fires (i.e., every full rotation cycle
+# that found every key rate-limited). Callers can snapshot this counter before
+# a batch and compare after to detect how many full-cycle failures occurred.
+_EXHAUST_COUNT: dict[str, int] = {}
+
 
 # Round-robin start-index per provider: each RotatingChatModel instance (one
 # per LLM role — planner, synth, critic, grader, …) starts on a DIFFERENT key,
@@ -323,8 +329,10 @@ class RotatingChatModel(BaseChatModel):
     def _exhausted(self, last: BaseException) -> AllKeysExhaustedError:
         """A full rotation cycle failed — latch the cooldown for the provider."""
         _EXHAUSTED_UNTIL[self.provider] = time.time() + _EXHAUST_COOLDOWN_S
+        _EXHAUST_COUNT[self.provider] = _EXHAUST_COUNT.get(self.provider, 0) + 1
         print(f"[RotatingChat:{self.provider}] every key rate-limited; "
-              f"failing fast for {_EXHAUST_COOLDOWN_S:.0f}s")
+              f"failing fast for {_EXHAUST_COOLDOWN_S:.0f}s "
+              f"(exhaustion #{_EXHAUST_COUNT[self.provider]} this session)")
         return AllKeysExhaustedError(
             f"All {len(self.keys)} {self.provider} API keys hit their rate "
             f"limit ({type(last).__name__})."

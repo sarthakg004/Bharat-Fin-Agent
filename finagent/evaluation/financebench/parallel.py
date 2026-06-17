@@ -291,6 +291,24 @@ def _load_all_questions():
     return load_eval_dataset()
 
 
+class _Tee:
+    """Write to both a stream and a file simultaneously."""
+    def __init__(self, stream, filepath: Path):
+        self._stream = stream
+        self._file = open(filepath, "a", buffering=1, encoding="utf-8")
+
+    def write(self, data):
+        self._stream.write(data)
+        self._file.write(data)
+
+    def flush(self):
+        self._stream.flush()
+        self._file.flush()
+
+    def fileno(self):
+        return self._stream.fileno()
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description="Parallel multi-key FinanceBench eval.")
     p.add_argument("--output", default=DEFAULT_OUTPUT)
@@ -306,7 +324,20 @@ def main() -> None:
     p.add_argument("--score", action="store_true",
                    help="RAGAS-score --output and write the final metrics report")
     p.add_argument("--judge-model", default=None)
+    p.add_argument("--log", default=None, metavar="FILE",
+                   help="mirror all output to this log file (default: logs/ragas_score.log "
+                        "when --score is used)")
     args = p.parse_args()
+
+    # Auto-logging: when --score is used (long-running, usually unattended),
+    # tee stdout+stderr to a log file so the run is always recorded on disk.
+    if args.score and not args.worker:
+        import sys
+        log_path = Path(args.log) if args.log else Path("logs/ragas_score.log")
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        sys.stdout = _Tee(sys.stdout, log_path)
+        sys.stderr = _Tee(sys.stderr, log_path)
+        print(f"[scorer] logging to {log_path}", flush=True)
 
     if args.worker:
         # Worker mode: serial runner over one shard, single process.
@@ -328,7 +359,7 @@ def main() -> None:
                 outputs_path=args.output,
                 scores_csv=str(Path(args.output).with_suffix("")) + "_ragas.csv",
                 judge_provider=args.provider, judge_model=args.judge_model,
-                max_workers=2, timeout=300, batch_size=8,
+                max_workers=1, timeout=300, batch_size=8,
             )
         except AllKeysExhaustedError:
             print("\nLIMIT EXHAUSTED — re-run this command once your daily quota resets.")

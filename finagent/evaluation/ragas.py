@@ -212,69 +212,46 @@ class RAGASEvaluator:
         # ---- 2. Configure RAGAS LLM + embeddings ----------------------------
         ragas_llm, ragas_embeddings = self._build_ragas_clients()
 
-        # ---- 3. Evaluate in batches (flush CSV after each) ------------------
-        from finagent.llm import AllKeysExhaustedError, _EXHAUSTED_UNTIL
+        # ---- 3. Evaluate one question at a time, check exhaustion after each --
+        # Evaluating question-by-question (not in batches of N) lets us check
+        # the key-pool exhaustion state after every 4 LLM calls (one per metric).
+        # RAGAS uses raise_exceptions=False so AllKeysExhaustedError is silently
+        # converted to NaN — we detect it via the _EXHAUST_COUNT counter that
+        # _exhausted() increments every time a full rotation cycle fails.
+        from finagent.llm import AllKeysExhaustedError, _EXHAUST_COUNT
 
         new_scores: list[dict] = []
-        batches = [
-            pending[i: i + batch_size]
-            for i in range(0, len(pending), batch_size)
-        ]
+        flush_every = max(1, batch_size)   # flush CSV this often (questions)
 
-        for batch_idx, batch in enumerate(
-            tqdm(batches, desc="RAGAS batches"), start=1
-        ):
-            try:
-                scores = self._evaluate_batch(
-                    batch,
-                    ragas_llm,
-                    ragas_embeddings,
-                    ground_truth_col,
+        for q_idx, row in enumerate(tqdm(pending, desc="RAGAS questions"), start=1):
+            exhaust_before = _EXHAUST_COUNT.get(self.judge_provider, 0)
+
+            score = self._evaluate_one(row, ragas_llm, ragas_embeddings, ground_truth_col)
+            new_scores.append(score)
+
+            exhaust_after = _EXHAUST_COUNT.get(self.judge_provider, 0)
+            new_exhaustions = exhaust_after - exhaust_before
+
+            # If the key pool exhausted even ONCE while scoring this question
+            # every key in the pool is rate-limited (daily or per-minute quota).
+            # Stop immediately — there is nothing to gain by continuing.
+            if new_exhaustions >= 1:
+                self._flush_csv(output_csv, already_scored, new_scores, numeric_cols)
+                scored_so_far = len(already_scored) + len(new_scores)
+                remaining = len(pending) - q_idx
+                print(f"\n⏸  LIMIT EXHAUSTED — all {self.judge_provider} keys are rate-limited.")
+                print(f"   {scored_so_far}/{len(outputs)} rows scored so far.")
+                print(f"   Progress saved to {output_csv}")
+                print(f"   Re-run the same command tomorrow to score the remaining {remaining} rows.")
+                raise AllKeysExhaustedError(
+                    f"All {self.judge_provider} keys exhausted after question {q_idx}"
                 )
-                new_scores.extend(scores)
-            except AllKeysExhaustedError as e:
-                # All keys exhausted — save progress and stop immediately so
-                # the caller can resume tomorrow once quotas reset.
+
+            # Flush CSV periodically so progress is never lost.
+            if q_idx % flush_every == 0 or q_idx == len(pending):
                 self._flush_csv(output_csv, already_scored, new_scores, numeric_cols)
-                remaining = sum(1 for b in batches[batch_idx - 1:] for _ in b)
-                print(f"\n⏸  RAGAS scorer stopped: {e}")
-                print(f"   Progress saved — {len(already_scored) + len(new_scores)} rows scored, "
-                      f"{remaining} remaining. Re-run the same command to resume.")
-                raise
-            except Exception as e:
-                print(f"\n  ! Batch {batch_idx} failed: {e}")
-                for row in batch:
-                    new_scores.append({
-                        "question": row.get("question", ""),
-                        "answer": row.get("answer", ""),
-                        "faithfulness": None,
-                        "answer_relevancy": None,
-                        "context_precision": None,
-                        "context_recall": None,
-                        "error": str(e),
-                    })
 
-            # Flush after every batch so progress survives a quota crash.
-            self._flush_csv(
-                output_csv, already_scored, new_scores, numeric_cols,
-            )
-
-            # After each batch, check the pool-level exhaustion flag: if every
-            # key is in cooldown it means the last batch was served by key
-            # rotation under heavy rate-limiting — give the pool time to recover
-            # rather than immediately firing the next batch.
-            if _EXHAUSTED_UNTIL and all(
-                v > time.time() for v in _EXHAUSTED_UNTIL.values()
-            ):
-                self._flush_csv(output_csv, already_scored, new_scores, numeric_cols)
-                remaining = sum(1 for b in batches[batch_idx:] for _ in b)
-                print(f"\n⏸  All keys cooling down — stopping after batch {batch_idx}.")
-                print(f"   {len(already_scored) + len(new_scores)} rows saved, "
-                      f"{remaining} remaining. Re-run to resume.")
-                raise AllKeysExhaustedError("All keys cooling down after batch")
-
-            if batch_idx < len(batches):
-                time.sleep(GROQ_RATE_LIMIT_DELAY)
+            time.sleep(GROQ_RATE_LIMIT_DELAY)
 
         # ---- 4. Build final DataFrame ----------------------------------------
         df = self._flush_csv(
@@ -328,14 +305,19 @@ class RAGASEvaluator:
         )
         return LangchainLLMWrapper(llm), LangchainEmbeddingsWrapper(embeddings)
 
-    def _evaluate_batch(
+    def _evaluate_one(
         self,
-        batch: list[dict],
+        row: dict,
         ragas_llm,
         ragas_embeddings,
         ground_truth_col: str,
-    ) -> list[dict]:
-        """Run RAGAS on one batch and return per-row score dicts."""
+    ) -> dict:
+        """Score a single question across all 4 RAGAS metrics.
+
+        Each metric is evaluated independently so a timeout on one metric
+        doesn't wipe the others.  AllKeysExhaustedError is NOT caught here —
+        it propagates to the caller which can flush state and stop cleanly.
+        """
         from ragas import evaluate
         from ragas.dataset_schema import EvaluationDataset, SingleTurnSample
         from ragas.metrics import (
@@ -346,80 +328,80 @@ class RAGASEvaluator:
         )
         from ragas.run_config import RunConfig
 
-        samples = []
-        for row in batch:
-            ground_truth = str(row.get(ground_truth_col, ""))
-            contexts = row.get("retrieved_chunks", [])
-            if not isinstance(contexts, list):
-                contexts = [str(contexts)]
-            # RAGAS needs non-empty contexts.
-            if not contexts:
-                contexts = ["No context retrieved."]
+        ground_truth = str(row.get(ground_truth_col, ""))
+        contexts = row.get("retrieved_chunks", [])
+        if not isinstance(contexts, list):
+            contexts = [str(contexts)]
+        if not contexts:
+            contexts = ["No context retrieved."]
 
-            samples.append(
-                SingleTurnSample(
-                    user_input=row["question"],
-                    retrieved_contexts=contexts,
-                    response=row["answer"],
-                    reference=ground_truth,
-                )
-            )
-
-        dataset = EvaluationDataset(samples=samples)
-
-        result = evaluate(
-            dataset=dataset,
-            metrics=[
-                Faithfulness(),
-                # strictness=1: most chat providers (Groq/Gemini) return a single
-                # generation per call, so the default strictness=3 just logs
-                # "LLM returned 1 generations instead of requested 3". One
-                # generation is fine here and removes the warning.
-                ResponseRelevancy(strictness=1),
-                LLMContextPrecisionWithReference(),
-                LLMContextRecall(),
-            ],
-            llm=ragas_llm,
-            embeddings=ragas_embeddings,
-            run_config=RunConfig(timeout=self.timeout, max_workers=self.max_workers),
-            raise_exceptions=False,   # keep going if one metric fails
+        sample = SingleTurnSample(
+            user_input=row["question"],
+            retrieved_contexts=contexts,
+            response=row["answer"],
+            reference=ground_truth,
         )
+        dataset = EvaluationDataset(samples=[sample])
+        run_cfg = RunConfig(timeout=self.timeout, max_workers=1)
 
-        # result.to_pandas() gives one row per sample with metric columns.
-        scores_df = result.to_pandas()
-
-        # Map RAGAS column names to our convention.
         col_map = {
             "faithfulness": "faithfulness",
-            "answer_relevancy": "answer_relevancy",
-            "context_precision": "context_precision",
-            "context_recall": "context_recall",
-            # RAGAS 0.2.x uses these names:
             "response_relevancy": "answer_relevancy",
+            "answer_relevancy": "answer_relevancy",
             "llm_context_precision_with_reference": "context_precision",
+            "context_precision": "context_precision",
             "llm_context_recall": "context_recall",
+            "context_recall": "context_recall",
         }
 
-        scores = []
-        for i, row in enumerate(batch):
-            score_row = {
-                "question": row.get("question", ""),
-                "answer": row.get("answer", ""),
-                "company": row.get("company") or row.get("company_name") or row.get("ticker", ""),
-                "year": row.get("year", ""),
-                "faithfulness": None,
-                "answer_relevancy": None,
-                "context_precision": None,
-                "context_recall": None,
-                "error": None,
-            }
-            if i < len(scores_df):
-                for ragas_col, our_col in col_map.items():
-                    if ragas_col in scores_df.columns:
-                        score_row[our_col] = scores_df.iloc[i].get(ragas_col)
-            scores.append(score_row)
+        # Evaluate each metric separately so a timeout on one doesn't null
+        # the others.  AllKeysExhaustedError propagates (not caught here).
+        metric_defs = [
+            Faithfulness(),
+            ResponseRelevancy(strictness=1),
+            LLMContextPrecisionWithReference(),
+            LLMContextRecall(),
+        ]
 
-        return scores
+        score_row: dict = {
+            "question": row.get("question", ""),
+            "answer": row.get("answer", ""),
+            "company": row.get("company") or row.get("company_name") or row.get("ticker", ""),
+            "year": row.get("year", ""),
+            "faithfulness": None,
+            "answer_relevancy": None,
+            "context_precision": None,
+            "context_recall": None,
+            "error": None,
+        }
+
+        for metric in metric_defs:
+            try:
+                result = evaluate(
+                    dataset=dataset,
+                    metrics=[metric],
+                    llm=ragas_llm,
+                    embeddings=ragas_embeddings,
+                    run_config=run_cfg,
+                    raise_exceptions=False,
+                )
+                sdf = result.to_pandas()
+                if not sdf.empty:
+                    for ragas_col, our_col in col_map.items():
+                        if ragas_col in sdf.columns:
+                            val = sdf.iloc[0].get(ragas_col)
+                            if val is not None and str(val) not in ("nan", "None"):
+                                score_row[our_col] = float(val)
+            except Exception as e:
+                # Let AllKeysExhaustedError propagate; silence transient errors.
+                from finagent.llm import AllKeysExhaustedError
+                if isinstance(e, AllKeysExhaustedError):
+                    raise
+                # TimeoutError or other transient failure — leave this metric as None
+                if score_row["error"] is None:
+                    score_row["error"] = str(e)
+
+        return score_row
 
     @staticmethod
     def _load_outputs(path) -> list[dict]:
