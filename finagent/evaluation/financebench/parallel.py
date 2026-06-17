@@ -321,13 +321,19 @@ def main() -> None:
 
     if args.score:
         from finagent.evaluation.financebench.runner import score_answers
+        from finagent.llm import AllKeysExhaustedError
 
-        scores = score_answers(
-            outputs_path=args.output,
-            scores_csv=str(Path(args.output).with_suffix("")) + "_ragas.csv",
-            judge_provider=args.provider, judge_model=args.judge_model,
-            max_workers=2, timeout=300, batch_size=8,
-        )
+        try:
+            scores = score_answers(
+                outputs_path=args.output,
+                scores_csv=str(Path(args.output).with_suffix("")) + "_ragas.csv",
+                judge_provider=args.provider, judge_model=args.judge_model,
+                max_workers=2, timeout=300, batch_size=8,
+            )
+        except AllKeysExhaustedError:
+            print("\nLIMIT EXHAUSTED — re-run this command once your daily quota resets.")
+            print("Already-scored rows are saved; the run will resume from where it stopped.")
+            raise SystemExit(1)
         final_report(args.output, ragas_scores=scores)
         return
 

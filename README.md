@@ -113,7 +113,7 @@ notebooks/       experimentation.ipynb (system reference notebook)
 
 The agent is measured end-to-end on **FinanceBench** (150 open-source
 questions over US filings), scored with RAGAS plus system-behaviour metrics.
-With 8 Groq keys the full set runs in parallel:
+With 12 Groq keys the full set runs in parallel:
 
 ```bash
 # answer all 150 questions across the key pool (resumable)
@@ -128,13 +128,39 @@ python -m finagent.evaluation.financebench.parallel --score \
 This produces **one aggregate metrics list** — `results/final_metrics.json` /
 `.md` — covering answer/refusal/error rates, mean confidence, RAGAS
 (faithfulness, answer relevancy, context precision/recall) overall and per
-question type (numeric / comparison / cross-document / narrative).
+question type (numeric / comparison / narrative).
+
+### Results (150 questions, 0 errors, 0 refusals)
+
+**System behaviour**
+
+| Metric | Value |
+|---|---|
+| Answer rate | **100%** |
+| Refusal rate | 0% |
+| Error rate | 0% |
+| Mean confidence | 0.625 |
+
+**RAGAS scores** (judge: `llama-3.3-70b-versatile`)
+
+| Question type | Faithfulness | Answer Relevancy | Context Precision | Context Recall |
+|---|---|---|---|---|
+| Numeric (71) | 0.64 | 0.50 | 0.57 | 0.39 |
+| Comparison (22) | 0.72 | 0.45 | 0.35 | 0.42 |
+| Narrative (57) | 0.45 | 0.28 | 0.32 | 0.27 |
+| **Overall (150)** | **0.59** | **0.41** | **0.47** | **0.35** |
+
+> Context precision/recall are lower than faithfulness because many numeric
+> answers are produced from XBRL / calculator tools rather than retrieved
+> text chunks; RAGAS scores those as empty-context responses. Faithfulness
+> and answer relevancy reflect actual answer quality.
 
 Runs are resilient to the free tier: per-minute limits rotate across the key
 pool, revoked keys are dropped from rotation, and when *every* key is
 exhausted the run stops with a clear `LIMIT EXHAUSTED` message — re-running
-the same command resumes where it stopped (the UI surfaces the same condition
-as "Limit exhausted" within seconds instead of hanging).
+the same command resumes where it stopped (the RAGAS scorer is also
+resumable: already-scored rows are skipped on the next run). The UI surfaces
+the same condition as "Limit exhausted" within seconds instead of hanging.
 
 ### Why not a "true" multi-agent system?
 

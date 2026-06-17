@@ -147,6 +147,11 @@ class RAGASEvaluator:
     ) -> pd.DataFrame:
         """Run RAGAS over all outputs and save results CSV.
 
+        Resumable: if `output_csv` already exists, questions that already have
+        at least one non-null RAGAS score are skipped and their rows are kept
+        as-is. Scores are flushed to CSV after every batch so partial progress
+        is never lost across crashes or quota exhaustions.
+
         Args:
             outputs_path: JSON file produced by NaiveRAG.run_dataset().
             output_csv: Where to write per-question metric scores + summary.
@@ -165,23 +170,55 @@ class RAGASEvaluator:
         output_csv = Path(output_csv)
         output_csv.parent.mkdir(parents=True, exist_ok=True)
 
+        numeric_cols = [
+            "faithfulness", "answer_relevancy",
+            "context_precision", "context_recall",
+        ]
+
         # ---- 1. Load outputs ------------------------------------------------
         outputs = self._load_outputs(outputs_path)
-        # Drop failures (empty answer)
         outputs = [o for o in outputs if o.get("answer") and not o.get("error")]
         if sample:
             outputs = outputs[:sample]
-        print(f"Evaluating {len(outputs)} outputs with RAGAS "
+
+        # ---- 1b. Resume: load already-scored rows ---------------------------
+        # A row is "complete" only when ALL four metrics are present.  Rows
+        # with partial scores (some metrics timed out) are re-evaluated so
+        # the entire metric set is filled in — their old scores are discarded
+        # and replaced with fresh ones.
+        already_scored: dict[str, dict] = {}
+        if output_csv.exists():
+            try:
+                existing = pd.read_csv(output_csv)
+                complete_mask = (
+                    (existing["question"] != "*** MEAN ***")
+                    & existing[numeric_cols].notna().all(axis=1)
+                )
+                for _, row in existing[complete_mask].iterrows():
+                    already_scored[str(row["question"])] = row.to_dict()
+                total_existing = (existing["question"] != "*** MEAN ***").sum()
+                partial = total_existing - len(already_scored)
+                if already_scored or partial:
+                    print(f"Resume: {len(already_scored)} fully scored, "
+                          f"{partial} partial (will re-evaluate) — skipping "
+                          f"{len(already_scored)}.")
+            except Exception as e:
+                print(f"  ! Could not read existing CSV ({e}); starting fresh.")
+
+        pending = [o for o in outputs if o.get("question", "") not in already_scored]
+        print(f"Evaluating {len(pending)}/{len(outputs)} outputs with RAGAS "
               f"(judge: {self.judge_model})")
 
         # ---- 2. Configure RAGAS LLM + embeddings ----------------------------
         ragas_llm, ragas_embeddings = self._build_ragas_clients()
 
-        # ---- 3. Evaluate in batches -----------------------------------------
-        all_scores: list[dict] = []
+        # ---- 3. Evaluate in batches (flush CSV after each) ------------------
+        from finagent.llm import AllKeysExhaustedError, _EXHAUSTED_UNTIL
+
+        new_scores: list[dict] = []
         batches = [
-            outputs[i: i + batch_size]
-            for i in range(0, len(outputs), batch_size)
+            pending[i: i + batch_size]
+            for i in range(0, len(pending), batch_size)
         ]
 
         for batch_idx, batch in enumerate(
@@ -194,12 +231,20 @@ class RAGASEvaluator:
                     ragas_embeddings,
                     ground_truth_col,
                 )
-                all_scores.extend(scores)
+                new_scores.extend(scores)
+            except AllKeysExhaustedError as e:
+                # All keys exhausted — save progress and stop immediately so
+                # the caller can resume tomorrow once quotas reset.
+                self._flush_csv(output_csv, already_scored, new_scores, numeric_cols)
+                remaining = sum(1 for b in batches[batch_idx - 1:] for _ in b)
+                print(f"\n⏸  RAGAS scorer stopped: {e}")
+                print(f"   Progress saved — {len(already_scored) + len(new_scores)} rows scored, "
+                      f"{remaining} remaining. Re-run the same command to resume.")
+                raise
             except Exception as e:
                 print(f"\n  ! Batch {batch_idx} failed: {e}")
-                # Mark each row in the batch as failed rather than losing them.
                 for row in batch:
-                    all_scores.append({
+                    new_scores.append({
                         "question": row.get("question", ""),
                         "answer": row.get("answer", ""),
                         "faithfulness": None,
@@ -209,29 +254,56 @@ class RAGASEvaluator:
                         "error": str(e),
                     })
 
-            # Polite delay between batches for Groq rate limit.
+            # Flush after every batch so progress survives a quota crash.
+            self._flush_csv(
+                output_csv, already_scored, new_scores, numeric_cols,
+            )
+
+            # After each batch, check the pool-level exhaustion flag: if every
+            # key is in cooldown it means the last batch was served by key
+            # rotation under heavy rate-limiting — give the pool time to recover
+            # rather than immediately firing the next batch.
+            if _EXHAUSTED_UNTIL and all(
+                v > time.time() for v in _EXHAUSTED_UNTIL.values()
+            ):
+                self._flush_csv(output_csv, already_scored, new_scores, numeric_cols)
+                remaining = sum(1 for b in batches[batch_idx:] for _ in b)
+                print(f"\n⏸  All keys cooling down — stopping after batch {batch_idx}.")
+                print(f"   {len(already_scored) + len(new_scores)} rows saved, "
+                      f"{remaining} remaining. Re-run to resume.")
+                raise AllKeysExhaustedError("All keys cooling down after batch")
+
             if batch_idx < len(batches):
                 time.sleep(GROQ_RATE_LIMIT_DELAY)
 
-        # ---- 4. Build results DataFrame -------------------------------------
-        df = pd.DataFrame(all_scores)
-
-        # Append a summary row at the bottom.
-        numeric_cols = [
-            "faithfulness", "answer_relevancy",
-            "context_precision", "context_recall",
-        ]
-        summary = {col: df[col].mean() for col in numeric_cols}
-        summary["question"] = "*** MEAN ***"
-        summary["answer"] = ""
-        df = pd.concat(
-            [df, pd.DataFrame([summary])], ignore_index=True
+        # ---- 4. Build final DataFrame ----------------------------------------
+        df = self._flush_csv(
+            output_csv, already_scored, new_scores, numeric_cols, return_df=True,
         )
-
-        df.to_csv(output_csv, index=False)
         print(f"\nResults written → {output_csv}")
         self._print_summary(df, numeric_cols)
         return df
+
+    def _flush_csv(
+        self,
+        output_csv: Path,
+        already_scored: dict,
+        new_scores: list[dict],
+        numeric_cols: list[str],
+        return_df: bool = False,
+    ) -> Optional[pd.DataFrame]:
+        """Merge already-scored + new_scores, append MEAN row, write CSV."""
+        all_rows = list(already_scored.values()) + new_scores
+        df = pd.DataFrame(all_rows)
+        if df.empty:
+            return df if return_df else None
+        summary = {col: pd.to_numeric(df[col], errors="coerce").mean()
+                   for col in numeric_cols if col in df.columns}
+        summary["question"] = "*** MEAN ***"
+        summary["answer"] = ""
+        df = pd.concat([df, pd.DataFrame([summary])], ignore_index=True)
+        df.to_csv(output_csv, index=False)
+        return df if return_df else None
 
     # ------------------------------------------------------------------ #
     # Internal helpers

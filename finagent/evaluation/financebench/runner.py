@@ -161,16 +161,24 @@ def score_answers(
     a smaller `batch_size` to keep the run stable.
     """
     from finagent.evaluation.ragas import RAGASEvaluator
+    from finagent.llm import AllKeysExhaustedError
 
     ev = RAGASEvaluator(judge_provider=judge_provider, judge_model=judge_model,
                         max_workers=max_workers, timeout=timeout)
-    scores_df = ev.evaluate(
-        outputs_path=str(outputs_path),
-        output_csv=str(scores_csv),
-        ground_truth_col="gold",
-        sample=sample,
-        batch_size=batch_size,
-    )
+    try:
+        scores_df = ev.evaluate(
+            outputs_path=str(outputs_path),
+            output_csv=str(scores_csv),
+            ground_truth_col="gold",
+            sample=sample,
+            batch_size=batch_size,
+        )
+    except AllKeysExhaustedError:
+        # Scorer stopped mid-run — read back whatever was flushed so far and
+        # return partial metrics rather than crashing the whole pipeline.
+        print("[score_answers] Keys exhausted mid-run; returning partial metrics.")
+        scores_csv_path = Path(str(scores_csv))
+        scores_df = pd.read_csv(str(scores_csv_path)) if scores_csv_path.exists() else pd.DataFrame()
 
     metric_cols = [
         "faithfulness", "answer_relevancy", "context_precision", "context_recall",

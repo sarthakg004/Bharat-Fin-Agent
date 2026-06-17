@@ -30,5 +30,32 @@
       }
     }
   },
-  "ragas": {}
+  "ragas": {
+    "overall": {
+      "faithfulness": 0.594,
+      "answer_relevancy": 0.4081,
+      "context_precision": 0.4654,
+      "context_recall": 0.3537
+    },
+    "by_type": {
+      "comparison": {
+        "faithfulness": 0.7232,
+        "answer_relevancy": 0.4457,
+        "context_precision": 0.3462,
+        "context_recall": 0.4211
+      },
+      "narrative": {
+        "faithfulness": 0.4507,
+        "answer_relevancy": 0.278,
+        "context_precision": 0.3204,
+        "context_recall": 0.2663
+      },
+      "numeric": {
+        "faithfulness": 0.6448,
+        "answer_relevancy": 0.499,
+        "context_precision": 0.572,
+        "context_recall": 0.3902
+      }
+    }
+  }
 }
