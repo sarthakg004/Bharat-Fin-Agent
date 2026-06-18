@@ -305,6 +305,32 @@ class RAGASEvaluator:
         )
         return LangchainLLMWrapper(llm), LangchainEmbeddingsWrapper(embeddings)
 
+    @staticmethod
+    def _install_asyncio_cleanup_filter() -> None:
+        """Suppress the harmless 'Event loop is closed' noise from httpx/anyio.
+
+        RAGAS creates a new asyncio event loop per evaluate() call.  When that
+        loop closes, open httpx connections try to clean up asynchronously and
+        land in already-closed Tasks.  asyncio prints 'Task exception was never
+        retrieved' for each one.  This is a known upstream issue (httpx +
+        anyio + RAGAS teardown ordering) — the evaluation results are correct.
+        We swallow only that specific exception class so genuine async errors
+        still surface.
+        """
+        import asyncio
+
+        def _handler(loop, context):
+            exc = context.get("exception")
+            if isinstance(exc, RuntimeError) and "Event loop is closed" in str(exc):
+                return  # swallow cleanup noise
+            loop.default_exception_handler(context)
+
+        try:
+            loop = asyncio.get_event_loop()
+            loop.set_exception_handler(_handler)
+        except RuntimeError:
+            pass  # no running loop yet — handler will be set when RAGAS creates one
+
     def _evaluate_one(
         self,
         row: dict,
@@ -318,6 +344,7 @@ class RAGASEvaluator:
         doesn't wipe the others.  AllKeysExhaustedError is NOT caught here —
         it propagates to the caller which can flush state and stop cleanly.
         """
+        self._install_asyncio_cleanup_filter()
         from ragas import evaluate
         from ragas.dataset_schema import EvaluationDataset, SingleTurnSample
         from ragas.metrics import (
