@@ -342,7 +342,10 @@ class RAGASEvaluator:
             reference=ground_truth,
         )
         dataset = EvaluationDataset(samples=[sample])
-        run_cfg = RunConfig(timeout=self.timeout, max_workers=1)
+        # timeout per sub-job (one LLM call); low enough that a slow-but-not-
+        # exhausted key fails fast.  AllKeysExhaustedError propagates through
+        # raise_exceptions=True before the timeout can matter.
+        run_cfg = RunConfig(timeout=min(self.timeout, 60), max_workers=1)
 
         col_map = {
             "faithfulness": "faithfulness",
@@ -383,7 +386,7 @@ class RAGASEvaluator:
                     llm=ragas_llm,
                     embeddings=ragas_embeddings,
                     run_config=run_cfg,
-                    raise_exceptions=False,
+                    raise_exceptions=True,   # propagates AllKeysExhaustedError immediately
                 )
                 sdf = result.to_pandas()
                 if not sdf.empty:
@@ -393,10 +396,9 @@ class RAGASEvaluator:
                             if val is not None and str(val) not in ("nan", "None"):
                                 score_row[our_col] = float(val)
             except Exception as e:
-                # Let AllKeysExhaustedError propagate; silence transient errors.
                 from finagent.llm import AllKeysExhaustedError
                 if isinstance(e, AllKeysExhaustedError):
-                    raise
+                    raise   # propagate → outer loop stops the run and saves progress
                 # TimeoutError or other transient failure — leave this metric as None
                 if score_row["error"] is None:
                     score_row["error"] = str(e)
