@@ -16,6 +16,7 @@ and instantiates the right client.
 from __future__ import annotations
 
 import os
+import re
 import time
 from typing import Optional
 
@@ -70,10 +71,16 @@ _MAX_KEY_INDEX = 32
 def collect_provider_keys(provider: str) -> list[str]:
     """All API keys available for a provider, in rotation order.
 
-    Reads the bare var (`GROQ_API_KEY`) plus every numbered variant
-    (`GROQ_API_KEY1` … `GROQ_API_KEY32`), tolerating gaps and either naming
-    scheme, deduplicated in order. Set multiple keys in .env to let
-    `RotatingChat` swap to the next one when one hits a rate limit.
+    Reads three forms, deduplicated in order:
+      * the consolidated var (`GROQ_API_KEYS`) — the whole pool as a
+        comma/whitespace-separated list;
+      * the bare var (`GROQ_API_KEY`);
+      * every numbered variant (`GROQ_API_KEY1` … `GROQ_API_KEY32`).
+    It tolerates gaps and either naming scheme. Prefer the consolidated form in
+    the cloud: Secret Manager bills per active secret *version*, so keeping the
+    whole pool in ONE secret (instead of one secret per key) keeps it inside the
+    free tier. Set multiple keys to let `RotatingChat` swap to the next one when
+    one hits a rate limit.
     """
     provider = provider.lower()
     if provider not in API_KEY_ENV:
@@ -83,8 +90,14 @@ def collect_provider_keys(provider: str) -> list[str]:
     base = API_KEY_ENV[provider]
     keys: list[str] = []
     seen: set[str] = set()
-    for name in (base, *(f"{base}{i}" for i in range(1, _MAX_KEY_INDEX + 1))):
-        k = (os.getenv(name) or "").strip()      # strip stray newline/space
+    # Consolidated pool (e.g. GROQ_API_KEYS="k1,k2,...") first, then the bare +
+    # numbered forms for back-compat.
+    consolidated = re.split(r"[,\s]+", os.getenv(f"{base}S") or "")
+    numbered = (os.getenv(name) or ""
+                for name in (base, *(f"{base}{i}"
+                                     for i in range(1, _MAX_KEY_INDEX + 1))))
+    for raw in (*consolidated, *numbered):
+        k = raw.strip()                          # strip stray newline/space
         if k and k not in seen:
             seen.add(k)
             keys.append(k)
