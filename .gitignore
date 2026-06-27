@@ -29,5 +29,9 @@ tests/
 # Firebase deploy cache
 .firebase/
 
-# Eval shard intermediates (merged file is the artifact)
+# Eval shard intermediates (merged file is the artifact) + per-run logs.
+# Matches both the flat layout (results/shards/) and versioned runs
+# (results/v2/shards/, results/v2/score.log).
 results/shards/
+results/**/shards/
+results/**/score.log

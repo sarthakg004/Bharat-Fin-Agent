@@ -31,6 +31,7 @@ Graph:
 from __future__ import annotations
 
 import argparse
+import os
 import re
 from typing import Optional
 
@@ -163,6 +164,24 @@ in ASCII square brackets — "Apple's FY2022 revenue was $394.3 billion [1]."
 Multiple sources: `[1,3]`. Use `[N]` — NOT `【N】`, `(N)`, or any other style.
 NEVER write out the source title, URL, or tag in prose — the user sees those in
 a sidebar already.
+
+Do NOT invent provenance
+------------------------
+State ONLY what the numbered evidence states. Do NOT add provenance metadata
+that is not present in the evidence item you are citing — specifically:
+- Never write XBRL tags or us-gaap concept names (e.g. "us-gaap:InventoryNet")
+  unless that exact tag appears in the evidence.
+- Never add filing identifiers, form types, accession numbers, or filing dates
+  ("as filed in the FY2019 10-K", "per the 2018-12-31 10-K") unless the evidence
+  item literally contains them.
+- Never add methodology or sourcing notes ("sourced from the XBRL filing",
+  "as reported in the cash-flow statement", "balance-sheet line item") that the
+  evidence does not itself assert.
+The figure plus its `[N]` citation is the complete, faithful answer — the [N]
+already points the reader to the exact source. Tacking on unverifiable "where
+this came from" phrasing reads authoritative but is ungrounded, and a fact-checker
+scores it as unsupported even when the number is correct. When in doubt, say
+less: cite the number and stop.
 
 Source priority and reconciliation
 ----------------------------------
@@ -316,6 +335,37 @@ REFUSAL_TEMPLATE = (
     "not ground the requested figures{detail}."
 )
 
+# Explicit-abstention message (#5). When a low-confidence draft is itself a
+# hedged "the evidence doesn't cover this" answer, we replace its padded prose
+# with this crisp, citation-free abstention rather than presenting a paragraph
+# that buries the admission. Honest abstention beats a confident-looking
+# non-answer in a finance setting.
+ABSTAIN_TEMPLATE = (
+    "**Insufficient evidence to answer.** The retrieved filings and sources do "
+    "not contain the specific information this question asks for, so I can't give "
+    "a grounded answer{detail}. Rather than infer an unsupported figure, I'm "
+    "flagging this as not answerable from the available evidence."
+)
+
+# Phrases a synthesizer uses when it is *itself* conceding the evidence can't
+# answer the question — the "soft refusals" buried inside otherwise-formatted
+# answers. Detected so the low-confidence gate can promote them to an explicit
+# abstention (#5).
+_SOFT_REFUSAL_RE = re.compile(
+    r"\b(?:"
+    r"not enough info(?:rmation)?|insufficient (?:info|information|evidence|data)|"
+    r"cannot (?:be )?(?:determined|calculated|computed|answered)|"
+    r"could not (?:be )?(?:determined|calculated|found)|"
+    r"unable to (?:determine|calculate|compute|answer|find|locate)|"
+    r"do(?:es)? not (?:disclose|provide|contain|include|report)|"
+    r"is not (?:disclosed|provided|available|reported)|"
+    r"are not (?:disclosed|provided|available|reported)|"
+    r"no (?:relevant |available )?(?:information|data|disclosure|figures?|evidence) "
+    r"(?:is|are|was|were|provided|available|present|on)?"
+    r")\b",
+    re.I,
+)
+
 
 # --------------------------------------------------------------------------- #
 # AgenticRAGv4
@@ -348,6 +398,13 @@ class AgenticRAGv4(AgenticRAGv3):
         confidence_answer: float = 0.80,
         confidence_warn: float = 0.60,
         active_critic: bool = True,
+        # Explicit-abstention path (#5). When a draft that landed in the LOW band
+        # is itself a hedged "the evidence doesn't cover this" answer, replace its
+        # padded prose with a crisp, citation-free abstention (status
+        # "insufficient_evidence") instead of presenting an answer-shaped
+        # non-answer. Set False to keep the prior behaviour (show the hedged draft
+        # with a low-confidence caveat).
+        abstain_on_insufficient: bool = True,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -391,6 +448,7 @@ class AgenticRAGv4(AgenticRAGv3):
         # existing critic_iterations cap. Set False to A/B against the prior
         # "critic always proceeds to verify" behaviour.
         self.active_critic = active_critic
+        self.abstain_on_insufficient = abstain_on_insufficient
         self.verifier_model = verifier_model or self.critic_model
         self.min_verify_score = min_verify_score
         self._web: Optional[WebSearcher] = None
@@ -553,6 +611,13 @@ class AgenticRAGv4(AgenticRAGv3):
         """
         from langchain_core.messages import HumanMessage, SystemMessage
 
+        # Eval/offline override: when the active corpus is known-complete (the
+        # FinanceBench eval points at the dedicated financebench_eval collection),
+        # live EDGAR fetch is pure waste and the gate would misfire on the
+        # ticker/name mismatch. The served path never sets this.
+        if os.getenv("DISABLE_DYNAMIC_FETCH") == "1":
+            return {"fetch_status": {}}
+
         question = state["question"]
 
         # Resolve the company (with conversation context for follow-ups).
@@ -614,32 +679,54 @@ class AgenticRAGv4(AgenticRAGv3):
         yrs = [int(y) for y in re.findall(r"\b((?:19|20)\d{2})\b", question)]
         if yrs:
             from datetime import date
-            n_filings = max(1, min(5, date.today().year - min(yrs) - 1))
+            # ponytail: cap at 12 filings, not 5 — a question about FY2016 asked
+            # in 2026 needs ~9 filings back, and the old cap of 5 made every
+            # year >5 back unreachable (the eval's single biggest miss class).
+            # 12 bounds the one-time fetch; widen only if older years matter.
+            n_filings = max(1, min(12, date.today().year - min(yrs) - 1))
 
         if gate["decision"] != "fetch":
             # "Indexed" is COMPANY-level. If the question names a year the
-            # index doesn't cover (e.g. only the latest 10-K was dynamically
-            # fetched but the question asks about FY2021), deepen the index by
-            # walking back to the filing that carries that year. Without this,
-            # retrieval returns nothing useful and the company looks "covered".
-            if (gate["decision"] == "already_indexed" and yrs
-                    and self.persist_fetch):
+            # index doesn't cover (e.g. us_filings holds only FY2022-2026 but the
+            # question asks about FY2016), deepen by walking back to the filing
+            # that carries that year. Without this, retrieval returns nothing
+            # useful and the company looks "covered" — the dominant failure mode
+            # for historical numeric questions on the cloud (ephemeral) path,
+            # which is exactly where this used to be skipped.
+            if gate["decision"] == "already_indexed" and yrs:
                 covered = self._indexed_years(gate.get("ticker") or company)
                 target = min(yrs)
                 digit_years = {int(y) for y in covered if y.isdigit()}
-                if digit_years and not ({target, target + 1} & digit_years):
-                    n_deep = max(1, min(5, max(digit_years) - target))
-                    self._log(state, f"index covers {sorted(digit_years)} for "
+                # When we can't read indexed years (corpus keyed by name, not
+                # ticker), still deepen — better a redundant fetch than a miss.
+                gap = (not digit_years) or not ({target, target + 1} & digit_years)
+                if gap:
+                    latest = max(digit_years) if digit_years else date.today().year
+                    n_deep = max(1, min(12, latest - target))
+                    self._log(state, f"index covers {sorted(digit_years) or '?'} for "
                                      f"{gate.get('ticker')} but the question needs "
                                      f"{target}; fetching {n_deep} older filing(s)")
                     try:
-                        res = self.fetcher.fetch_and_ingest(
-                            gate["ticker"], company=gate.get("company") or "",
-                            n=n_deep)
-                        if res.get("ok"):
-                            self._hybrids = None    # re-index for this turn
-                            self._log(state, f"deepened index with "
-                                             f"{res.get('chunks_added')} chunks")
+                        if self.persist_fetch:
+                            res = self.fetcher.fetch_and_ingest(
+                                gate["ticker"], company=gate.get("company") or "",
+                                n=n_deep)
+                            if res.get("ok"):
+                                self._hybrids = None    # re-index for this turn
+                                self._log(state, f"deepened index with "
+                                                 f"{res.get('chunks_added')} chunks")
+                        else:
+                            # Ephemeral (cloud): pull the older filings in memory
+                            # and feed them as fetched_chunks — no index write.
+                            res = self.fetcher.fetch_chunks(
+                                gate["ticker"], company=gate.get("company") or "",
+                                n=n_deep)
+                            deep = res.get("chunks", []) if res.get("ok") else []
+                            if deep:
+                                extra["fetched_chunks"] = (
+                                    extra.get("fetched_chunks", []) + deep)
+                                self._log(state, f"deepened in-memory with "
+                                                 f"{len(deep)} chunks")
                     except Exception as e:
                         self._log(state, f"index deepening failed: {e}")
             # already_indexed → retrieval handles it; not_us_listed → web branch.
@@ -1168,8 +1255,14 @@ class AgenticRAGv4(AgenticRAGv3):
         if not external_subs and corpus_attempted:
             chunks = state.get("retrieved_chunks") or []
             avg_grade = state.get("avg_grade")
+            # An in-corpus company with chunks in hand is answered from its
+            # filing — never escalate to the web (generic IR/marketing pages
+            # bury the real evidence and tank faithfulness, and the Tavily call
+            # is wasted cost). Escalate only when retrieval is genuinely empty,
+            # or the chunks are off-entity noise (company NOT in the corpus).
+            in_corpus = state.get("company_in_corpus")
             retrieval_was_poor = (not chunks) or (
-                avg_grade is not None and avg_grade < 2.0
+                avg_grade is not None and avg_grade < 2.0 and not in_corpus
             )
             if retrieval_was_poor:
                 fallback = state["question"]
@@ -1705,6 +1798,27 @@ class AgenticRAGv4(AgenticRAGv3):
                 "[N] item; do not repeat an unsupported figure:\n" + bullet + "\n"
             )
 
+        # Extractive numeric mode (#4): when EVERY sub-query is a numeric lookup
+        # (a single figure or ratio — no narrative component), the answer should
+        # be the figure itself, not a paragraph wrapped around it. A terse,
+        # extractive answer can't drift into unsupported provenance claims, which
+        # is exactly what depressed faithfulness on the numeric set.
+        routes = state.get("query_routes") or []
+        numeric_only = bool(routes) and all(r == "numeric" for r in routes)
+        extractive_block = ""
+        if numeric_only:
+            extractive_block = (
+                "\nThis is a NUMERIC question. Answer EXTRACTIVELY:\n"
+                "- Lead with the figure(s), each carrying its unit and period and a "
+                "single `[N]` citation — e.g. \"**$5,409 million** (FY2019) [1].\"\n"
+                "- Prefer XBRL FACT / DERIVED METRIC values verbatim when present.\n"
+                "- At most one short line stating the basis IF it is visible in the "
+                "evidence (e.g. the two operands of a ratio, each cited). Add nothing "
+                "the evidence does not state — no XBRL tags, no filing dates, no "
+                "methodology notes.\n"
+                "- No overview paragraph, no restating the question, no filler.\n"
+            )
+
         prompt = f"""{history_block}Question: {state['question']}
 
 Sub-queries researched:
@@ -1712,7 +1826,7 @@ Sub-queries researched:
 
 Numbered evidence (cite with `[N]`):
 {evidence_block}
-{feedback_block}
+{feedback_block}{extractive_block}
 ---
 Write your answer now in well-structured markdown with [N] citations after
 every factual claim. Treat the conversation history above as context for
@@ -2029,6 +2143,15 @@ single item is irrelevant."""
         """The sub-scores that apply to this question, each in [0,1]."""
         comps: dict[str, float] = {}
 
+        # A draft that is itself conceding it can't answer ("No relevant evidence
+        # provided…") must NOT score high: with no figures to verify and no
+        # claims for the critic to refute, the critic passes vacuously and the
+        # blend lands at ~1.0 — a content-free non-answer marked maximally
+        # confident. Force zero so the gate routes it to an explicit abstention.
+        draft = state.get("draft_answer") or state.get("final_answer") or ""
+        if _SOFT_REFUSAL_RE.search(draft[:600]):
+            return {}
+
         # Retrieval — normalise the mean grade (1-5) to [0,1]. Applicable only
         # when retrieval actually ran (graded chunks exist).
         grades = state.get("grades") or []
@@ -2116,6 +2239,22 @@ single item is irrelevant."""
         ans = state.get("draft_answer", "") or state.get("final_answer", "") or ""
         if "_Confidence:" in ans:                      # idempotent on a re-entry
             return {"status": "answered_low_confidence"}
+
+        # Explicit-abstention promotion (#5): a low-band draft that is ALREADY
+        # conceding it can't answer (a "soft refusal") is presented as a clean,
+        # citation-free abstention rather than a padded paragraph that buries the
+        # admission. Only the leading prose is checked (the synthesizer's caveats
+        # often appear in the first sentences); a draft carrying real cited
+        # figures alongside a hedge is left as a low-confidence answer.
+        if self.abstain_on_insufficient and _SOFT_REFUSAL_RE.search(ans[:600]):
+            detail = ""
+            return {
+                "final_answer": ABSTAIN_TEMPLATE.format(detail=detail),
+                "refused": True,
+                "needs_retry": False,
+                "status": "insufficient_evidence",
+            }
+
         conf = state.get("confidence")
         pct = f"{conf:.0%}" if isinstance(conf, (int, float)) else "low"
         note = (

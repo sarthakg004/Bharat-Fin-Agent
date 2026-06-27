@@ -532,3 +532,47 @@ def test_all_keys_exhausted_circuit_breaker():
         pass
     finally:
         L._EXHAUSTED_UNTIL.pop("groq", None)   # don't leak the latch to other tests
+
+
+def test_numeric_accuracy_metric():
+    """The deterministic numeric-correctness metric matches gold within tolerance,
+    handles the percent/ratio dual form, and excludes non-numeric golds."""
+    from finagent.evaluation.financebench.answer_match import (
+        numeric_accuracy, numeric_match)
+
+    assert numeric_match("$1577.00", "Capex was **$1,577 million** [1].") is True
+    assert numeric_match("$1577.00", "Capex was $1,600 million [1].") is False
+    # Gold 0.40 ↔ answer "40%" (ratio/percent dual form).
+    assert numeric_match("0.40", "The ratio was 40% [1].") is True
+    # Non-numeric gold → not scored (None).
+    assert numeric_match("Yes, it increased.", "Revenue rose [1].") is None
+
+    rows = [
+        {"qtype": "numeric", "gold": "$100.00", "answer": "It was $100 [1]."},
+        {"qtype": "numeric", "gold": "$200.00", "answer": "It was $250 [1]."},
+        {"qtype": "narrative", "gold": "Strong growth", "answer": "Grew a lot."},
+    ]
+    res = numeric_accuracy(rows)
+    assert res["overall"]["n"] == 2          # narrative excluded
+    assert res["overall"]["correct"] == 1
+    assert res["overall"]["accuracy"] == 0.5
+    assert len(res["misses"]) == 1
+
+
+def test_explicit_abstention_detection():
+    """Soft-refusal phrasing is detected, real cited answers are not, and the
+    metrics layer counts an explicit abstention as a refusal."""
+    from finagent.graph.agent import _SOFT_REFUSAL_RE
+    from finagent.evaluation.financebench.parallel import _is_refusal
+
+    assert _SOFT_REFUSAL_RE.search("the figure cannot be calculated")
+    assert _SOFT_REFUSAL_RE.search("Apple does not disclose segment margins")
+    assert not _SOFT_REFUSAL_RE.search("Revenue was $394.3 billion (FY2022) [1].")
+    # v2 failure phrasings that previously slipped through and scored conf=1.0:
+    assert _SOFT_REFUSAL_RE.search("No relevant evidence provided to calculate the ratio.")
+    assert _SOFT_REFUSAL_RE.search("No available data on FY2015 revenue is present.")
+    assert _SOFT_REFUSAL_RE.search("No information is available in the provided sources.")
+
+    assert _is_refusal("**Insufficient evidence to answer.** The filings ...")
+    assert _is_refusal("I don't have enough information to answer this from ...")
+    assert not _is_refusal("Revenue was $394.3 billion [1].")

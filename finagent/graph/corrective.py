@@ -165,6 +165,15 @@ class AgenticRAGv2(AgenticRAG):
         bm25_top_k: int = 10,
         dense_top_k: int = 10,
         final_top_k: int = 5,
+        # After merging every sub-query's hits into one pool, a final
+        # cross-encoder rerank against the ORIGINAL question keeps only the
+        # `retrieve_cap` best passages. Multi-hop questions decompose into
+        # several sub-queries, each contributing up to `final_top_k` chunks, so
+        # without this cap a single question could carry 15-25 passages into the
+        # synthesizer — measured to LOWER faithfulness/precision (more material
+        # to over-claim against, more noise). Capping to a tight, globally-best
+        # set is the single biggest faithfulness lever in the eval. None = no cap.
+        retrieve_cap: Optional[int] = 8,
         grader_model: Optional[str] = None,
         grade_threshold: float = 3.0,
         min_keep_grade: int = 4,
@@ -178,6 +187,7 @@ class AgenticRAGv2(AgenticRAG):
         self.bm25_top_k = bm25_top_k
         self.dense_top_k = dense_top_k
         self.final_top_k = final_top_k
+        self.retrieve_cap = retrieve_cap
         # Grader is fast & cheap — default to the planner-tier model.
         self.grader_model = grader_model or self.planner_model
         self.grade_threshold = grade_threshold
@@ -275,7 +285,46 @@ class AgenticRAGv2(AgenticRAG):
                     })
         if dropped_lang:
             self._log(state, f"dropped {dropped_lang} non-English chunk(s) from retrieval")
-        return {"retrieved_chunks": chunks}
+        chunks = self._cap_pool(state, chunks)
+        # Is the question's company actually in the corpus? The retriever's
+        # metadata-vocab filter (no LLM) tells us: a company match means the
+        # authoritative filing is indexed, so a low grade later means "hard
+        # question", not "wrong company" — keep the filing instead of escalating
+        # to generic web pages that only dilute faithfulness.
+        in_corpus = False
+        for hyb in hybrids:
+            if any((hyb.infer_filter(sq) or {}).get("companies") for sq in retrieve_subs):
+                in_corpus = True
+                break
+        return {"retrieved_chunks": chunks, "company_in_corpus": in_corpus}
+
+    def _cap_pool(self, state: AgentState, chunks: list[dict]) -> list[dict]:
+        """Global second-stage rerank: score the merged sub-query pool against
+        the ORIGINAL question and keep the `retrieve_cap` best passages.
+
+        The per-sub-query reranker inside each `HybridRetriever` only sees one
+        sub-query at a time, so a 6-sub-query comparison question arrives here
+        with up to 30 chunks. This final cross-encoder pass re-scores them all
+        against the user's actual question and trims to a tight set — fewer,
+        higher-precision passages measurably raised faithfulness in the eval.
+        """
+        cap = self.retrieve_cap
+        if not cap or len(chunks) <= cap:
+            return chunks
+        try:
+            from finagent.retrieval.reranker import _get_shared_reranker
+            reranker = _get_shared_reranker(self.reranker_model)
+            scores = reranker.predict([(state["question"], c["text"]) for c in chunks])
+            order = sorted(range(len(chunks)), key=lambda i: -scores[i])[:cap]
+            kept = [chunks[i] for i in order]
+            self._log(state, f"capped retrieval pool {len(chunks)}→{len(kept)} "
+                             f"by cross-encoder rerank vs. the question")
+            return kept
+        except Exception as e:
+            # Reranking is a precision optimisation — never let it drop evidence
+            # on a model/load error. Fall back to a simple head-truncation.
+            self._log(state, f"pool cap rerank failed ({e}); truncating to {cap}")
+            return chunks[:cap]
 
     def grader_node(self, state: AgentState) -> dict:
         """Score each chunk's relevance (1-5) AND drop the low-graded ones.
@@ -342,7 +391,11 @@ class AgenticRAGv2(AgenticRAG):
         # keeping it would show the user wrong-company sources, so drop it all
         # — empty retrieval is exactly what triggers the web escalation.
         if not kept_chunks and chunks:
-            if avg >= self.very_poor_grade:
+            # Keep the best few when the pool is borderline-relevant OR the
+            # company is in-corpus (the filing IS the authoritative source, even
+            # if no single chunk literally restates a hard narrative question —
+            # web pages would only hurt; the verifier still guards the figures).
+            if avg >= self.very_poor_grade or state.get("company_in_corpus"):
                 order = sorted(range(len(chunks)), key=lambda i: -scores[i])[:5]
                 kept_chunks = [chunks[i] for i in sorted(order)]
                 kept_grades = [scores[i] for i in sorted(order)]

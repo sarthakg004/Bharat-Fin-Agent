@@ -15,18 +15,18 @@ Outputs: `results/financebench_full_outputs.json` · 150 questions
 
 | metric | score |
 |---|---|
-| faithfulness | 0.594 |
-| answer_relevancy | 0.4081 |
-| context_precision | 0.4654 |
-| context_recall | 0.3537 |
+| faithfulness | 0.5901 |
+| answer_relevancy | 0.4112 |
+| context_precision | 0.3857 |
+| context_recall | 0.3361 |
 
 ## RAGAS by question type
 
 | qtype | answer_relevancy | context_precision | context_recall | faithfulness |
 |---|---|---|---|---|
-| comparison | 0.4457 | 0.3462 | 0.4211 | 0.7232 |
-| narrative | 0.278 | 0.3204 | 0.2663 | 0.4507 |
-| numeric | 0.499 | 0.572 | 0.3902 | 0.6448 |
+| comparison | 0.483 | 0.3544 | 0.4545 | 0.7021 |
+| narrative | 0.29 | 0.238 | 0.2135 | 0.4744 |
+| numeric | 0.4862 | 0.4883 | 0.3979 | 0.6483 |
 
 ## Coverage by question type
 

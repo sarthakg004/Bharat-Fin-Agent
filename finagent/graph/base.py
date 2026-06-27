@@ -80,6 +80,13 @@ Rules:
   2020-2022" → SIX sub-queries: Apple 2020, Apple 2021, Apple 2022, Microsoft
   2020, Microsoft 2021, Microsoft 2022 — each naming the company, the metric
   (R&D as % of revenue), and the exact fiscal year.
+- SUPERLATIVE / RANKING narrative questions ("which segment/region/product
+  performed best/worst", "what dragged down margin", "which geography grew
+  fastest") → do NOT issue a single vague sub-query. Enumerate the dimension:
+  emit one sub-query for the breakdown itself ("<company> revenue by operating
+  segment FY2022") AND one naming the comparison being asked ("<company> segment
+  with the largest revenue decline FY2022"), so retrieval pulls every row needed
+  to reason about the ranking rather than guessing the answer entity up front.
 - Each sub-query must stand on its own (no pronouns referring to the question).
 - Write sub-queries in precise analyst terms: name the exact line item or metric
   (e.g. "operating margin", "R&D as % of revenue", "diluted EPS") and the exact

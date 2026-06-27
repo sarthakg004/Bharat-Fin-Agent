@@ -292,11 +292,15 @@ class TableExtractor:
         if self._llm is None:
             from finagent.llm import build_llm
 
+            # Best free Groq model, not a tiny one: 8b-instant mislabelled
+            # financial tables often enough to poison table retrieval. This runs
+            # at ingestion only (one-off, free tier), so the strong model is
+            # cost-neutral on the cloud serve path.
             model = self.title_model or {
-                "groq": "llama-3.1-8b-instant",
+                "groq": "llama-3.3-70b-versatile",
                 "gemini": "gemini-2.5-flash",
-                "openai": "gpt-4o-mini",
-                "anthropic": "claude-haiku-4-5",
+                "openai": "gpt-4o",
+                "anthropic": "claude-sonnet-4-6",
             }[self.provider]
             self._llm = build_llm(self.provider, model, self.api_key, temperature=0.0)
         return self._llm

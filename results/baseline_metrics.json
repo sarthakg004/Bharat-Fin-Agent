@@ -1,0 +1,235 @@
+{
+  "outputs": "results/financebench_full_outputs.json",
+  "behaviour": {
+    "questions": 150,
+    "answered": 150,
+    "answer_rate": 1.0,
+    "refused": 0,
+    "refusal_rate": 0.0,
+    "errors": 0,
+    "error_rate": 0.0,
+    "mean_confidence": 0.6252,
+    "by_type": {
+      "numeric": {
+        "questions": 71,
+        "answered": 71,
+        "refused": 0,
+        "errors": 0
+      },
+      "comparison": {
+        "questions": 22,
+        "answered": 22,
+        "refused": 0,
+        "errors": 0
+      },
+      "narrative": {
+        "questions": 57,
+        "answered": 57,
+        "refused": 0,
+        "errors": 0
+      }
+    },
+    "numeric_accuracy": 0.6119,
+    "numeric_accuracy_detail": {
+      "overall": {
+        "n": 67,
+        "correct": 41,
+        "accuracy": 0.6119
+      },
+      "by_type": {
+        "numeric": {
+          "n": 67,
+          "correct": 41,
+          "accuracy": 0.6119
+        }
+      },
+      "tolerance": 0.01,
+      "misses": [
+        {
+          "question": "What is the FY2019 fixed asset turnover ratio for Activision Blizzard? Fixed asset turnover ratio is defined as: FY2019 revenue / (average PP&E between FY2018 a",
+          "company": "Activision Blizzard",
+          "gold": "24.26",
+          "answer": "**Activision Blizzard's FY2019 fixed\u2011asset turnover ratio was **0.73\u00d7**\u30101\u3011.**"
+        },
+        {
+          "question": "You are an investment banker and your only resource(s) to answer the following question is (are): the statement of financial position and the cash flow statemen",
+          "company": "Adobe",
+          "gold": "0.66",
+          "answer": "**Adobe's FY\u202f2015 operating cash flow ratio was **0.40**.**  \n\nThe ratio is derived from cash provided by operations of **$876.6\u202fmillion** divided by total curr"
+        },
+        {
+          "question": "What is the FY2017 operating cash flow ratio for Adobe? Operating cash flow ratio is defined as: cash from operations / total current liabilities. Round your an",
+          "company": "Adobe",
+          "gold": "0.83",
+          "answer": "**Adobe FY2017 operating cash flow ratio:\u202f0.65**\u202f[1]\n\n| Fiscal Year | Cash from Operations | Total Current Liabilities | Operating Cash Flow Ratio |\n|----------"
+        },
+        {
+          "question": "Does AMCOR have an improving gross margin profile as of FY2023? If gross margin is not a useful metric for a company like this, then state that and explain why.",
+          "company": "Amcor",
+          "gold": "No. For AMCOR there has been a slight decline in gross margins by 0.8%.",
+          "answer": "**Amcor\u2019s gross margin declined to **18.5%** in FY\u202f2023, confirming a deteriorating margin profile**\u30101\u3011.  \n\n| Fiscal Year | Gross Margin |\n|-------------|------"
+        },
+        {
+          "question": "Answer the following question as if you are an equity research analyst and have lost internet connection so you do not have access to financial metric providers",
+          "company": "AMD",
+          "gold": "4.2%",
+          "answer": "No data on AMD\u2019s FY\u202f2015 depreciation and amortization expense or FY\u202f2015 revenue is provided in the supplied sources, so the D&A\u202f% margin cannot be calculated."
+        },
+        {
+          "question": "Basing your judgments off of the cash flow statement and the income statement, what is American Water Works's FY2021 unadjusted operating income + depreciation ",
+          "company": "American Water Works",
+          "gold": "$1832.00",
+          "answer": "No information on American\u202fWater\u202fWorks\u2019s FY\u202f2021 unadjusted operating income, depreciation and amortization, or unadjusted EBITDA is provided in the supplied ev"
+        },
+        {
+          "question": "Considering the data in the balance sheet, what is Block's (formerly known as Square) FY2016 working capital ratio? Define working capital ratio as total curren",
+          "company": "Block",
+          "gold": "1.73",
+          "answer": "No information is available in the provided sources to calculate Block\u2019s FY\u202f2016 working\u2011capital ratio.\n\n*_Confidence: 47% \u2014 low. Parts of this answer are weakl"
+        },
+        {
+          "question": "Using the cash flow statement, answer the following question to the best of your abilities: how much did Block (formerly known as Square) generate in cash flow ",
+          "company": "Block",
+          "gold": "$382.00",
+          "answer": "No information is available for Block\u2019s FY\u202f2020 cash flow from operating activities.\n\n*_Confidence: 12% \u2014 low. Parts of this answer are weakly corroborated by t"
+        },
+        {
+          "question": "We want to calculate a financial metric. Please help us compute it by basing your answers off of the cash flow statement and the income statement. Here's the qu",
+          "company": "General Mills",
+          "gold": "0.54",
+          "answer": "No relevant data on General\u202fMills\u2019 FY\u202f2022 cash dividends paid or net income attributable to shareholders is provided in the available evidence.\n\n*_Confidence: "
+        },
+        {
+          "question": "What drove gross margin change as of FY2022 for JnJ? If gross margin is not a useful metric for a company like this, then please state that and explain why.",
+          "company": "Johnson & Johnson",
+          "gold": "For FY22, JnJ had changes in gross margin due to: One-time COVID-19 vaccine manufacturing exit related costs, Currency impacts in the Pharmaceutical segment, Commodity inflation in the MedTech and Consumer Health segments, partially offset by Supply chain benefits in the Consumer Health segment.",
+          "answer": "No evidence in the provided filings or web excerpts quantifies Johnson\u202f&\u202fJohnson\u2019s FY\u202f2022 gross\u2011margin change or its drivers, so a data\u2011based assessment cannot"
+        },
+        {
+          "question": "What is the FY2016 COGS for Microsoft? Please state answer in USD millions. Provide a response to the question by primarily using the statement of income.",
+          "company": "Microsoft",
+          "gold": "$32780.00",
+          "answer": "No FY2016 Cost of Goods Sold figure for Microsoft is provided in the supplied evidence.\n\n*_Confidence: 0% \u2014 low. Parts of this answer are weakly corroborated by"
+        },
+        {
+          "question": "We want to calculate a financial metric. Please help us compute it by basing your answers off of the statement of income and the statement of cash flows. Here's",
+          "company": "Netflix",
+          "gold": "5.4%",
+          "answer": "No available evidence provides Netflix\u2019s FY\u202f2015 operating income, depreciation\u202f&\u202famortization, or revenue, so the FY\u202f2015 unadjusted EBITDA margin cannot be ca"
+        },
+        {
+          "question": "We need to calculate a reasonable approximation (or exact number if possible) of a financial metric. Basing your judgment by information plainly provided in the",
+          "company": "Nike",
+          "gold": "55.1%",
+          "answer": "No information on Nike\u2019s FY\u202f2016\u20112018 cost of goods sold or revenue percentages is present in the supplied evidence.\n\n*_Confidence: 7% \u2014 low. Parts of this answ"
+        },
+        {
+          "question": "When primarily referencing the income statement and the statement of financial position, what is the FY2021 inventory turnover ratio for Nike? Inventory turnove",
+          "company": "Nike",
+          "gold": "3.46",
+          "answer": "No evidence was provided for Nike\u2019s FY\u202f2021 cost of goods sold or FY\u202f2020\u2013FY\u202f2021 inventory balances, so the FY\u202f2021 inventory turnover ratio cannot be calculat"
+        },
+        {
+          "question": "Does Verizon have a reasonably healthy liquidity profile based on its quick ratio for FY 2022? If the quick ratio is not relevant to measure liquidity, please s",
+          "company": "Verizon",
+          "gold": "No. The quick ratio was approximately 0.54 for Verizon. It indicated that Verizon does not have a healthy liquidity profile.",
+          "answer": "**Verizon\u2019s FY\u202f2022 quick ratio of **0.71\u00d7** indicates a liquidity profile that is not reasonably healthy.**  \n\n- The quick (acid\u2011test) ratio measures the abili"
+        },
+        {
+          "question": "What is the FY2017 - FY2019 3 year average of capex as a % of revenue for Activision Blizzard? Answer in units of percents and round to one decimal place. Calcu",
+          "company": "Activision Blizzard",
+          "gold": "1.9%",
+          "answer": "**3\u2011year average capex\u2011to\u2011revenue (FY2017\u2011FY2019):\u202f**\u202f**3.7\u202f%**.\n\n| Fiscal Year | Capex\u202f/\u202fRevenue |\n|-------------|----------------|\n| FY2017 | **3.5\u202f%** [1] |\n"
+        },
+        {
+          "question": "Based on the information provided primarily in the statement of financial position and the statement of income, what is AES's FY2022 return on assets (ROA)? ROA",
+          "company": "AES Corporation",
+          "gold": "-0.02",
+          "answer": "**AES FY2022 return on assets (ROA): \u20131.53%**  \n\n| Metric (FY) | Amount | Notes |\n|-------------|--------|-------|\n| Net income FY2022 | **$(546\u202fmillion)** | [1"
+        },
+        {
+          "question": "Does AMD have a reasonably healthy liquidity profile based on its quick ratio for FY22? If the quick ratio is not relevant to measure liquidity, please state th",
+          "company": "AMD",
+          "gold": "Yes. The quick ratio is 1.57, calculated as (cash and cash equivalents+Short term investments+Accounts receivable, net+receivables from related parties)/ (current liabilities).",
+          "answer": "**AMD\u2019s FY\u202f2022 quick ratio of **1.77\u00d7** indicates a reasonably healthy liquidity profile.**  \n\n- The quick ratio, calculated as (current assets\u202f\u2212\u202finventory)\u202f\u00f7\u202f"
+        },
+        {
+          "question": "How much (in USD billions) did American Water Works pay out in cash dividends for FY2020? Compute or extract the answer by primarily using the details outlined ",
+          "company": "American Water Works",
+          "gold": "$0.40",
+          "answer": "**$0.389\u202fbillion** in cash dividends were paid by **American Water Works** for FY\u202f2020\u202f[1]."
+        },
+        {
+          "question": "What is Coca Cola's FY2022 dividend payout ratio (using total cash dividends paid and net income attributable to shareholders)? Round answer to two decimal plac",
+          "company": "Coca-Cola",
+          "gold": "0.8",
+          "answer": "The FY\u202f2022 dividend payout ratio cannot be calculated because the cash\u2011flow statement does not provide the total cash dividends paid for that year.\n\n*_Confiden"
+        },
+        {
+          "question": "What is the FY2018 fixed asset turnover ratio for CVS Health? Fixed asset turnover ratio is defined as: FY2018 revenue / (average PP&E between FY2017 and FY2018",
+          "company": "CVS Health",
+          "gold": "17.98",
+          "answer": "**FY2018 fixed\u2011asset turnover ratio for **CVS Health** is **0.90\u00d7**.**  \n\nThe ratio is taken from a derived metric calculated from exact XBRL inputs, showing th"
+        },
+        {
+          "question": "According to the information provided in the statement of cash flows, what is the FY2020 free cash flow (FCF) for General Mills? FCF here is defined as: (cash f",
+          "company": "General Mills",
+          "gold": "$3215.00",
+          "answer": "No FY\u202f2020 free\u2011cash\u2011flow figure (cash from operations\u202f\u2013\u202fcapex) is disclosed in the provided evidence.\n\n*_Confidence: 50% \u2014 low. Parts of this answer are weakly"
+        },
+        {
+          "question": "What is Lockheed Martin's FY2021 net working capital? Define net working capital as total current assets less total current liabilities. Answer in USD millions.",
+          "company": "Lockheed Martin",
+          "gold": "$5818.00",
+          "answer": "No data on Lockheed\u202fMartin\u2019s FY\u202f2021 total current assets or total current liabilities\u2014and thus its net working capital\u2014is present in the supplied evidence."
+        },
+        {
+          "question": "What is the FY2022 unadjusted EBITDA less capex for PepsiCo? Define unadjusted EBITDA as unadjusted operating income + depreciation and amortization [from cash ",
+          "company": "PepsiCo",
+          "gold": "$9068.00",
+          "answer": "**$15,088\u202fmillion** unadjusted EBITDA for FY\u202f2022 (EBIT $11,414\u202fmillion\u202f+\u202fDepreciation &\u202fAmortization $3,674\u202fmillion)\u30101\u3011.  \n\nCapex is not disclosed in the cash\u2011"
+        },
+        {
+          "question": "Is Verizon a capital intensive business based on FY 2022 data?",
+          "company": "Verizon",
+          "gold": "Yes. Verizon's capital intensity ratio was approximately 2.774729. This means that it took approximately $2.77 of assets to generate $1 of revenue and thus, Verizon can be considered capital intensive.",
+          "answer": "**Verizon\u202fis a capital\u2011intensive business, as it self\u2011describes in its FY\u202f2022 filing**\u30103\u3011.  \n\n- The FY\u202f2022 10\u2011K states \u201cWe operate in a capital\u2011intensive busi"
+        },
+        {
+          "question": "What is the FY2018 - FY2020 3 year average unadjusted EBITDA % margin for Walmart? Define unadjusted EBITDA as unadjusted operating income + depreciation and am",
+          "company": "Walmart",
+          "gold": "6.2%",
+          "answer": "No data on Walmart\u2019s FY\u202f2018\u2011FY\u202f2020 unadjusted operating income, depreciation\u202f&\u202famortization, or total revenue are present in the supplied sources; therefore t"
+        }
+      ]
+    }
+  },
+  "ragas": {
+    "overall": {
+      "faithfulness": 0.5901,
+      "answer_relevancy": 0.4112,
+      "context_precision": 0.3857,
+      "context_recall": 0.3361
+    },
+    "by_type": {
+      "comparison": {
+        "faithfulness": 0.7021,
+        "answer_relevancy": 0.483,
+        "context_precision": 0.3544,
+        "context_recall": 0.4545
+      },
+      "narrative": {
+        "faithfulness": 0.4744,
+        "answer_relevancy": 0.29,
+        "context_precision": 0.238,
+        "context_recall": 0.2135
+      },
+      "numeric": {
+        "faithfulness": 0.6483,
+        "answer_relevancy": 0.4862,
+        "context_precision": 0.4883,
+        "context_recall": 0.3979
+      }
+    }
+  }
+}

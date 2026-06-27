@@ -44,12 +44,20 @@ _agentic_cache: dict[tuple, AgenticRAGv4] = {}
 
 
 def _build_agent(market: str, provider: str, synth_model: Optional[str],
-                 api_key: Optional[str]) -> AgenticRAGv4:
+                 api_key: Optional[str],
+                 collection: Optional[str] = None) -> AgenticRAGv4:
+    # Production serves `us_filings` (+ live SEC fetch for anything missing). The
+    # FinanceBench eval overrides this to `financebench_eval` — the dedicated,
+    # pre-ingested collection that actually contains the benchmark's filings at
+    # the historical years the questions ask about. Without the override the eval
+    # searches recent-only us_filings, finds nothing, and falls through to
+    # web-search noise (the root cause of ~⅓ of "no information" non-answers).
+    coll = collection or "us_filings"
     return AgenticRAGv4(
-        collection_name="us_filings",
+        collection_name=coll,
         # Phase 1: US-only active retrieval. Non-US / non-corpus questions get
         # empty/weak filing retrieval and escalate to web_search automatically.
-        collections=["us_filings"],
+        collections=[coll],
         market="us",
         provider=provider,
         synth_model=synth_model,                # None → AgenticRAG picks per-provider default
@@ -58,7 +66,13 @@ def _build_agent(market: str, provider: str, synth_model: Optional[str],
         # code change (default kept at bge-reranker-base). The image bakes
         # whatever this resolves to at build time.
         reranker_model=os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-base"),
-        bm25_top_k=8, dense_top_k=8, final_top_k=5,
+        # Wider first-stage pool (was 8/8) so narrative/MD&A prose — where
+        # first-stage recall was weakest (financebench narrative recall ~0.21) —
+        # has more chances to surface before the reranker. The wider pool is
+        # then trimmed back to a tight, globally-best set by `retrieve_cap`, so
+        # the synthesizer still sees few high-precision passages, not 25 noisy ones.
+        bm25_top_k=12, dense_top_k=12, final_top_k=5,
+        retrieve_cap=8,
         max_rewrites=2, max_critic_retries=1,
         # Cloud: PERSIST_DYNAMIC_FETCH=false → fetched filings are used in-memory
         # for the session and never grow the baked index.
@@ -72,18 +86,21 @@ def _build_agent(market: str, provider: str, synth_model: Optional[str],
 
 def get_agentic(market: str, provider: str = "groq",
                 synth_model: Optional[str] = None,
-                api_key: Optional[str] = None) -> AgenticRAGv4:
-    """Return a singleton AgenticRAGv4 for (market, provider, synth_model).
+                api_key: Optional[str] = None,
+                collection: Optional[str] = None) -> AgenticRAGv4:
+    """Return a singleton AgenticRAGv4 for (market, provider, synth_model, collection).
 
     User-supplied keys are NOT used as part of the cache key — multiple users
     with the same provider + model share an instance. The instance's
     `self.api_key` is overwritten per-request below so the right key reaches
-    the LLM client.
+    the LLM client. `collection` is part of the key so the eval's
+    `financebench_eval` instance never collides with the served `us_filings` one.
     """
-    key = (market, provider, synth_model or "_default_")
+    key = (market, provider, synth_model or "_default_", collection or "us_filings")
     with _lock:
         if key not in _agentic_cache:
-            _agentic_cache[key] = _build_agent(market, provider, synth_model, api_key)
+            _agentic_cache[key] = _build_agent(market, provider, synth_model, api_key,
+                                               collection=collection)
         agent = _agentic_cache[key]
         # If the caller supplied an api_key, propagate it now and clear the
         # provider's LLM cache so the next call rebuilds with the new key.
@@ -339,6 +356,7 @@ def run_agentic(market: str, question: str, top_k: int = 5,
                 provider: str = "groq",
                 synth_model: Optional[str] = None,
                 api_key: Optional[str] = None,
+                collection: Optional[str] = None,
                 on_step: Optional[Callable[[str], None]] = None,
                 on_step_done: Optional[Callable[[str, Optional[str]], None]] = None) -> dict:
     """Synchronous v4 agentic run with optional conversation memory + per-request
@@ -357,7 +375,8 @@ def run_agentic(market: str, question: str, top_k: int = 5,
     each node finishes, with a short outcome line ("12 passages", "2 exact
     figures"). When both are omitted we fall back to a single blocking `invoke`.
     """
-    rag = get_agentic(market, provider=provider, synth_model=synth_model, api_key=api_key)
+    rag = get_agentic(market, provider=provider, synth_model=synth_model,
+                      api_key=api_key, collection=collection)
     if top_k:
         rag.final_top_k = top_k
 

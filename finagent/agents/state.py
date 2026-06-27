@@ -39,6 +39,7 @@ class AgentState(TypedDict, total=False):
     # --- Corrective-RAG additions (graded retrieval + rewrite loop) -------- #
     grades: list[int]                  # grader: per-chunk relevance score (1-5)
     avg_grade: float                   # grader: mean of grades
+    company_in_corpus: bool            # retrieve: question's company is indexed → trust the filing
     rewrite_history: list[str]         # past rewritten sub-queries
     critic_iterations: int             # critic-retry counter (cap = max_critic_retries)
     critic_feedback: list[str]         # unsupported claims, fed to an active re-draft

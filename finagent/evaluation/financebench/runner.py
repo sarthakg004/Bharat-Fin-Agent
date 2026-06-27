@@ -24,6 +24,7 @@ Output-row key convention (matches `finagent.evaluation.ragas.RAGASEvaluator`):
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 from typing import Optional, Union
@@ -51,6 +52,20 @@ def run_agent_outputs(
     """
     # Imported lazily — pulls in the whole graph stack.
     from finagent.api.rag_service import run_agentic
+    from finagent.config import settings
+
+    # The eval must search the dedicated `financebench_eval` collection — the one
+    # that actually holds the benchmark's filings at the asked-about historical
+    # years. Production serves `us_filings`; pointing the eval there (the old
+    # default) made ~⅓ of questions find no filing and fall through to web noise.
+    eval_collection = settings.financebench_collection
+
+    # The eval corpus already contains every benchmark filing, so on-the-fly
+    # EDGAR fetch is pure waste here — and the gate would misfire anyway, since
+    # financebench_eval stores `ticker` as the company name (e.g. "Microsoft"),
+    # not the symbol the resolver returns ("MSFT"). Turn it off for the eval; the
+    # served path (us_filings + fetch) is unaffected.
+    os.environ["DISABLE_DYNAMIC_FETCH"] = "1"
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -88,6 +103,7 @@ def run_agent_outputs(
                         top_k=top_k,
                         provider=provider,
                         synth_model=synth_model,
+                        collection=eval_collection,
                     )
                     break
                 except Exception as e:

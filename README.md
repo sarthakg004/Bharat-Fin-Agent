@@ -130,7 +130,15 @@ This produces **one aggregate metrics list** — `results/final_metrics.json` /
 (faithfulness, answer relevancy, context precision/recall) overall and per
 question type (numeric / comparison / narrative).
 
-### Results (150 questions, 0 errors, 0 refusals)
+The eval answers from the dedicated **`financebench_eval`** Chroma collection —
+the benchmark's own filings, ingested through the production pipeline and covering
+the historical years the questions ask about. (Production serves `us_filings`
+plus on-demand SEC fetch; the eval pins the corpus so it measures retrieval, not
+EDGAR availability.) See **Bottleneck analysis & fixes** in `STRUCTURE.md` for
+how a corpus-wiring bug — the eval previously searched the recent-only
+`us_filings` and refused ~⅓ of questions — was found and fixed.
+
+### Results — v1 baseline (150 questions)
 
 **System behaviour**
 
@@ -150,10 +158,15 @@ question type (numeric / comparison / narrative).
 | Narrative (57) | 0.45 | 0.28 | 0.32 | 0.27 |
 | **Overall (150)** | **0.59** | **0.41** | **0.47** | **0.35** |
 
-> Context precision/recall are lower than faithfulness because many numeric
-> answers are produced from XBRL / calculator tools rather than retrieved
-> text chunks; RAGAS scores those as empty-context responses. Faithfulness
-> and answer relevancy reflect actual answer quality.
+> **These are the v1 baseline numbers.** Investigation (see
+> `STRUCTURE.md` → *Bottleneck analysis & fixes*) traced the low scores to the
+> agent searching the wrong corpus (recent-only `us_filings`), a dynamic-fetch
+> path broken for historical years, mis-routing that invented metrics for
+> qualitative questions, and web escalation that buried in-corpus filings under
+> generic web pages. Those are now fixed (all cost-neutral or cost-reducing).
+> Spot-checks confirm previously-refused questions (e.g. Microsoft FY2016 COGS,
+> American Express card-member retention) now answer correctly from the filing;
+> the full re-scored 150-question table will replace this one after the next run.
 
 Runs are resilient to the free tier: per-minute limits rotate across the key
 pool, revoked keys are dropped from rotation, and when *every* key is
