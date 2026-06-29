@@ -12,8 +12,9 @@ measures quality using four RAGAS metrics:
     Context Recall        — do the retrieved chunks cover the gold answer?
 
 The judge LLM is intentionally DIFFERENT from the generator LLM to
-avoid self-evaluation bias. Generator uses llama-3.1-8b-instant;
-judge uses llama-3.3-70b-versatile (the strongest free Groq model).
+avoid self-evaluation bias. The agent generates with gpt-oss-120b (synth) +
+llama-3.3-70b-versatile (planner/grader); the judge uses llama-3.3-70b-versatile.
+No sub-70B models are used anywhere in the pipeline.
 
 Usage:
     from finagent.evaluation.ragas import RAGASEvaluator

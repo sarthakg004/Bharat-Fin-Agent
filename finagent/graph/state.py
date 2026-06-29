@@ -26,6 +26,7 @@ from finagent.agents.state import (  # noqa: F401
     XBRLQueryBatch,
     CalcQuery,
     CalcQueryBatch,
+    FormulaSpec,
     CorpusGateQuery,
     EdgarQuery,
 )
@@ -35,5 +36,6 @@ __all__ = [
     "GraderReport", "RewrittenQuery", "QueryRoute", "RouterReport",
     "PlannedQuery", "QueryPlan", "TableTitle",
     "PandasCode", "NumericClaim", "NumericVerification", "MarketIntent",
-    "XBRLQuery", "XBRLQueryBatch", "CalcQuery", "CalcQueryBatch", "CorpusGateQuery", "EdgarQuery",
+    "XBRLQuery", "XBRLQueryBatch", "CalcQuery", "CalcQueryBatch", "FormulaSpec",
+    "CorpusGateQuery", "EdgarQuery",
 ]

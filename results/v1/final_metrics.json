@@ -32,29 +32,29 @@
   },
   "ragas": {
     "overall": {
-      "faithfulness": 0.594,
-      "answer_relevancy": 0.4081,
-      "context_precision": 0.4654,
-      "context_recall": 0.3537
+      "faithfulness": 0.5901,
+      "answer_relevancy": 0.4112,
+      "context_precision": 0.3857,
+      "context_recall": 0.3361
     },
     "by_type": {
       "comparison": {
-        "faithfulness": 0.7232,
-        "answer_relevancy": 0.4457,
-        "context_precision": 0.3462,
-        "context_recall": 0.4211
+        "faithfulness": 0.7021,
+        "answer_relevancy": 0.483,
+        "context_precision": 0.3544,
+        "context_recall": 0.4545
       },
       "narrative": {
-        "faithfulness": 0.4507,
-        "answer_relevancy": 0.278,
-        "context_precision": 0.3204,
-        "context_recall": 0.2663
+        "faithfulness": 0.4744,
+        "answer_relevancy": 0.29,
+        "context_precision": 0.238,
+        "context_recall": 0.2135
       },
       "numeric": {
-        "faithfulness": 0.6448,
-        "answer_relevancy": 0.499,
-        "context_precision": 0.572,
-        "context_recall": 0.3902
+        "faithfulness": 0.6483,
+        "answer_relevancy": 0.4862,
+        "context_precision": 0.4883,
+        "context_recall": 0.3979
       }
     }
   }

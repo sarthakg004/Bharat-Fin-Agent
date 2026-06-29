@@ -123,6 +123,11 @@ CONCEPT_COMPONENT_SUMS: dict[str, list[list[str]]] = {
          "InventoryRawMaterialsAndSuppliesNetOfReserves"],
         ["InventoryRawMaterials", "InventoryWorkInProcess",
          "InventoryFinishedGoods"],
+        # Last resort: a brand that outsources manufacturing (e.g. Nike) reports
+        # ONLY finished goods and no InventoryNet — so the single line IS total
+        # inventory. Tried last, so a manufacturer that splits finished + raw
+        # still sums the components above instead of undercounting here.
+        ["InventoryFinishedGoodsNetOfReserves"],
     ],
 }
 

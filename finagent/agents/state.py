@@ -39,6 +39,7 @@ class AgentState(TypedDict, total=False):
     # --- Corrective-RAG additions (graded retrieval + rewrite loop) -------- #
     grades: list[int]                  # grader: per-chunk relevance score (1-5)
     avg_grade: float                   # grader: mean of grades
+    company_in_corpus: bool            # retrieve: question's company is indexed → trust the filing
     rewrite_history: list[str]         # past rewritten sub-queries
     critic_iterations: int             # critic-retry counter (cap = max_critic_retries)
     critic_feedback: list[str]         # unsupported claims, fed to an active re-draft
@@ -380,6 +381,46 @@ class CalcQueryBatch(BaseModel):
         default_factory=list,
         description="Exactly one CalcQuery per numbered sub-query, in order.",
     )
+
+
+class FormulaSpec(BaseModel):
+    """An LLM-planned formula for a metric the calculator doesn't hardcode (or
+    that the question redefines), expressed over CANONICAL XBRL concepts.
+
+    The LLM supplies only the STRUCTURE (which concepts, added/subtracted, over
+    what denominator); the numbers are exact XBRL facts and the arithmetic is
+    done deterministically in `FinancialCalculator.ratio_from_spec`, so a planned
+    metric is as auditable — and as faithful — as a hardcoded one. Flat lists of
+    concept names (no nested objects) so structured output is reliable.
+    """
+
+    ok: bool = Field(
+        default=True,
+        description="False if the metric cannot be expressed from the available "
+                    "concepts (then the lane falls back / skips).",
+    )
+    numerator_add: list[str] = Field(
+        default_factory=list,
+        description="Canonical concepts SUMMED in the numerator (e.g. "
+                    "['operating_income','depreciation_amortization']).",
+    )
+    numerator_sub: list[str] = Field(
+        default_factory=list, description="Canonical concepts SUBTRACTED in the numerator.")
+    denominator_add: list[str] = Field(
+        default_factory=list,
+        description="Canonical concepts SUMMED in the denominator. LEAVE EMPTY "
+                    "when the metric is a dollar amount (numerator only), not a ratio.")
+    denominator_sub: list[str] = Field(
+        default_factory=list, description="Canonical concepts SUBTRACTED in the denominator.")
+    average_denominator: bool = Field(
+        default=False,
+        description="True when the denominator is a balance-sheet stock that "
+                    "convention averages over (t-1, t) — turnover and return "
+                    "ratios (revenue/avg assets, COGS/avg inventory, etc.).")
+    is_percent: bool = Field(
+        default=False,
+        description="True if the result is conventionally shown as a percent "
+                    "(margins, returns, %-of-revenue).")
 
 
 class EdgarQuery(BaseModel):

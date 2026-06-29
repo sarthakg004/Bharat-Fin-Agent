@@ -532,3 +532,121 @@ def test_all_keys_exhausted_circuit_breaker():
         pass
     finally:
         L._EXHAUSTED_UNTIL.pop("groq", None)   # don't leak the latch to other tests
+
+
+def test_numeric_accuracy_metric():
+    """The deterministic numeric-correctness metric matches gold within tolerance,
+    handles the percent/ratio dual form, and excludes non-numeric golds."""
+    from finagent.evaluation.financebench.answer_match import (
+        numeric_accuracy, numeric_match)
+
+    assert numeric_match("$1577.00", "Capex was **$1,577 million** [1].") is True
+    assert numeric_match("$1577.00", "Capex was $1,600 million [1].") is False
+    # Gold 0.40 ↔ answer "40%" (ratio/percent dual form).
+    assert numeric_match("0.40", "The ratio was 40% [1].") is True
+    # Non-numeric gold → not scored (None).
+    assert numeric_match("Yes, it increased.", "Revenue rose [1].") is None
+
+    rows = [
+        {"qtype": "numeric", "gold": "$100.00", "answer": "It was $100 [1]."},
+        {"qtype": "numeric", "gold": "$200.00", "answer": "It was $250 [1]."},
+        {"qtype": "narrative", "gold": "Strong growth", "answer": "Grew a lot."},
+    ]
+    res = numeric_accuracy(rows)
+    assert res["overall"]["n"] == 2          # narrative excluded
+    assert res["overall"]["correct"] == 1
+    assert res["overall"]["accuracy"] == 0.5
+    assert len(res["misses"]) == 1
+
+
+def test_explicit_abstention_detection():
+    """Soft-refusal phrasing is detected, real cited answers are not, and the
+    metrics layer counts an explicit abstention as a refusal."""
+    from finagent.graph.agent import _SOFT_REFUSAL_RE
+    from finagent.evaluation.financebench.parallel import _is_refusal
+
+    assert _SOFT_REFUSAL_RE.search("the figure cannot be calculated")
+    assert _SOFT_REFUSAL_RE.search("Apple does not disclose segment margins")
+    assert not _SOFT_REFUSAL_RE.search("Revenue was $394.3 billion (FY2022) [1].")
+    # v2 failure phrasings that previously slipped through and scored conf=1.0:
+    assert _SOFT_REFUSAL_RE.search("No relevant evidence provided to calculate the ratio.")
+    assert _SOFT_REFUSAL_RE.search("No available data on FY2015 revenue is present.")
+    assert _SOFT_REFUSAL_RE.search("No information is available in the provided sources.")
+
+    assert _is_refusal("**Insufficient evidence to answer.** The filings ...")
+    assert _is_refusal("I don't have enough information to answer this from ...")
+    assert not _is_refusal("Revenue was $394.3 billion [1].")
+
+
+def test_turnover_ratio_averages_denominator():
+    """Flow÷stock ratios average the balance-sheet denominator over (t-1, t);
+    the numerator stays single-period. Stubs XBRL so no network is needed."""
+    from finagent.tools.calculator import FinancialCalculator, AVG_DENOMINATOR_RATIOS
+
+    assert "fixed_asset_turnover" in AVG_DENOMINATOR_RATIOS
+    assert "inventory_turnover" in AVG_DENOMINATOR_RATIOS
+
+    c = FinancialCalculator.__new__(FinancialCalculator)   # skip XBRLClient init
+    facts = {
+        ("revenue", "FY2019"): 6489.0,
+        ("ppe_net", "FY2019"): 253.0,
+        ("ppe_net", "FY2018"): 282.0,                       # avg = 267.5
+    }
+
+    def fake_input(ticker, concept, period):
+        if (concept, period) in facts:
+            v = facts[(concept, period)]
+            return {"ok": True, "concept": concept, "value": v,
+                    "value_str": f"{v}", "tag": "X", "fy": 2019, "form": "10-K",
+                    "source": "stub", "ticker": ticker}
+        return {"ok": False, "concept": concept, "period": period, "error": "miss"}
+
+    c._input = fake_input
+    r = c.ratio("ATVI", "fixed_asset_turnover", "FY2019")
+    assert r["ok"]
+    # 6489 / avg(253, 282) = 6489 / 267.5 = 24.26 — NOT 6489/253 = 25.65.
+    assert round(r["value"], 2) == 24.26
+    assert "avg(ppe_net)" in r["formula"]
+
+    # Prior year missing → graceful fall back to the year-end value.
+    del facts[("ppe_net", "FY2018")]
+    r2 = c.ratio("ATVI", "fixed_asset_turnover", "FY2019")
+    assert r2["ok"] and round(r2["value"], 2) == 25.65
+
+
+def test_ratio_from_spec_planned_formula():
+    """A planned formula computes deterministically from stubbed XBRL facts —
+    the LLM supplies structure, the numbers stay exact. No network."""
+    from finagent.tools.calculator import FinancialCalculator
+
+    c = FinancialCalculator.__new__(FinancialCalculator)
+    facts = {
+        ("operating_income", "FY2022"): 1000.0,
+        ("depreciation_amortization", "FY2022"): 200.0,
+        ("revenue", "FY2022"): 5000.0,
+    }
+
+    def fake_input(ticker, concept, period):
+        if (concept, period) in facts:
+            v = facts[(concept, period)]
+            return {"ok": True, "concept": concept, "value": v,
+                    "value_str": str(v), "fy": 2022, "ticker": ticker}
+        return {"ok": False, "concept": concept, "period": period, "error": "miss"}
+
+    c._input = fake_input
+
+    # Ratio: EBITDA margin = (operating_income + D&A) / revenue = 1200/5000 = 24%.
+    spec = {"numerator_add": ["operating_income", "depreciation_amortization"],
+            "denominator_add": ["revenue"], "is_percent": True}
+    r = c.ratio_from_spec("X", spec, "FY2022", "ebitda_margin")
+    assert r["ok"] and round(r["value"], 4) == 0.24 and r["value_str"] == "24.0%"
+
+    # Dollar amount: empty denominator → numerator only (unadjusted EBITDA = 1200).
+    spec2 = {"numerator_add": ["operating_income", "depreciation_amortization"]}
+    r2 = c.ratio_from_spec("X", spec2, "FY2022", "ebitda")
+    assert r2["ok"] and r2["value"] == 1200.0 and "/" not in r2["formula"]
+
+    # A concept the filing doesn't report → clean miss, not a crash.
+    spec3 = {"numerator_add": ["goodwill"], "denominator_add": ["revenue"]}
+    r3 = c.ratio_from_spec("X", spec3, "FY2022", "goodwill_intensity")
+    assert not r3["ok"] and "missing" in r3["error"]

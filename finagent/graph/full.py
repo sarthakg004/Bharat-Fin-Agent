@@ -132,17 +132,32 @@ Decomposition rules
 - Use precise analyst terms: name the exact line item or metric ("operating
   margin", "R&D as % of revenue", "diluted EPS") and the exact fiscal period
   ("FY2022"), so each can be answered from a single XBRL concept or calculation.
+- Do NOT invent a metric the question didn't ask for. A qualitative question
+  ("was the company able to retain customers?", "what drove the margin change?")
+  must stay qualitative — do NOT rewrite it into a made-up ratio ("retention
+  rate", "margin change %") that the filing won't report. Keep its wording and
+  route it `narrative`.
 - FOLLOW-UPS: if the question relies on the conversation above ("show me the
   chart", "what about last year"), rewrite it into a self-contained sub-query
   naming the company/ticker discussed just before.
 
 Routing lanes (per sub-query)
 -----------------------------
-- narrative: text retrieval over filings. Prose questions (strategy, risks,
-  segment overviews, MD&A commentary) about ONE named company.
-- numeric: exact figures FROM THE FILINGS — reported line items, ratios,
-  margins, growth %, multi-year financial comparisons (answered from XBRL
-  facts, a deterministic calculator, and extracted tables).
+- numeric: the answer hinges on a SPECIFIC reported figure or COMPUTABLE ratio
+  — a named line item, ratio, margin, growth %, or multi-year comparison. This
+  INCLUDES yes/no or "healthy?" judgements that turn on a named metric ("does X
+  have a healthy quick ratio?", "is X capital-intensive?", "is the current
+  ratio adequate?") — route them `numeric` so the calculator computes the ratio
+  from XBRL; the synthesiser adds the judgement on top. Examples: "FY2016 COGS",
+  "FY2021 inventory turnover", "EBITDA margin FY21→FY23", "quick ratio FY2022".
+  Answered from XBRL facts, a deterministic calculator, and extracted tables.
+- narrative: text retrieval over filings, for PURELY QUALITATIVE questions with
+  no single computable metric — strategy, risks, segment/MD&A commentary,
+  drivers ("what drove the margin change", "why did revenue fall"), and
+  qualitative judgements ("was X able to retain customers", "describe X's
+  strategy") about ONE named company. When unsure between numeric and narrative
+  and a concrete metric is nameable, prefer `numeric` (it retrieves the filing
+  prose too, AND computes the figure).
 - market: live market data (yfinance). Anything about a listed company's
   MARKET behaviour — current/premarket/intraday price, OHLC history, charts,
   52-week range, ticker news. Lean `market` whenever the question is in the
@@ -150,15 +165,22 @@ Routing lanes (per sub-query)
 - cross_document: EDGAR full-text search across MANY companies' filings — the
   answer is a SET of companies ("which companies disclosed X"), not facts
   about one named company.
-- external: general web search. Macro news, corporate events, M&A timelines,
-  post-cutoff developments not specifically about market data.
+- external: general web search. ONLY for macro news, corporate events, M&A
+  timelines, or post-cutoff developments. Do NOT route a question about ONE
+  named company's own filing here — that is `narrative`/`numeric` (the filing,
+  or a fetched 10-K, is the authoritative source; the web is a last resort the
+  retrieval lanes escalate to on their own when the corpus genuinely lacks it).
 
 Examples:
-  - "What is HDFC Bank's net interest margin in FY23?"            → numeric
+  - "What is the FY2016 COGS for Microsoft?"                      → numeric
+  - "What is Nike's FY2021 inventory turnover ratio?"            → numeric
+  - "What drove the gross-margin change for J&J in FY2022?"      → narrative
+  - "Was American Express able to retain card members in 2022?"  → narrative
+  - "Does AMD have a healthy liquidity profile (quick ratio)?"   → narrative
   - "Describe Infosys' AI strategy"                               → narrative
   - "What is Wipro's current share price?"                        → market
   - "Which companies disclosed a material weakness in FY2023?"    → cross_document
-  - "Latest macro headlines from India today"                     → external
+  - "Latest macro headlines today"                                → external
 """
 
 PLAN_ROUTE_PROMPT = """\

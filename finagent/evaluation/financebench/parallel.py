@@ -46,10 +46,20 @@ from typing import Optional, Union
 DEFAULT_OUTPUT = "results/financebench_full_outputs.json"
 DEFAULT_METRICS_JSON = "results/final_metrics.json"
 DEFAULT_METRICS_MD = "results/final_metrics.md"
-_SHARD_DIR = "results/shards"
 
 # The agent's explicit refusal opener (see graph.agent.REFUSAL_TEMPLATE).
 _REFUSAL_PREFIX = "I don't have enough information to answer this"
+# The explicit-abstention opener (graph.agent.ABSTAIN_TEMPLATE) — a low-band
+# soft-refusal promoted to a clean abstention (#5). Counts as "not answered"
+# alongside hard refusals.
+_ABSTAIN_PREFIX = "**Insufficient evidence to answer.**"
+
+
+def _is_refusal(answer: str) -> bool:
+    """An answer the agent declined to give: a hard refusal or an explicit
+    insufficient-evidence abstention."""
+    a = (answer or "").strip()
+    return a.startswith(_REFUSAL_PREFIX) or a.startswith(_ABSTAIN_PREFIX)
 
 
 # --------------------------------------------------------------------------- #
@@ -113,7 +123,10 @@ def run_parallel(
     print(f"[parallel] using {workers} worker(s)")
 
     output_path = Path(output_path)
-    shard_dir = Path(_SHARD_DIR)
+    # Shards live next to the run's output (e.g. results/v2/shards/), so each
+    # versioned run keeps its own intermediates instead of sharing one global
+    # results/shards/ dir. Cleaned up automatically once the merge succeeds.
+    shard_dir = output_path.parent / "shards"
     shard_dir.mkdir(parents=True, exist_ok=True)
     stem = output_path.stem
 
@@ -165,6 +178,12 @@ def run_parallel(
     if failures:
         print(f"[parallel] {failures} worker(s) failed — merged what completed; "
               f"re-run the same command to resume the gaps.")
+    else:
+        # Clean run → the merged output is the source of truth; drop the
+        # per-shard intermediates so the results dir stays tidy. On a partial
+        # run we KEEP them: they're what a resume reads to skip done questions.
+        import shutil
+        shutil.rmtree(shard_dir, ignore_errors=True)
     return merged
 
 
@@ -193,8 +212,7 @@ def summarize_outputs(outputs_path: Union[str, Path]) -> dict:
     judge): coverage, refusals, errors, confidence."""
     rows = json.loads(Path(outputs_path).read_text())
     n = len(rows)
-    refused = [r for r in rows
-               if (r.get("answer") or "").strip().startswith(_REFUSAL_PREFIX)]
+    refused = [r for r in rows if _is_refusal(r.get("answer"))]
     errors = [r for r in rows if r.get("error")]
     answered = n - len(refused) - len(errors)
     confs = [r["confidence"] for r in rows if isinstance(r.get("confidence"), (int, float))]
@@ -207,10 +225,16 @@ def summarize_outputs(outputs_path: Union[str, Path]) -> dict:
         b["questions"] += 1
         if r.get("error"):
             b["errors"] += 1
-        elif (r.get("answer") or "").strip().startswith(_REFUSAL_PREFIX):
+        elif _is_refusal(r.get("answer")):
             b["refused"] += 1
         else:
             b["answered"] += 1
+
+    # Deterministic numeric correctness (judge-free) — the "is the answer
+    # actually RIGHT?" signal that complements RAGAS faithfulness. See
+    # answer_match.py for why this is tracked separately.
+    from finagent.evaluation.financebench.answer_match import numeric_accuracy
+    num_acc = numeric_accuracy(rows)
 
     return {
         "questions": n,
@@ -221,6 +245,10 @@ def summarize_outputs(outputs_path: Union[str, Path]) -> dict:
         "errors": len(errors),
         "error_rate": round(len(errors) / n, 4) if n else None,
         "mean_confidence": round(sum(confs) / len(confs), 4) if confs else None,
+        # Numeric accuracy: gold figure present in the answer within 1% tol,
+        # scored over numeric questions only (overall rate + per-qtype + misses).
+        "numeric_accuracy": num_acc["overall"]["accuracy"],
+        "numeric_accuracy_detail": num_acc,
         "by_type": by_type,
     }
 
@@ -253,8 +281,19 @@ def final_report(
         f"| refusal rate | {behaviour['refusal_rate']} |",
         f"| error rate | {behaviour['error_rate']} |",
         f"| mean confidence | {behaviour['mean_confidence']} |",
+        f"| numeric accuracy (gold in answer, 1% tol) | {behaviour.get('numeric_accuracy')} |",
         "",
     ]
+    num_detail = behaviour.get("numeric_accuracy_detail") or {}
+    if num_detail.get("by_type"):
+        lines += ["## Numeric accuracy (deterministic, judge-free)", "",
+                  "| qtype | correct | n | accuracy |", "|---|---|---|---|"]
+        for qt, d in sorted(num_detail["by_type"].items()):
+            lines.append(f"| {qt} | {d['correct']} | {d['n']} | {d['accuracy']} |")
+        ov = num_detail.get("overall", {})
+        lines.append(f"| **overall** | {ov.get('correct')} | {ov.get('n')} | "
+                     f"{ov.get('accuracy')} |")
+        lines.append("")
     if ragas_scores:
         overall = ragas_scores.get("overall", {})
         lines += ["## RAGAS (overall)", "", "| metric | score |", "|---|---|"]
@@ -329,11 +368,18 @@ def main() -> None:
                         "when --score is used)")
     args = p.parse_args()
 
+    # Every artifact of a run is derived from --output's directory, so a
+    # versioned run (e.g. --output results/v2/financebench_full_outputs.json)
+    # keeps its outputs, RAGAS csv, metrics, shards, and log together under
+    # results/v2/ and never clobbers an earlier version. The default --output
+    # (results/financebench_full_outputs.json) preserves the old flat layout.
+    run_dir = Path(args.output).parent
+
     # Auto-logging: when --score is used (long-running, usually unattended),
     # tee stdout+stderr to a log file so the run is always recorded on disk.
     if args.score and not args.worker:
         import sys
-        log_path = Path(args.log) if args.log else Path("logs/ragas_score.log")
+        log_path = Path(args.log) if args.log else run_dir / "score.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         sys.stdout = _Tee(sys.stdout, log_path)
         sys.stderr = _Tee(sys.stderr, log_path)
@@ -365,7 +411,9 @@ def main() -> None:
             print("\nLIMIT EXHAUSTED — re-run this command once your daily quota resets.")
             print("Already-scored rows are saved; the run will resume from where it stopped.")
             raise SystemExit(1)
-        final_report(args.output, ragas_scores=scores)
+        final_report(args.output, ragas_scores=scores,
+                     metrics_json=run_dir / "final_metrics.json",
+                     metrics_md=run_dir / "final_metrics.md")
         return
 
     qs = _load_all_questions()
@@ -374,7 +422,9 @@ def main() -> None:
     run_parallel(qs, output_path=args.output, workers=args.workers,
                  provider=args.provider, synth_model=args.synth_model,
                  top_k=args.top_k)
-    final_report(args.output)
+    final_report(args.output,
+                 metrics_json=run_dir / "final_metrics.json",
+                 metrics_md=run_dir / "final_metrics.md")
 
 
 if __name__ == "__main__":

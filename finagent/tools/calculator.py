@@ -40,8 +40,10 @@ RATIOS: dict[str, tuple[str, str, bool]] = {
     "return_on_equity": ("net_income", "stockholders_equity", True),
     "return_on_assets": ("net_income", "total_assets", True),
     "asset_turnover": ("revenue", "total_assets", False),
-    # Efficiency ratios FinanceBench asks for by name (year-end balance-sheet
-    # convention, matching the dataset's gold answers).
+    # Efficiency ratios FinanceBench asks for by name. These are flow ÷ stock,
+    # so the balance-sheet denominator is AVERAGED over (t-1, t) — see
+    # AVG_DENOMINATOR_RATIOS below. (Year-end-only was measurably off: e.g.
+    # fixed-asset turnover 25.65 vs gold 24.26.)
     "fixed_asset_turnover": ("revenue", "ppe_net", False),
     "inventory_turnover": ("cost_of_revenue", "inventory", False),
     # Operating cash flow ratio = CFO / current liabilities (liquidity).
@@ -80,6 +82,16 @@ COMPOSITE_RATIOS: dict[str, dict] = {
 #   dpo = 365 × avg(accounts payable)     / (COGS + Δinventory)
 #   ccc = dio + dso − dpo
 WC_DAYS_METRICS = {"dio", "dso", "dpo", "ccc"}
+
+# Flow ÷ stock ratios: the numerator is a flow over the year (revenue, COGS,
+# net income) and the denominator is a balance-sheet stock that convention —
+# and FinanceBench's gold ("average PP&E between FY2018 and FY2019") — AVERAGES
+# over (t-1, t). Computing these against the single year-end balance was the
+# remaining miss class for ratio questions. The numerator stays single-period.
+AVG_DENOMINATOR_RATIOS = {
+    "fixed_asset_turnover", "inventory_turnover", "asset_turnover",
+    "return_on_assets", "return_on_equity",
+}
 
 # Friendly synonyms → canonical metric name.
 ALIASES: dict[str, str] = {
@@ -174,6 +186,30 @@ class FinancialCalculator(BaseTool):
             "form": f["form"], "source": f["source"], "ticker": f.get("ticker", ""),
         }
 
+    def _avg_input(self, ticker: str, concept: str, period: Optional[str]) -> dict:
+        """A balance-sheet concept AVERAGED over (t-1, t) for flow÷stock ratios.
+
+        Falls back to the single year-end value when the prior year isn't filed
+        (first year in the corpus) — better a year-end answer than a refusal.
+        Carries `_components` (prior + current facts) so the audit trail and the
+        numeric verifier can still ground each underlying figure.
+        """
+        cur = self._input(ticker, concept, period)
+        year = _year_of(period) or (cur.get("fy") if cur.get("ok") else None)
+        if year is None or not cur.get("ok"):
+            return cur                                  # can't average → year-end
+        prior = self._input(ticker, concept, f"FY{year - 1}")
+        if not prior.get("ok"):
+            return cur                                  # prior missing → year-end
+        avg = (cur["value"] + prior["value"]) / 2.0
+        return {
+            "ok": True, "concept": f"avg({concept})", "value": avg,
+            "value_str": f"{avg:,.0f}", "tag": cur.get("tag"), "fy": cur.get("fy"),
+            "form": cur.get("form"), "ticker": cur.get("ticker", ""),
+            "source": f"average of FY{year - 1} and FY{year} {concept}",
+            "_components": [prior, cur],
+        }
+
     @staticmethod
     def _fail(metric: str, ticker: str, inputs: list[dict], why: str) -> dict:
         return {"ok": False, "metric": metric, "ticker": ticker,
@@ -226,21 +262,104 @@ class FinancialCalculator(BaseTool):
         if name not in RATIOS:
             return self._fail(metric, ticker, [], f"unknown ratio metric '{metric}'")
         num_c, den_c, as_pct = RATIOS[name]
-        num, den = self._input(ticker, num_c, period), self._input(ticker, den_c, period)
-        inputs = [num, den]
+        num = self._input(ticker, num_c, period)
+        # Flow÷stock ratios average the balance-sheet denominator over (t-1, t).
+        averaged = name in AVG_DENOMINATOR_RATIOS
+        den = (self._avg_input(ticker, den_c, period) if averaged
+               else self._input(ticker, den_c, period))
+        # Expose the underlying (prior, current) facts for an averaged denominator
+        # so the verifier can still ground each one; otherwise just (num, den).
+        inputs = [num] + (den.get("_components") or [den])
         if not (num["ok"] and den["ok"]):
             return self._fail(name, ticker, inputs, "missing XBRL input(s)")
         if not den["value"]:
             return self._fail(name, ticker, inputs, "denominator is zero")
         value = num["value"] / den["value"]
+        den_label = f"avg({den_c})" if averaged else den_c
         return {
             "ok": True, "metric": name, "ticker": self._tkr(num),
             "period": period, "fy": num.get("fy"),
             "value": value, "value_str": _fmt(value, as_pct), "is_percent": as_pct,
-            "formula": f"{num_c} / {den_c}",
+            "formula": f"{num_c} / {den_label}",
             "inputs": inputs,
             "source": (f"computed from XBRL: {num['value_str']} / {den['value_str']} "
-                       f"({num_c}/{den_c}, FY{num.get('fy')})"),
+                       f"({num_c}/{den_label}, FY{num.get('fy')})"),
+        }
+
+    # --- dynamic, LLM-planned formulas --------------------------------------
+
+    def knows(self, metric: str) -> bool:
+        """True if `metric` maps to a hardcoded formula (ratio, composite,
+        WC-days, growth/cagr/trend) — the fast deterministic path can serve it
+        without asking the LLM to plan a formula."""
+        m = _canonical_metric(metric)
+        return (m in RATIOS or m in COMPOSITE_RATIOS or m in WC_DAYS_METRICS
+                or m in {"growth", "cagr", "trend"})
+
+    def ratio_from_spec(self, ticker: str, spec: dict, period: Optional[str] = None,
+                        metric_name: str = "custom_metric") -> dict:
+        """Compute a metric from an LLM-planned FORMULA over canonical XBRL
+        concepts (see `agents.state.FormulaSpec`).
+
+        The LLM supplies only the structure (which concepts add/subtract,
+        numerator vs denominator, average?, percent?); every number is an exact
+        XBRL fact and the arithmetic happens HERE — so a planned metric is as
+        auditable and as faithful as a hardcoded ratio. An empty denominator
+        means a dollar-amount metric (numerator only), e.g. unadjusted EBITDA =
+        operating_income + depreciation_amortization.
+        """
+        na = [c for c in (spec.get("numerator_add") or []) if c]
+        ns = [c for c in (spec.get("numerator_sub") or []) if c]
+        da = [c for c in (spec.get("denominator_add") or []) if c]
+        ds = [c for c in (spec.get("denominator_sub") or []) if c]
+        if not na:
+            return self._fail(metric_name, ticker, [], "planner returned no numerator")
+        avg = bool(spec.get("average_denominator"))
+        as_pct = bool(spec.get("is_percent"))
+
+        inputs: list[dict] = []
+        fy_holder: dict = {}
+
+        def value_of(concept: str, average: bool):
+            inp = (self._avg_input(ticker, concept, period) if average
+                   else self._input(ticker, concept, period))
+            inputs.extend(inp.get("_components") or [inp])
+            if inp.get("ok"):
+                fy_holder.setdefault("fy", inp.get("fy"))
+                return inp["value"]
+            return None
+
+        num_terms = {c: value_of(c, False) for c in dict.fromkeys(na + ns)}
+        den_terms = {c: value_of(c, avg) for c in dict.fromkeys(da + ds)}
+        missing = [c for c, v in {**num_terms, **den_terms}.items() if v is None]
+        if missing:
+            return self._fail(metric_name, ticker, inputs,
+                              f"missing XBRL input(s): {missing}")
+
+        numerator = sum(num_terms[c] for c in na) - sum(num_terms[c] for c in ns)
+        num_desc = " + ".join(na) + "".join(f" − {c}" for c in ns)
+        if da:
+            denominator = sum(den_terms[c] for c in da) - sum(den_terms[c] for c in ds)
+            if not denominator:
+                return self._fail(metric_name, ticker, inputs, "denominator is zero")
+            value = numerator / denominator
+            den_desc = " + ".join(da) + "".join(f" − {c}" for c in ds)
+            den_lab = (f"avg({den_desc})" if avg else
+                       (f"({den_desc})" if (ds or len(da) > 1) else den_desc))
+            num_lab = f"({num_desc})" if (ns or len(na) > 1) else num_desc
+            formula = f"{num_lab} / {den_lab}"
+            value_str = _fmt(value, as_pct)
+        else:
+            value = numerator                       # dollar amount, not a ratio
+            formula = num_desc
+            value_str = _fmt(value, True) if as_pct else f"{value:,.0f}"
+        return {
+            "ok": True, "metric": metric_name, "ticker": ticker,
+            "period": period, "fy": fy_holder.get("fy"),
+            "value": value, "value_str": value_str, "is_percent": as_pct,
+            "formula": formula, "inputs": inputs, "planned": True,
+            "source": (f"computed from XBRL (planned formula): {formula} "
+                       f"(FY{fy_holder.get('fy')})"),
         }
 
     # --- working-capital days (DIO / DSO / DPO / CCC) -------------------------
