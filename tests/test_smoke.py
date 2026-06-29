@@ -612,3 +612,41 @@ def test_turnover_ratio_averages_denominator():
     del facts[("ppe_net", "FY2018")]
     r2 = c.ratio("ATVI", "fixed_asset_turnover", "FY2019")
     assert r2["ok"] and round(r2["value"], 2) == 25.65
+
+
+def test_ratio_from_spec_planned_formula():
+    """A planned formula computes deterministically from stubbed XBRL facts —
+    the LLM supplies structure, the numbers stay exact. No network."""
+    from finagent.tools.calculator import FinancialCalculator
+
+    c = FinancialCalculator.__new__(FinancialCalculator)
+    facts = {
+        ("operating_income", "FY2022"): 1000.0,
+        ("depreciation_amortization", "FY2022"): 200.0,
+        ("revenue", "FY2022"): 5000.0,
+    }
+
+    def fake_input(ticker, concept, period):
+        if (concept, period) in facts:
+            v = facts[(concept, period)]
+            return {"ok": True, "concept": concept, "value": v,
+                    "value_str": str(v), "fy": 2022, "ticker": ticker}
+        return {"ok": False, "concept": concept, "period": period, "error": "miss"}
+
+    c._input = fake_input
+
+    # Ratio: EBITDA margin = (operating_income + D&A) / revenue = 1200/5000 = 24%.
+    spec = {"numerator_add": ["operating_income", "depreciation_amortization"],
+            "denominator_add": ["revenue"], "is_percent": True}
+    r = c.ratio_from_spec("X", spec, "FY2022", "ebitda_margin")
+    assert r["ok"] and round(r["value"], 4) == 0.24 and r["value_str"] == "24.0%"
+
+    # Dollar amount: empty denominator → numerator only (unadjusted EBITDA = 1200).
+    spec2 = {"numerator_add": ["operating_income", "depreciation_amortization"]}
+    r2 = c.ratio_from_spec("X", spec2, "FY2022", "ebitda")
+    assert r2["ok"] and r2["value"] == 1200.0 and "/" not in r2["formula"]
+
+    # A concept the filing doesn't report → clean miss, not a crash.
+    spec3 = {"numerator_add": ["goodwill"], "denominator_add": ["revenue"]}
+    r3 = c.ratio_from_spec("X", spec3, "FY2022", "goodwill_intensity")
+    assert not r3["ok"] and "missing" in r3["error"]

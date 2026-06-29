@@ -286,6 +286,82 @@ class FinancialCalculator(BaseTool):
                        f"({num_c}/{den_label}, FY{num.get('fy')})"),
         }
 
+    # --- dynamic, LLM-planned formulas --------------------------------------
+
+    def knows(self, metric: str) -> bool:
+        """True if `metric` maps to a hardcoded formula (ratio, composite,
+        WC-days, growth/cagr/trend) — the fast deterministic path can serve it
+        without asking the LLM to plan a formula."""
+        m = _canonical_metric(metric)
+        return (m in RATIOS or m in COMPOSITE_RATIOS or m in WC_DAYS_METRICS
+                or m in {"growth", "cagr", "trend"})
+
+    def ratio_from_spec(self, ticker: str, spec: dict, period: Optional[str] = None,
+                        metric_name: str = "custom_metric") -> dict:
+        """Compute a metric from an LLM-planned FORMULA over canonical XBRL
+        concepts (see `agents.state.FormulaSpec`).
+
+        The LLM supplies only the structure (which concepts add/subtract,
+        numerator vs denominator, average?, percent?); every number is an exact
+        XBRL fact and the arithmetic happens HERE — so a planned metric is as
+        auditable and as faithful as a hardcoded ratio. An empty denominator
+        means a dollar-amount metric (numerator only), e.g. unadjusted EBITDA =
+        operating_income + depreciation_amortization.
+        """
+        na = [c for c in (spec.get("numerator_add") or []) if c]
+        ns = [c for c in (spec.get("numerator_sub") or []) if c]
+        da = [c for c in (spec.get("denominator_add") or []) if c]
+        ds = [c for c in (spec.get("denominator_sub") or []) if c]
+        if not na:
+            return self._fail(metric_name, ticker, [], "planner returned no numerator")
+        avg = bool(spec.get("average_denominator"))
+        as_pct = bool(spec.get("is_percent"))
+
+        inputs: list[dict] = []
+        fy_holder: dict = {}
+
+        def value_of(concept: str, average: bool):
+            inp = (self._avg_input(ticker, concept, period) if average
+                   else self._input(ticker, concept, period))
+            inputs.extend(inp.get("_components") or [inp])
+            if inp.get("ok"):
+                fy_holder.setdefault("fy", inp.get("fy"))
+                return inp["value"]
+            return None
+
+        num_terms = {c: value_of(c, False) for c in dict.fromkeys(na + ns)}
+        den_terms = {c: value_of(c, avg) for c in dict.fromkeys(da + ds)}
+        missing = [c for c, v in {**num_terms, **den_terms}.items() if v is None]
+        if missing:
+            return self._fail(metric_name, ticker, inputs,
+                              f"missing XBRL input(s): {missing}")
+
+        numerator = sum(num_terms[c] for c in na) - sum(num_terms[c] for c in ns)
+        num_desc = " + ".join(na) + "".join(f" − {c}" for c in ns)
+        if da:
+            denominator = sum(den_terms[c] for c in da) - sum(den_terms[c] for c in ds)
+            if not denominator:
+                return self._fail(metric_name, ticker, inputs, "denominator is zero")
+            value = numerator / denominator
+            den_desc = " + ".join(da) + "".join(f" − {c}" for c in ds)
+            den_lab = (f"avg({den_desc})" if avg else
+                       (f"({den_desc})" if (ds or len(da) > 1) else den_desc))
+            num_lab = f"({num_desc})" if (ns or len(na) > 1) else num_desc
+            formula = f"{num_lab} / {den_lab}"
+            value_str = _fmt(value, as_pct)
+        else:
+            value = numerator                       # dollar amount, not a ratio
+            formula = num_desc
+            value_str = _fmt(value, True) if as_pct else f"{value:,.0f}"
+        return {
+            "ok": True, "metric": metric_name, "ticker": ticker,
+            "period": period, "fy": fy_holder.get("fy"),
+            "value": value, "value_str": value_str, "is_percent": as_pct,
+            "formula": formula, "inputs": inputs, "planned": True,
+            "source": (f"computed from XBRL (planned formula): {formula} "
+                       f"(FY{fy_holder.get('fy')})"),
+        }
+
     # --- working-capital days (DIO / DSO / DPO / CCC) -------------------------
 
     def working_capital_days(self, ticker: str, metric: str,

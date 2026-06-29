@@ -44,13 +44,13 @@ from finagent.graph.full import (
 from finagent.graph.market_tools import call_tool as call_market_tool
 from finagent.graph.state import (
     AgentState, MarketIntent, NumericVerification, XBRLQuery, XBRLQueryBatch,
-    CalcQuery, CalcQueryBatch, CorpusGateQuery, EdgarQuery,
+    CalcQuery, CalcQueryBatch, FormulaSpec, CorpusGateQuery, EdgarQuery,
 )
 from finagent.graph.web_search import WebSearcher
 from finagent.tools.calculator import FinancialCalculator
 from finagent.tools.edgar_search import EdgarFullTextSearch
 from finagent.tools.sec_fetch import SecFilingFetcher
-from finagent.tools.xbrl import XBRLClient
+from finagent.tools.xbrl import CONCEPT_TAGS, XBRLClient
 
 # News / outlook intent that should reach the web even without an `external`
 # route. Kept news-specific (not bare "current"/"recent", which appear in
@@ -299,6 +299,53 @@ Numeric sub-query: {sub_query}
 
 Return the derived-metric computation (is_derived, ticker, metric, concept, periods).
 """
+
+# Canonical XBRL concepts the formula planner may reference (keys of
+# xbrl.CONCEPT_TAGS). The planner must use ONLY these.
+_PLANNER_CONCEPTS = ", ".join(sorted(CONCEPT_TAGS))
+
+FORMULA_PLANNER_SYSTEM = f"""\
+You turn a financial metric into a FORMULA over canonical accounting concepts.
+You output STRUCTURE ONLY — never numbers. A separate deterministic step fetches
+the exact figures from SEC XBRL and does the arithmetic, so your job is purely:
+which concepts go in the numerator and denominator, and how.
+
+Use ONLY these canonical concept names (map synonyms onto them — "sales"→revenue,
+"COGS"→cost_of_revenue, "PP&E"→ppe_net, "shareholders' equity"→stockholders_equity,
+"D&A"→depreciation_amortization, "CFO"→operating_cash_flow):
+{_PLANNER_CONCEPTS}
+
+Rules:
+- If the QUESTION states its own definition ("X is defined as: A / B"), follow
+  THAT definition exactly — it overrides the textbook formula.
+- numerator_add / numerator_sub: concepts combined in the numerator.
+- denominator_add / denominator_sub: the denominator. LEAVE THE DENOMINATOR
+  EMPTY when the metric is a dollar amount, not a ratio (e.g. unadjusted EBITDA =
+  operating_income + depreciation_amortization → numerator only).
+- average_denominator: true when the denominator is a balance-sheet stock that is
+  conventionally averaged over the prior and current year — turnover ratios
+  (revenue / avg PP&E, COGS / avg inventory, revenue / avg total_assets) and
+  returns (net_income / avg equity or assets). False for liquidity/leverage
+  ratios measured at year-end (current ratio, quick ratio, debt-to-equity).
+- is_percent: true for margins, returns, and "% of revenue" metrics.
+- If the metric cannot be expressed from the listed concepts, set ok=false.
+"""
+
+FORMULA_PLANNER_PROMPT = """\
+Metric: {metric}
+Question: {question}
+
+Express this metric as a formula over the canonical concepts.
+"""
+
+# The question states its OWN formula ("… is defined as: …", "calculated as").
+# When it does, we plan from that definition rather than the hardcoded ratio, so
+# a redefined metric (e.g. a custom quick-ratio variant) follows the question.
+_DEFINES_RE = re.compile(r"\b(?:defined|calculated|computed|measured)\s+as\b", re.I)
+
+# Multi-period metrics the hardcoded path owns (growth/cagr/trend); the
+# single-period formula planner doesn't handle these.
+_MULTIPERIOD_RE = re.compile(r"\b(growth|cagr|trend|compound annual)\b", re.I)
 
 GATE_EXTRACT_SYSTEM = """\
 You identify the single US public company a question is primarily about, so the
@@ -990,18 +1037,32 @@ class AgenticRAGv4(AgenticRAGv3):
         for sub_q, q in extracted:
             if q is None or not q.is_derived or not (q.ticker and q.metric):
                 continue
-            try:
-                res = self.calc.run(
-                    metric=q.metric, ticker=q.ticker, concept=q.concept,
-                    periods=q.periods,
-                    period=(q.periods[0] if q.periods else None),
-                    period_from=(q.periods[0] if len(q.periods) >= 2 else None),
-                    period_to=(q.periods[-1] if len(q.periods) >= 2 else None),
-                    start_period=(q.periods[0] if len(q.periods) >= 2 else None),
-                    end_period=(q.periods[-1] if len(q.periods) >= 2 else None),
-                )
-            except Exception as e:
-                self._log(state, f"calc failed for {sub_q!r}: {e}")
+            redefined = bool(_DEFINES_RE.search(sub_q))
+            multiperiod = bool(_MULTIPERIOD_RE.search(q.metric)
+                               or _MULTIPERIOD_RE.search(sub_q))
+            res = None
+            # Fast, audited path for a known metric the question doesn't redefine.
+            if self.calc.knows(q.metric) and not redefined:
+                res = self._run_calc(state, sub_q, q)
+            # Dynamic formula planner: an unknown metric, OR one the question
+            # redefines. The LLM returns a FORMULA over canonical XBRL concepts
+            # (never numbers); ratio_from_spec fetches exact facts and computes
+            # deterministically — so a planned metric is as faithful as a
+            # hardcoded one. Single-period only (growth/cagr/trend stay hardcoded).
+            if (res is None or not res.get("ok")) and not multiperiod:
+                spec = self._plan_formula(state, sub_q, q.metric)
+                if spec is not None and getattr(spec, "ok", False):
+                    try:
+                        res = self.calc.ratio_from_spec(
+                            q.ticker, spec.model_dump(),
+                            period=(q.periods[0] if q.periods else None),
+                            metric_name=q.metric or "custom_metric")
+                    except Exception as e:
+                        self._log(state, f"dynamic formula failed for {sub_q!r}: {e}")
+            # Last resort: a known metric the planner couldn't serve.
+            if (res is None or not res.get("ok")) and self.calc.knows(q.metric):
+                res = self._run_calc(state, sub_q, q)
+            if res is None:
                 continue
             res["sub_query"] = sub_q
             if res.get("ok"):
@@ -1009,6 +1070,48 @@ class AgenticRAGv4(AgenticRAGv3):
             else:
                 self._log(state, f"calc miss for {sub_q!r}: {res.get('error')}")
         return {"calc_results": results}
+
+    def _run_calc(self, state: AgentState, sub_q: str, q) -> Optional[dict]:
+        """The hardcoded deterministic calculator path (margins/ratios/growth/
+        cagr/trend/days). Returns None on an exception so the caller can fall
+        through to the dynamic planner."""
+        try:
+            return self.calc.run(
+                metric=q.metric, ticker=q.ticker, concept=q.concept,
+                periods=q.periods,
+                period=(q.periods[0] if q.periods else None),
+                period_from=(q.periods[0] if len(q.periods) >= 2 else None),
+                period_to=(q.periods[-1] if len(q.periods) >= 2 else None),
+                start_period=(q.periods[0] if len(q.periods) >= 2 else None),
+                end_period=(q.periods[-1] if len(q.periods) >= 2 else None),
+            )
+        except Exception as e:
+            self._log(state, f"calc failed for {sub_q!r}: {e}")
+            return None
+
+    def _plan_formula(self, state: AgentState, sub_q: str, metric: str):
+        """Ask the LLM to express `metric` as a FORMULA over canonical XBRL
+        concepts (structure only, never numbers). Returns a FormulaSpec or None.
+        Used when the calculator doesn't hardcode the metric, or the question
+        supplies its own definition."""
+        from langchain_core.messages import HumanMessage, SystemMessage
+
+        try:
+            planner = self._get_router_llm().with_structured_output(FormulaSpec)
+            spec = planner.invoke([
+                SystemMessage(content=FORMULA_PLANNER_SYSTEM),
+                HumanMessage(content=FORMULA_PLANNER_PROMPT.format(
+                    metric=metric, question=sub_q)),
+            ])
+            if spec is not None and getattr(spec, "ok", False):
+                self._log(state, f"planned formula for {metric!r}: "
+                                 f"+{spec.numerator_add} -{spec.numerator_sub} "
+                                 f"/ +{spec.denominator_add} -{spec.denominator_sub}"
+                                 f"{' avg' if spec.average_denominator else ''}")
+            return spec
+        except Exception as e:
+            self._log(state, f"formula planner failed for {metric!r}: {e}")
+            return None
 
     def table_agent_node(self, state: AgentState) -> dict:
         """Phase 7: the table agent is the numeric *fallback*, not a duplicate.
