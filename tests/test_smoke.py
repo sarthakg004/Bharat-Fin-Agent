@@ -576,3 +576,39 @@ def test_explicit_abstention_detection():
     assert _is_refusal("**Insufficient evidence to answer.** The filings ...")
     assert _is_refusal("I don't have enough information to answer this from ...")
     assert not _is_refusal("Revenue was $394.3 billion [1].")
+
+
+def test_turnover_ratio_averages_denominator():
+    """Flow÷stock ratios average the balance-sheet denominator over (t-1, t);
+    the numerator stays single-period. Stubs XBRL so no network is needed."""
+    from finagent.tools.calculator import FinancialCalculator, AVG_DENOMINATOR_RATIOS
+
+    assert "fixed_asset_turnover" in AVG_DENOMINATOR_RATIOS
+    assert "inventory_turnover" in AVG_DENOMINATOR_RATIOS
+
+    c = FinancialCalculator.__new__(FinancialCalculator)   # skip XBRLClient init
+    facts = {
+        ("revenue", "FY2019"): 6489.0,
+        ("ppe_net", "FY2019"): 253.0,
+        ("ppe_net", "FY2018"): 282.0,                       # avg = 267.5
+    }
+
+    def fake_input(ticker, concept, period):
+        if (concept, period) in facts:
+            v = facts[(concept, period)]
+            return {"ok": True, "concept": concept, "value": v,
+                    "value_str": f"{v}", "tag": "X", "fy": 2019, "form": "10-K",
+                    "source": "stub", "ticker": ticker}
+        return {"ok": False, "concept": concept, "period": period, "error": "miss"}
+
+    c._input = fake_input
+    r = c.ratio("ATVI", "fixed_asset_turnover", "FY2019")
+    assert r["ok"]
+    # 6489 / avg(253, 282) = 6489 / 267.5 = 24.26 — NOT 6489/253 = 25.65.
+    assert round(r["value"], 2) == 24.26
+    assert "avg(ppe_net)" in r["formula"]
+
+    # Prior year missing → graceful fall back to the year-end value.
+    del facts[("ppe_net", "FY2018")]
+    r2 = c.ratio("ATVI", "fixed_asset_turnover", "FY2019")
+    assert r2["ok"] and round(r2["value"], 2) == 25.65

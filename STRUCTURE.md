@@ -316,15 +316,29 @@ prompt problem — the agent had no usable evidence. Root causes and fixes:
    free tier every model is $0, so model choice is cost-neutral for the cloud
    bill, which is Cloud Run compute.)
 
+7. **Ratio questions computed against the wrong (year-end) denominator.** The
+   turnover/return ratios are flow ÷ stock, so convention — and FinanceBench's
+   gold ("average PP&E between FY2018 and FY2019") — AVERAGES the balance-sheet
+   denominator over (t-1, t); the calculator used the single year-end value, so
+   fixed-asset turnover came out 25.65 vs gold 24.26 (and a wrong 0.73 in v2
+   before the corpus fix). **Fix:** `AVG_DENOMINATOR_RATIOS` in
+   `tools/calculator.py` averages the denominator for fixed-asset / inventory /
+   asset turnover and ROA / ROE; the numerator stays single-period. Also added a
+   finished-goods-only inventory fallback in `tools/xbrl.py` for brands that
+   outsource manufacturing (Nike reports `InventoryFinishedGoodsNetOfReserves`
+   and no `InventoryNet`). Now exact: ATVI 24.26, CVS 17.98, Nike 3.46.
+
 **Cost.** Every fix is cost-neutral or cost-reducing: the eval reads local
 Chroma (no EDGAR load), fewer questions escalate to Tavily, and Groq free-tier
 model choice doesn't change the cloud bill. Nothing here adds an LLM call.
 
-**Validation.** Spot-checked on previously-failing questions: Microsoft FY2016
-COGS and 3M FY2018 capex now answer correctly (were refusals), American Express
-card-member retention now answers from the filing (was web-junk → refuse), and
-soft-refusals now score `conf=0`. A full 150-question re-run (RAGAS) is the
-remaining step — run steps 1-2 then 4 above once Groq daily quota is comfortable.
-Known remaining gap: some ratio-judgement questions (e.g. AMD quick ratio FY2022)
-still refuse because the XBRL→calculator chain doesn't fire for them — to
-investigate on the next quota window.
+**Validation.** Spot-checked end-to-end on previously-failing questions (all
+refusals or badly wrong in v2): Microsoft FY2016 COGS, 3M FY2018 capex, Adobe
+FY2017 operating cash flow ratio (0.83), Activision/CVS fixed-asset turnover
+(24.26 / 17.98) and Nike inventory turnover (3.46) all now answer **correctly**;
+American Express card-member retention answers from the filing; soft-refusals
+score `conf=0`. A full 150-question RAGAS re-run is the remaining step — run
+steps 1-2 then 4 above once Groq daily quota is comfortable. Known long-tail
+gap: a few ratios still miss on concept *attribution* rather than formula (e.g.
+AES ROA uses total `NetIncomeLoss`; gold uses net income attributable to the
+parent) — a concept-mapping refinement for later.
