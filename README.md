@@ -91,7 +91,7 @@ different keys of the rotating pool so rate limits don't hit in lockstep.
 | Role | Model | Why |
 |---|---|---|
 | plan+route, tool extraction (XBRL/calc/EDGAR/market/gate) | `openai/gpt-oss-120b` | tool selection and decomposition sit on the quality path; weak models mis-route |
-| grader, rewriter | `llama-3.3-70b-versatile` | structured scoring; separate quota bucket from the 120B roles |
+| grader, rewriter | `qwen/qwen3.6-27b` | structured scoring; separate quota bucket from the 120B roles (replaced the deprecated `llama-3.3-70b`; reasoning is stripped server-side so `<think>` never leaks) |
 | synthesizer, critic, verifier, table-agent codegen | `openai/gpt-oss-120b` | long-form writing, claim checking, pandas codegen |
 
 ```
@@ -138,35 +138,38 @@ EDGAR availability.) See **Bottleneck analysis & fixes** in `STRUCTURE.md` for
 how a corpus-wiring bug — the eval previously searched the recent-only
 `us_filings` and refused ~⅓ of questions — was found and fixed.
 
-### Results — v1 baseline (150 questions)
+### Results — v3 (150 questions; v1 baseline in parentheses)
 
-**System behaviour**
+**Correctness & behaviour**
 
-| Metric | Value |
-|---|---|
-| Answer rate | **100%** |
-| Refusal rate | 0% |
-| Error rate | 0% |
-| Mean confidence | 0.625 |
+| Metric | v3 | v1 baseline |
+|---|---|---|
+| Numeric accuracy (gold figure in answer, 1% tol, judge-free) | **74.6%** | 61.2% |
+| Answer rate | 74.7% | 100% |
+| Refusal rate (explicit "insufficient evidence" abstentions) | 25.3% | 0% |
+| Error rate | 0% | 0% |
 
-**RAGAS scores** (judge: `llama-3.3-70b-versatile`)
+v1's 100% answer rate was an anti-feature: it never abstained, so a third of
+its "answers" were confident fabrications. v3 trades those for explicit
+abstentions — numeric accuracy (+13.4 pts) is the honest correctness signal.
+
+**RAGAS scores** (judge: `qwen/qwen3.6-27b`)
 
 | Question type | Faithfulness | Answer Relevancy | Context Precision | Context Recall |
 |---|---|---|---|---|
-| Numeric (71) | 0.64 | 0.50 | 0.57 | 0.39 |
-| Comparison (22) | 0.72 | 0.45 | 0.35 | 0.42 |
-| Narrative (57) | 0.45 | 0.28 | 0.32 | 0.27 |
-| **Overall (150)** | **0.59** | **0.41** | **0.47** | **0.35** |
+| Numeric (71) | 0.63 | 0.53 | 0.60 | 0.64 |
+| Comparison (22) | 0.53 | 0.44 | 0.29 | 0.41 |
+| Narrative (57) | 0.51 | 0.36 | 0.38 | 0.29 |
+| **Overall (150)** | **0.57** | **0.45** | **0.50** | **0.47** |
 
-> **These are the v1 baseline numbers.** Investigation (see
-> `STRUCTURE.md` → *Bottleneck analysis & fixes*) traced the low scores to the
-> agent searching the wrong corpus (recent-only `us_filings`), a dynamic-fetch
-> path broken for historical years, mis-routing that invented metrics for
-> qualitative questions, and web escalation that buried in-corpus filings under
-> generic web pages. Those are now fixed (all cost-neutral or cost-reducing).
-> Spot-checks confirm previously-refused questions (e.g. Microsoft FY2016 COGS,
-> American Express card-member retention) now answer correctly from the filing;
-> the full re-scored 150-question table will replace this one after the next run.
+RAGAS scores non-answers as zeros by construction, so the abstentions cap the
+overall numbers. On the **79 plainly-answered questions** the same judge scores
+faithfulness **0.75**, relevancy **0.65**, precision **0.60**, recall **0.72** —
+the gap between those two views is the refusal calibration, tracked as the
+main open item. `results/comparison.md` has the full v1 → v3 delta table, and
+`STRUCTURE.md` → *Bottleneck analysis & fixes* documents each root cause found
+along the way (corpus wiring, historical-year fetch, refusal confidence,
+mis-routing, web-escalation pollution — all fixed cost-neutrally).
 
 Runs are resilient to the free tier: per-minute limits rotate across the key
 pool, revoked keys are dropped from rotation, and when *every* key is
