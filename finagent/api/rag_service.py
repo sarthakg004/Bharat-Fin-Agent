@@ -6,10 +6,10 @@ retrieve → grader → rewrite/proceed → xbrl → calculator → table_agent 
 market_data (yfinance) ∥ web_search ∥ edgar_search → synthesize → critic →
 numeric verification → confidence gate.
 
-Web search uses Tavily when `TAVILY_API_KEY` is set and falls back to the
-local `news` Chroma collection otherwise; web_search escalates automatically
-when text retrieval comes back empty or weakly graded, so questions about
-companies not in the corpus hit the web instead of returning "no information".
+Web search uses Tavily when `TAVILY_API_KEY` is set; web_search escalates
+automatically when text retrieval comes back empty or weakly graded, so
+questions about companies not in the corpus hit the web instead of returning
+"no information".
 
 We default to the small reranker (`bge-reranker-base`) so backend startup is
 quick; swap to `bge-reranker-large` once you don't mind the download.
@@ -25,23 +25,14 @@ from typing import Callable, Optional
 from finagent.graph import AgenticRAGv4
 from finagent.config import settings
 
-# Phase 1 (US-only): active retrieval searches the US filings corpus exclusively.
-# `india_filings` was dropped from the live pool — the eval is US-only and any
-# non-US / non-corpus company now falls through to the web-search branch (the
-# agent's web_search_node escalates automatically on empty/weak retrieval) with
-# a graceful "searched the web instead" answer rather than off-market noise.
-_COLLECTIONS = {
-    "us": "us_filings",
-}
-
-# Each (market, provider, synth_model) combo gets its own instance. Most
+# Each (provider, synth_model, collection) combo gets its own instance. Most
 # users will hit one of two cache keys (server-default Groq + their picked
 # OpenAI/Anthropic/Gemini override) so the cache stays small.
 _lock = Lock()
 _agentic_cache: dict[tuple, AgenticRAGv4] = {}
 
 
-def _build_agent(market: str, provider: str, synth_model: Optional[str],
+def _build_agent(provider: str, synth_model: Optional[str],
                  api_key: Optional[str],
                  collection: Optional[str] = None) -> AgenticRAGv4:
     # Production serves `us_filings` (+ live SEC fetch for anything missing). The
@@ -53,10 +44,9 @@ def _build_agent(market: str, provider: str, synth_model: Optional[str],
     coll = collection or "us_filings"
     return AgenticRAGv4(
         collection_name=coll,
-        # Phase 1: US-only active retrieval. Non-US / non-corpus questions get
+        # US-only active retrieval. Non-US / non-corpus questions get
         # empty/weak filing retrieval and escalate to web_search automatically.
         collections=[coll],
-        market="us",
         provider=provider,
         synth_model=synth_model,                # None → AgenticRAG picks per-provider default
         api_key=api_key,                        # None → reads env via build_llm()
@@ -76,17 +66,16 @@ def _build_agent(market: str, provider: str, synth_model: Optional[str],
         # for the session and never grow the baked index.
         persist_fetch=settings.persist_dynamic_fetch,
         table_collection="tables",
-        news_collection="news",
         web_top_k=10,
         table_top_k=3,
     )
 
 
-def get_agentic(market: str, provider: str = "groq",
+def get_agentic(provider: str = "groq",
                 synth_model: Optional[str] = None,
                 api_key: Optional[str] = None,
                 collection: Optional[str] = None) -> AgenticRAGv4:
-    """Return a singleton AgenticRAGv4 for (market, provider, synth_model, collection).
+    """Return a singleton AgenticRAGv4 for (provider, synth_model, collection).
 
     User-supplied keys are NOT used as part of the cache key — multiple users
     with the same provider + model share an instance. The instance's
@@ -94,10 +83,10 @@ def get_agentic(market: str, provider: str = "groq",
     the LLM client. `collection` is part of the key so the eval's
     `financebench_eval` instance never collides with the served `us_filings` one.
     """
-    key = (market, provider, synth_model or "_default_", collection or "us_filings")
+    key = (provider, synth_model or "_default_", collection or "us_filings")
     with _lock:
         if key not in _agentic_cache:
-            _agentic_cache[key] = _build_agent(market, provider, synth_model, api_key,
+            _agentic_cache[key] = _build_agent(provider, synth_model, api_key,
                                                collection=collection)
         agent = _agentic_cache[key]
         # If the caller supplied an api_key, propagate it now and clear the
@@ -332,9 +321,7 @@ def _normalise_chunk(text: str, meta: dict, idx: int) -> dict:
     company = meta.get("company") or meta.get("ticker", "?")
     year = str(meta.get("year", "?"))
     page = meta.get("page", "?")
-    market = meta.get("market", "")
-    doc_kind = "10-K" if market == "us" else "AR"
-    citation = f"[{company} {doc_kind} {year}, p. {page}]"
+    citation = f"[{company} 10-K {year}, p. {page}]"
     return {
         "id": idx,
         "text": text,
@@ -342,13 +329,12 @@ def _normalise_chunk(text: str, meta: dict, idx: int) -> dict:
         "ticker": meta.get("ticker", ""),
         "year": year,
         "page": page,
-        "market": market,
         "source_url": meta.get("source_url", ""),
         "citation": citation,
     }
 
 
-def run_agentic(market: str, question: str, top_k: int = 5,
+def run_agentic(question: str, top_k: int = 5,
                 company_filter: Optional[list[str]] = None,
                 chat_history: Optional[list[dict]] = None,
                 provider: str = "groq",
@@ -373,7 +359,7 @@ def run_agentic(market: str, question: str, top_k: int = 5,
     each node finishes, with a short outcome line ("12 passages", "2 exact
     figures"). When both are omitted we fall back to a single blocking `invoke`.
     """
-    rag = get_agentic(market, provider=provider, synth_model=synth_model,
+    rag = get_agentic(provider=provider, synth_model=synth_model,
                       api_key=api_key, collection=collection)
     if top_k:
         rag.final_top_k = top_k
@@ -457,7 +443,6 @@ def run_agentic(market: str, question: str, top_k: int = 5,
             "ticker": f.get("ticker", ""),
             "year": str(f.get("fy", "?")),
             "page": "—",
-            "market": market,
             "source_url": "",
             "citation": f.get("source", ""),
             "sub_query": f.get("sub_query", ""),
@@ -478,7 +463,6 @@ def run_agentic(market: str, question: str, top_k: int = 5,
             "ticker": r.get("ticker", ""),
             "year": str(r.get("fy", r.get("end_period", "?"))),
             "page": "—",
-            "market": market,
             "source_url": "",
             "citation": f"(Computed: {str(r.get('metric','')).replace('_',' ')} from XBRL)",
             "sub_query": r.get("sub_query", ""),
@@ -499,7 +483,6 @@ def run_agentic(market: str, question: str, top_k: int = 5,
             "ticker": c.get("ticker", ""),
             "year": str(c.get("year", "?")),
             "page": c.get("page", "?"),
-            "market": market,
             "source_url": "",
             "citation": c.get("source", ""),
             "sub_query": c.get("sub_query", ""),
@@ -523,8 +506,7 @@ def run_agentic(market: str, question: str, top_k: int = 5,
                 "ticker": comp.get("ticker", ""),
                 "year": str(comp.get("date", ""))[:4] or "?",
                 "page": "—",
-                "market": market,
-                "source_url": comp.get("url", ""),
+                    "source_url": comp.get("url", ""),
                 "citation": f"<EDGAR: {comp.get('company','?')} {comp.get('form','')} {comp.get('date','')}>",
                 "sub_query": r.get("sub_query", ""),
                 "kind": "edgar",
@@ -540,7 +522,6 @@ def run_agentic(market: str, question: str, top_k: int = 5,
             "ticker": "",
             "year": h.get("date", "")[:4] or "?",
             "page": "—",
-            "market": market,
             "source_url": h.get("url", ""),
             "citation": f"<News: {h.get('title','')[:80]} — {h.get('source','web')}>",
             "sub_query": h.get("sub_query", ""),
@@ -564,7 +545,6 @@ def run_agentic(market: str, question: str, top_k: int = 5,
             "ticker": "",
             "year": str(first.get("year", "?")),
             "page": first.get("page", "—"),
-            "market": market,
             "source_url": "",
             "citation": (
                 f"(Table: {first.get('title','?')}, "
@@ -596,7 +576,6 @@ def run_agentic(market: str, question: str, top_k: int = 5,
             "ticker": sym,
             "year": "—",
             "page": "—",
-            "market": market,
             "source_url": "",
             "citation": f"<Market: yfinance.{tool} {sym}>",
             "sub_query": m.get("sub_query", ""),
@@ -677,6 +656,6 @@ def health() -> dict:
     # We don't probe the LLM (would burn quota). Just confirm imports + collections.
     return {
         "status": "ok",
-        "collections": list(_COLLECTIONS.values()),
+        "collections": ["us_filings"],
         "configs": ["agentic"],
     }

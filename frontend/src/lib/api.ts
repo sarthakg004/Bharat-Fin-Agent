@@ -6,8 +6,6 @@
 // see vite.config.ts). Only set VITE_API_URL to point at a different host.
 const BASE = import.meta.env.VITE_API_URL || "";
 
-export type Market = "us" | "india";
-
 export interface Chunk {
   id: number;
   text: string;
@@ -15,7 +13,6 @@ export interface Chunk {
   ticker?: string;
   year: string;
   page: string | number;
-  market?: string;
   source_url?: string;
   citation: string;
   sub_query?: string;
@@ -101,7 +98,6 @@ export interface ChatTurn {
 
 export interface QueryRequest {
   question: string;
-  market: Market;
   top_k?: number;
   provider_config?: ProviderConfig;
   /** Per-session conversation memory (the server is stateless). */

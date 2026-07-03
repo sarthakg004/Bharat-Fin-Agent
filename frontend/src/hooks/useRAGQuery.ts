@@ -1,7 +1,7 @@
 import { useCallback } from "react";
 import toast from "react-hot-toast";
 
-import type { ChatTurn, Market, SSEEvent } from "@/lib/api";
+import type { ChatTurn, SSEEvent } from "@/lib/api";
 import { useChatStore } from "@/store/chatStore";
 import { useThreadStore } from "@/store/threadStore";
 import { currentProviderConfig } from "@/store/settingsStore";
@@ -17,7 +17,7 @@ const MEMORY_TURNS = 6;   // how many prior turns to send as conversation memory
  * (threadStore → sessionStorage). `ask` adds a new turn; `regenerate` re-runs
  * the last user question (the Retry button).
  */
-export function useRAGQuery(market: Market) {
+export function useRAGQuery() {
   const { send } = useSSE();
   const {
     appendMessage, patchMessage, appendChunkToMessage,
@@ -40,7 +40,7 @@ export function useRAGQuery(market: Market) {
       let firstChunk = true;
       try {
         await send(
-          { question, market, top_k: 5, chat_history: history,
+          { question, top_k: 5, chat_history: history,
             provider_config: currentProviderConfig() },
           (e: SSEEvent) => {
             switch (e.type) {
@@ -107,7 +107,7 @@ export function useRAGQuery(market: Market) {
         toast.error(msg);
       }
     },
-    [send, market, patchMessage, appendChunkToMessage, appendStepToMessage, markStepDone, appendChartToMessage, setStreaming],
+    [send, patchMessage, appendChunkToMessage, appendStepToMessage, markStepDone, appendChartToMessage, setStreaming],
   );
 
   const ask = useCallback(
@@ -116,16 +116,16 @@ export function useRAGQuery(market: Market) {
 
       // Ensure a thread exists to own this conversation.
       const threads = useThreadStore.getState();
-      if (!threads.activeId) threads.createChat("New chat", market);
+      if (!threads.activeId) threads.createChat("New chat");
 
       const history = historyBefore(useChatStore.getState().messages.length);
-      appendMessage({ role: "user", content: question, market });
-      const assistantId = appendMessage({ role: "assistant", content: "", market, streaming: true, startedAt: Date.now() });
+      appendMessage({ role: "user", content: question });
+      const assistantId = appendMessage({ role: "assistant", content: "", streaming: true, startedAt: Date.now() });
       useThreadStore.getState().saveActive();   // capture the user turn immediately
 
       await runStream(question, assistantId, history);
     },
-    [market, appendMessage, historyBefore, runStream],
+    [appendMessage, historyBefore, runStream],
   );
 
   const regenerate = useCallback(
@@ -138,11 +138,11 @@ export function useRAGQuery(market: Market) {
 
       const history = historyBefore(userIdx);     // memory excludes the question itself
       useChatStore.getState().dropLastAssistant(); // remove the stale answer
-      const assistantId = appendMessage({ role: "assistant", content: "", market, streaming: true, startedAt: Date.now() });
+      const assistantId = appendMessage({ role: "assistant", content: "", streaming: true, startedAt: Date.now() });
 
       await runStream(question, assistantId, history);
     },
-    [market, appendMessage, historyBefore, runStream],
+    [appendMessage, historyBefore, runStream],
   );
 
   return { ask, regenerate };

@@ -31,7 +31,7 @@ def ingest_corpus(
     Args:
         manifest_path: JSON manifest of source files (from the fetch step).
         collection_name: target Chroma collection.
-        market: "us" or "india" — stored as chunk metadata.
+        market: stored as chunk metadata (default "us").
         chroma_dir: Chroma directory; defaults to `settings.chroma_dir`.
         reset: drop the collection before ingesting.
 

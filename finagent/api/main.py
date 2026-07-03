@@ -143,7 +143,7 @@ def list_configs():
 
 def _to_summary(d: dict) -> ChatSummary:
     return ChatSummary(
-        id=d["id"], title=d["title"], market=d["market"],
+        id=d["id"], title=d["title"],
         created_at=str(d["created_at"]), updated_at=str(d["updated_at"]),
         message_count=int(d.get("message_count", 0)),
         preview=(d.get("preview") or None),
@@ -157,7 +157,7 @@ def list_chats():
 
 @app.post("/api/chats", response_model=ChatSummary)
 def create_chat(req: CreateChatRequest):
-    chat = history.create_chat(title=req.title, market=req.market)
+    chat = history.create_chat(title=req.title)
     if not chat:
         raise HTTPException(status_code=500, detail="Could not create chat.")
     chat["message_count"] = 0
@@ -266,7 +266,7 @@ async def _run_rag(request: QueryRequest, hist: list[dict],
     return await loop.run_in_executor(
         _executor,
         lambda: rag_service.run_agentic(
-            request.market, request.question, request.top_k, None, hist,
+            request.question, request.top_k, None, hist,
             provider, synth_model, api_key,
             on_step=on_step, on_step_done=on_step_done,
         ),
@@ -285,7 +285,7 @@ async def _stream_answer(request: QueryRequest) -> AsyncGenerator[str, None]:
     else:
         chat_id = request.chat_id
         if chat_id is None or not history.get_chat(chat_id):
-            chat_id = history.create_chat(title="New chat", market=request.market)["id"]
+            chat_id = history.create_chat(title="New chat")["id"]
         # Persist the user message first so any failure mid-stream still keeps it.
         history.add_message(chat_id, role="user", content=request.question)
         history.auto_title_if_default(chat_id, request.question)

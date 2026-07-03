@@ -28,20 +28,20 @@ Usage as a library
 ------------------
     from finagent.graph.base import AgenticRAG
 
-    agent = AgenticRAG(collection_name="india_filings", market="india")
-    result = agent.run("Compare TCS and Infosys revenue growth in FY23.")
+    agent = AgenticRAG(collection_name="us_filings")
+    result = agent.run("Compare Microsoft and Apple revenue growth in FY23.")
     print(result["final_answer"])
     print(result["citations"])
 
 CLI
 ---
     python -m finagent.graph.base \\
-        --collection india_filings --market india \\
-        --question "Compare TCS and Infosys revenue growth in FY23."
+        --collection us_filings \\
+        --question "Compare Microsoft and Apple revenue growth in FY23."
 
     # Batch over an eval set and append a row to results/comparison.csv:
     python -m finagent.graph.base \\
-        --collection us_filings --market us \\
+        --collection us_filings \\
         --dataset data/us/eval/financebench/data/financebench_open_source.jsonl \\
         --sample 100
 """
@@ -171,11 +171,9 @@ class AgenticRAG:
     Parameters
     ----------
     collection_name : str
-        Chroma collection ("us_filings" or "india_filings").
+        Chroma collection (e.g. "us_filings").
     chroma_dir : str
         Persistent Chroma directory (must match ingestion).
-    market : str
-        "india" or "us" — only affects the citation wording ("AR" vs "10-K").
     embedding_model : str
         MUST match the model used at ingestion.
     provider : str
@@ -228,7 +226,6 @@ class AgenticRAG:
         self,
         collection_name: str = "us_filings",
         chroma_dir: Union[str, Path] = "data/chroma",
-        market: str = "us",
         embedding_model: str = "BAAI/bge-small-en-v1.5",
         provider: str = "groq",
         planner_model: Optional[str] = None,
@@ -240,12 +237,10 @@ class AgenticRAG:
     ):
         self.collection_name = collection_name
         # Filings collections to retrieve over. Defaults to the single
-        # `collection_name`; pass several (e.g. both US + India) to let the
-        # agent pull from all of them and rerank — the question decides what's
-        # relevant, no US/India toggle needed.
+        # `collection_name`; pass several to let the agent pull from all of
+        # them and rerank — the question decides what's relevant.
         self.collections = collections or [collection_name]
         self.chroma_dir = str(chroma_dir)
-        self.market = market
         self.embedding_model = embedding_model
         self.top_k = top_k
 
@@ -508,7 +503,7 @@ class AgenticRAG:
     # ------------------------------------------------------------------ #
 
     def _citation_tag(self, meta: dict) -> str:
-        """Build a citation tag like '[Reliance AR 2024, p. 102]'.
+        """Build a citation tag like '[Apple 10-K 2024, p. 102]'.
 
         The year is the *report's* year (which document the text came from), NOT
         the fiscal year of any figure inside it. Annual reports carry prior-year
@@ -518,8 +513,7 @@ class AgenticRAG:
         """
         name = meta.get("company") or meta.get("ticker", "?")
         year = meta.get("year", "?")
-        doc_kind = "10-K" if self.market == "us" else "AR"
-        return f"[{name} {doc_kind} {year}, p. {meta.get('page', '?')}]"
+        return f"[{name} 10-K {year}, p. {meta.get('page', '?')}]"
 
     @staticmethod
     def _log(state: AgentState, msg: str) -> None:
@@ -587,7 +581,6 @@ def _build_cli() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Run the Week-2 agentic RAG graph.")
     p.add_argument("--collection", default="us_filings")
     p.add_argument("--chroma-dir", default="data/chroma")
-    p.add_argument("--market", choices=["india", "us"], default="us")
     p.add_argument(
         "--provider",
         choices=["groq", "gemini", "openai", "anthropic"],
@@ -623,7 +616,6 @@ def main():
     agent = AgenticRAG(
         collection_name=args.collection,
         chroma_dir=args.chroma_dir,
-        market=args.market,
         embedding_model=args.embedding_model,
         provider=args.provider,
         planner_model=args.planner_model,

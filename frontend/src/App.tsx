@@ -23,7 +23,7 @@ export function App() {
   const { status: backendStatus } = useBackendStatus();
 
   const {
-    market, sidebarOpen, citationsOpen,
+    sidebarOpen, citationsOpen,
     sidebarWidth, citationsWidth,
     toggleSidebar, toggleCitations,
     setSidebarWidth, setCitationsWidth,
@@ -43,7 +43,7 @@ export function App() {
 
   useKeyboardShortcuts({
     "mod+k":      () => setPaletteOpen((v) => !v),
-    "mod+n":      () => createChat("New chat", market),
+    "mod+n":      () => createChat("New chat"),
     "mod+,":      () => setSettingsOpen((v) => !v),
     "mod+l":      () => clearChat(),
     "mod+[":      () => toggleSidebar(),

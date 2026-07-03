@@ -5,7 +5,7 @@ Free-tier market-data toolbelt for the agent. All functions are pure (no
 LangChain decorators) so the `market_data_node` can dispatch them by name from
 a structured LLM intent.
 
-Provider: Yahoo Finance via `yfinance` — no API key, covers US + India
+Provider: Yahoo Finance via `yfinance` — no API key
 (NSE = `.NS`, BSE = `.BO`) + global markets. We never hit rate limits in
 normal usage; if Yahoo throws, each tool degrades to an explicit error in the
 returned dict rather than raising.
@@ -35,35 +35,11 @@ from typing import Any, Optional
 # Ticker resolution
 # --------------------------------------------------------------------------- #
 
-# Common Indian symbols → their Yahoo `.NS` ticker. The LLM is asked to pass
-# Yahoo-format tickers directly, but we still normalise to be defensive.
-_INDIA_ALIASES = {
-    "TCS": "TCS.NS",
-    "INFY": "INFY.NS",
-    "RELIANCE": "RELIANCE.NS",
-    "HDFC": "HDFCBANK.NS",
-    "HDFCBANK": "HDFCBANK.NS",
-    "ICICI": "ICICIBANK.NS",
-    "ICICIBANK": "ICICIBANK.NS",
-    "WIPRO": "WIPRO.NS",
-    "ITC": "ITC.NS",
-    "SBI": "SBIN.NS",
-    "SBIN": "SBIN.NS",
-    "MARUTI": "MARUTI.NS",
-    "NTPC": "NTPC.NS",
-    "BAJAJAUTO": "BAJAJ-AUTO.NS",
-}
-
-
 def normalise_ticker(symbol: str) -> str:
     s = (symbol or "").strip().upper()
     if not s:
         return s
-    if "." in s:                           # already Yahoo-formatted
-        return s
-    if s in _INDIA_ALIASES:
-        return _INDIA_ALIASES[s]
-    return s                                # assume US-listed (no suffix)
+    return s                               # US-listed symbols pass through as-is
 
 
 def _ok(data: Any) -> dict:

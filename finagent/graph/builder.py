@@ -12,20 +12,20 @@ from __future__ import annotations
 from typing import Optional
 
 
-def build_agent(market: str = "us", provider: str = "groq"):
+def build_agent(provider: str = "groq"):
     """Return the singleton production agent (`AgenticRAGv4`)."""
     from finagent.api.rag_service import get_agentic
 
-    return get_agentic(market=market, provider=provider)
+    return get_agentic(provider=provider)
 
 
-def build_graph(market: str = "us", provider: str = "groq"):
+def build_graph(provider: str = "groq"):
     """Return the compiled LangGraph for the production agent.
 
     The result supports `.get_graph().draw_mermaid_png()` for visualization and
     `.invoke()` / `.stream()` for execution.
     """
-    return build_agent(market=market, provider=provider).graph
+    return build_agent(provider=provider).graph
 
 
 # Node reference table — name → (reads, does, writes, llm). Surfaced so the

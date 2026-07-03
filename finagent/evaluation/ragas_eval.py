@@ -32,7 +32,6 @@ def run_ragas_eval(
     judge_provider: str = "groq",
     judge_model: Optional[str] = None,
     sample: Optional[int] = None,
-    market: str = "us",
     provider: str = "groq",
     synth_model: Optional[str] = None,
     output_path: Union[str, Path] = DEFAULT_OUTPUTS,
@@ -57,7 +56,7 @@ def run_ragas_eval(
     Free-tier stability: pass `max_workers=1`, a larger `timeout`, and a smaller
     `batch_size` if the judge trips `TimeoutError`s under parallelism.
     """
-    run_agent_outputs(eval_dataset, market=market, provider=provider,
+    run_agent_outputs(eval_dataset, provider=provider,
                       synth_model=synth_model, output_path=output_path)
     return score_answers(
         outputs_path=output_path, scores_csv=scores_csv,

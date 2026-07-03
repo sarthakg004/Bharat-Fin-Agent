@@ -39,7 +39,6 @@ DEFAULT_SCORES = "results/financebench_baseline_ragas.csv"
 def run_agent_outputs(
     questions: pd.DataFrame,
     output_path: Union[str, Path] = DEFAULT_OUTPUTS,
-    market: str = "us",
     provider: str = "groq",
     synth_model: Optional[str] = None,
     top_k: int = 5,
@@ -98,7 +97,6 @@ def run_agent_outputs(
             for attempt in (1, 2):
                 try:
                     res = run_agentic(
-                        market=market,
                         question=q["question"],
                         top_k=top_k,
                         provider=provider,

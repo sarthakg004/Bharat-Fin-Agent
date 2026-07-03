@@ -35,11 +35,11 @@ def _build_agent():
     from finagent.graph import AgenticRAGv4
 
     return AgenticRAGv4(
-        collection_name="us_filings", market="us", provider="groq",
+        collection_name="us_filings", provider="groq",
         reranker_model="BAAI/bge-reranker-base",
         bm25_top_k=8, dense_top_k=8, final_top_k=5,
         max_rewrites=2, max_critic_retries=1,
-        table_collection="tables", news_collection="news",
+        table_collection="tables",
         web_top_k=10, table_top_k=3,
     )
 

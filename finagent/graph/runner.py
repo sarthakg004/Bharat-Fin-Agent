@@ -19,14 +19,14 @@ from finagent.graph.builder import build_agent, build_graph
 
 
 def run_with_trace(
-    question: str, market: str = "us", provider: str = "groq", recursion_limit: int = 50
+    question: str, provider: str = "groq", recursion_limit: int = 50
 ) -> dict:
     """Stream the full graph; return per-node deltas + final state.
 
     Returns ``{"question", "steps": [(node, delta_dict), ...], "final_answer",
     "state"}``.
     """
-    graph = build_graph(market=market, provider=provider)
+    graph = build_graph(provider=provider)
     initial = {
         "question": question, "iteration_count": 0, "errors": [],
         "table_results": [], "web_results": [],
@@ -49,11 +49,11 @@ def run_with_trace(
 
 
 def run_with_route_trace(
-    question: str, market: str = "us", provider: str = "groq"
+    question: str, provider: str = "groq"
 ) -> dict:
     """Run only the fused plan+route step (ONE LLM call; the router is a
     no-op when the plan already carries routes) and return the routing decision."""
-    agent = build_agent(market=market, provider=provider)
+    agent = build_agent(provider=provider)
     state = {"question": question, "iteration_count": 0, "errors": []}
     state.update(agent.planner_node(state) or {})
     state.update(agent.router_node(state) or {})
@@ -69,10 +69,10 @@ def run_with_route_trace(
 
 
 def run_with_full_trace(
-    question: str, market: str = "us", provider: str = "groq"
+    question: str, provider: str = "groq"
 ) -> dict:
     """Full run; return decomposition, routes, and the final cited answer."""
-    res = run_with_trace(question, market=market, provider=provider)
+    res = run_with_trace(question, provider=provider)
     st = res["state"]
     res["sub_queries"] = st.get("sub_queries", [])
     res["routes"] = st.get("query_routes", [])

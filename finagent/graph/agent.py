@@ -91,7 +91,7 @@ ALWAYS fill `company` with the company's name in words (e.g. "Rocket Lab",
 "Apple") — the system resolves the correct ticker from authoritative SEC data,
 which is more reliable than guessing a symbol. You may also fill `symbol` if
 you're confident, but do NOT invent tickers or append exchange suffixes like
-".NASDAQ". For India use .NS (NSE) like RELIANCE.NS. Common aliases (TCS, INFY,
+".NASDAQ". Common aliases (AAPL,
 RELIANCE, etc.) are auto-normalised.
 
 Prefer get_history for almost anything stock-related — it returns a candlestick
@@ -117,8 +117,8 @@ NUM_VERIFY_SYSTEM = """\
 You verify numeric claims in a draft financial answer. Given the draft answer
 and the source evidence (text excerpts, table-derived computations, optional
 web results), extract each distinct numeric claim and decide whether the
-SAME figure appears in the evidence. Accept reasonable paraphrases (₹914 bn
-vs ₹91,400 crore) but reject silent invention.
+SAME figure appears in the evidence. Accept reasonable paraphrases ($1.5 bn
+vs $1,500 million) but reject silent invention.
 """
 
 NUM_VERIFY_PROMPT = """\
@@ -424,7 +424,6 @@ class AgenticRAGv4(AgenticRAGv3):
     def __init__(
         self,
         *args,
-        news_collection: str = "news",
         # ~10 hits gives the synthesiser enough material for multi-faceted
         # questions ("performance over the last year"); a single article rarely
         # covers the full ground. Tavily allows up to 20 per call.
@@ -455,7 +454,6 @@ class AgenticRAGv4(AgenticRAGv3):
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
-        self.news_collection = news_collection
         self.web_top_k = web_top_k
         # Phase 7 query-type dispatcher. When True, non-narrative questions skip
         # retrieval/grading and go straight to the right tool. Set False to A/B
@@ -511,12 +509,7 @@ class AgenticRAGv4(AgenticRAGv3):
     @property
     def web(self) -> WebSearcher:
         if self._web is None:
-            self._web = WebSearcher(
-                chroma_dir=self.chroma_dir,
-                collection_name=self.news_collection,
-                embedding_model=self.embedding_model,
-                top_k=self.web_top_k,
-            )
+            self._web = WebSearcher(top_k=self.web_top_k)
         return self._web
 
     @property
@@ -552,7 +545,6 @@ class AgenticRAGv4(AgenticRAGv3):
                 collection_name=self.collections[0],
                 chroma_dir=self.chroma_dir,
                 embedding_model=self.embedding_model,
-                market=self.market,
             )
         return self._fetcher
 
@@ -2977,9 +2969,7 @@ def _build_cli() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Run the full agentic RAG (v4).")
     p.add_argument("--collection", default="us_filings")
     p.add_argument("--chroma-dir", default="data/chroma")
-    p.add_argument("--market", choices=["india", "us"], default="us")
     p.add_argument("--table-collection", default="tables")
-    p.add_argument("--news-collection", default="news")
     p.add_argument("--provider", choices=["groq", "gemini", "openai", "anthropic"],
                    default="groq")
     p.add_argument("--planner-model", default=None)
@@ -3028,7 +3018,6 @@ def main():
     agent = AgenticRAGv4(
         collection_name=args.collection,
         chroma_dir=args.chroma_dir,
-        market=args.market,
         embedding_model=args.embedding_model,
         provider=args.provider,
         planner_model=args.planner_model,
@@ -3044,7 +3033,6 @@ def main():
         final_top_k=args.final_top_k,
         table_collection=args.table_collection,
         table_top_k=args.table_top_k,
-        news_collection=args.news_collection,
         web_top_k=args.web_top_k,
         grade_threshold=args.grade_threshold,
         max_rewrites=args.max_rewrites,

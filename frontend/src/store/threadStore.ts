@@ -12,13 +12,11 @@
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 
-import type { Market } from "@/lib/api";
 import { useChatStore, type ChatMessage } from "./chatStore";
 
 export interface Thread {
   id: string;
   title: string;
-  market: Market;
   messages: ChatMessage[];
   created_at: number;
   updated_at: number;
@@ -40,7 +38,7 @@ interface ThreadState {
   threads: Thread[];
   activeId: string | null;
 
-  createChat: (title?: string, market?: Market) => Thread;
+  createChat: (title?: string) => Thread;
   switchTo: (id: string) => void;
   renameChat: (id: string, title: string) => void;
   deleteChat: (id: string) => void;
@@ -55,9 +53,9 @@ export const useThreadStore = create<ThreadState>()(
       threads: [],
       activeId: null,
 
-      createChat: (title = "New chat", market = "us") => {
+      createChat: (title = "New chat") => {
         const thread: Thread = {
-          id: uid(), title, market, messages: [],
+          id: uid(), title, messages: [],
           created_at: Date.now(), updated_at: Date.now(),
         };
         set((s) => ({ threads: [thread, ...s.threads], activeId: thread.id }));

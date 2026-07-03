@@ -151,10 +151,12 @@ def conn() -> sqlite3.Connection:
 # Chats — CRUD
 # --------------------------------------------------------------------------- #
 
-def create_chat(title: str = "New chat", market: str = "us") -> dict:
+def create_chat(title: str = "New chat") -> dict:
+    # ponytail: the market column is vestigial (US-only now); kept to avoid a
+    # SQLite migration on existing chat DBs.
     c = conn()
     cur = c.execute(
-        "INSERT INTO chats (title, market) VALUES (?, ?)", (title, market),
+        "INSERT INTO chats (title, market) VALUES (?, ?)", (title, "us"),
     )
     c.commit()
     return get_chat(cur.lastrowid or 0) or {}

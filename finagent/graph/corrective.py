@@ -34,16 +34,16 @@ Usage as a library
 ------------------
     from finagent.graph.corrective import AgenticRAGv2
 
-    agent = AgenticRAGv2(collection_name="india_filings", market="india")
-    state = agent.run("Compare Reliance and Tata Motors revenue in FY23.")
+    agent = AgenticRAGv2(collection_name="us_filings")
+    state = agent.run("Compare Microsoft and Apple revenue in FY23.")
     print(state["final_answer"])
     print("avg_grade:", state["avg_grade"], "low_conf:", state.get("low_confidence"))
 
 CLI
 ---
     python -m finagent.graph.corrective \\
-        --collection india_filings --market india \\
-        --question "Compare Reliance and Tata Motors revenue in FY23."
+        --collection us_filings \\
+        --question "Compare Microsoft and Apple revenue in FY23."
 """
 
 from __future__ import annotations
@@ -200,7 +200,7 @@ class AgenticRAGv2(AgenticRAG):
     def _get_hybrids(self) -> list[HybridRetriever]:
         """One hybrid retriever per filings collection (BM25 + dense + rerank).
         Retrieving over several collections and letting the grader/reranker sort
-        it out is how the agent serves both US + India without a market toggle."""
+        it out keeps every collection searchable without a toggle."""
         if self._hybrids is None:
             from finagent.vectorstore import build_store
 
@@ -524,7 +524,6 @@ def _build_cli() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Run the Corrective-RAG (v2) graph.")
     p.add_argument("--collection", default="us_filings")
     p.add_argument("--chroma-dir", default="data/chroma")
-    p.add_argument("--market", choices=["india", "us"], default="us")
     p.add_argument("--provider", choices=["groq", "gemini", "openai", "anthropic"],
                    default="groq")
     p.add_argument("--planner-model", default=None)
@@ -563,7 +562,6 @@ def main():
     agent = AgenticRAGv2(
         collection_name=args.collection,
         chroma_dir=args.chroma_dir,
-        market=args.market,
         embedding_model=args.embedding_model,
         provider=args.provider,
         planner_model=args.planner_model,

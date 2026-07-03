@@ -107,7 +107,7 @@ def _gold_rank(ranked_texts: list[str], gold_text: str) -> int | None:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--n", type=int, default=60, help="chunks sampled per collection")
-    ap.add_argument("--collections", default="us_filings,india_filings")
+    ap.add_argument("--collections", default="us_filings")
     ap.add_argument("--chroma-dir", default="data/chroma")
     ap.add_argument(
         "--rerankers",
