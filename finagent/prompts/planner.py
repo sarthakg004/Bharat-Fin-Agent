@@ -9,7 +9,7 @@ relocation deferred under the "no logic rewrite" scope).
 
 from finagent.graph.base import PLANNER_PROMPT  # noqa: F401
 from finagent.graph.full import ROUTER_SYSTEM, ROUTER_PROMPT  # noqa: F401
-from finagent.graph.agent import (  # noqa: F401
+from finagent.graph.nodes.external import (  # noqa: F401
     MARKET_PLANNER_SYSTEM,
     MARKET_PLANNER_PROMPT,
 )

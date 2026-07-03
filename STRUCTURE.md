@@ -74,7 +74,20 @@ shims left behind. Stubs for roadmap tools — `resolver` (Phase 2), `xbrl`
 **`graph/`** — The LangGraph agent: `AgentState` (`graph/state.py`), the graph
 builder/runner, and the agent class chain
 `AgenticRAG → AgenticRAGv2 → AgenticRAGv3 → AgenticRAGv4` (the deployed agent,
-aliased `FinAgent`).
+aliased `FinAgent`). The v4 node implementations live in **`graph/nodes/`** as
+topical mixins composed into `AgenticRAGv4` (ahead of `AgenticRAGv3` in the
+MRO, so overrides win):
+
+| module | mixin | holds |
+|---|---|---|
+| `nodes/fetch.py` | `FetchNodes` | dynamic SEC fetch gate + v4 hybrid retrieval |
+| `nodes/numeric.py` | `NumericNodes` | XBRL facts, derived-metric calculator, table agent |
+| `nodes/external.py` | `ExternalNodes` | yfinance market data, Tavily web search, EDGAR FTS |
+| `nodes/synthesis.py` | `SynthesisNodes` | evidence builder, analyst synthesis, critic |
+| `nodes/verification.py` | `VerificationNodes` | figure grounding, refusal/abstention, confidence gate |
+
+`graph/agent.py` itself keeps only the constructor, lane resources, routing
+functions, and `_build_graph` — read it first, then the mixin a node lives in.
 
 **`api/`** — FastAPI layer. `main.py` holds the `app` (Cloud Run entry point),
 the `/api/query` SSE stream, chat endpoints, and static SPA hosting.
@@ -93,11 +106,11 @@ before/after metrics table). See **The evaluation & improvement loop** below.
 
 ## One known deviation
 
-**`prompts/` re-exports prompt constants** from their `graph/*` definition
-sites rather than owning them, so `prompts` currently imports from `graph`
-(against the ideal "prompts is a zero-import leaf"). Flipping the dependency —
-moving the string bodies into `prompts/` — is a follow-up tied to decomposing
-the agent class chain into per-node modules.
+**`prompts/` re-exports prompt constants** from their definition sites in
+`graph/` / `graph/nodes/` rather than owning them, so `prompts` currently
+imports from `graph` (against the ideal "prompts is a zero-import leaf").
+Prompt strings deliberately live next to the node that uses them; `prompts/`
+is just the stable import surface.
 
 ## The agent pipeline (what actually runs per question)
 

@@ -562,7 +562,7 @@ def test_numeric_accuracy_metric():
 def test_explicit_abstention_detection():
     """Soft-refusal phrasing is detected, real cited answers are not, and the
     metrics layer counts an explicit abstention as a refusal."""
-    from finagent.graph.agent import _SOFT_REFUSAL_RE
+    from finagent.graph.nodes.verification import _SOFT_REFUSAL_RE
     from finagent.evaluation.financebench.parallel import _is_refusal
 
     assert _SOFT_REFUSAL_RE.search("the figure cannot be calculated")
