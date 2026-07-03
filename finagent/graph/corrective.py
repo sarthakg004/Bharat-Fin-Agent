@@ -304,8 +304,27 @@ class AgenticRAGv2(AgenticRAG):
             from finagent.retrieval.reranker import _get_shared_reranker
             reranker = _get_shared_reranker(self.reranker_model)
             scores = reranker.predict([(state["question"], c["text"]) for c in chunks])
-            order = sorted(range(len(chunks)), key=lambda i: -scores[i])[:cap]
-            kept = [chunks[i] for i in order]
+            ranked = sorted(range(len(chunks)), key=lambda i: -scores[i])
+            # Per-sub-query floor: a comparison question's sub-queries each cover
+            # a different (entity × year); ranking the merged pool purely against
+            # the ORIGINAL question lets one entity's chunks crowd out the
+            # other's entirely. Reserve each sub-query's single best chunk first,
+            # then fill the remaining slots by global score.
+            kept_idx: list[int] = []
+            seen_subs: set = set()
+            for i in ranked:
+                sub = chunks[i].get("sub_query", "")
+                if sub not in seen_subs:
+                    seen_subs.add(sub)
+                    kept_idx.append(i)
+                if len(kept_idx) >= cap:
+                    break
+            for i in ranked:
+                if len(kept_idx) >= cap:
+                    break
+                if i not in kept_idx:
+                    kept_idx.append(i)
+            kept = [chunks[i] for i in sorted(kept_idx, key=ranked.index)]
             self._log(state, f"capped retrieval pool {len(chunks)}→{len(kept)} "
                              f"by cross-encoder rerank vs. the question")
             return kept

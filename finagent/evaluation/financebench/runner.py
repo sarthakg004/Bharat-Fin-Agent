@@ -94,10 +94,18 @@ def run_agent_outputs(
             # exhaustion (or a daily quota) stops the whole run — grinding the
             # remaining questions into error rows helps nobody; a resume picks
             # up exactly here once the limits reset.
+            # FinanceBench is open-book over a KNOWN company's filing, but a few
+            # questions never name it ("Was there any drop in Cash & Cash
+            # equivalents…"). Append the company so retrieval can filter to it;
+            # the output row and RAGAS still record/score the original question.
+            question = q["question"]
+            company = q.get("company") or ""
+            if company and company.split()[0].lower() not in question.lower():
+                question = f"{question} (Company: {company})"
             for attempt in (1, 2):
                 try:
                     res = run_agentic(
-                        question=q["question"],
+                        question=question,
                         top_k=top_k,
                         provider=provider,
                         synth_model=synth_model,

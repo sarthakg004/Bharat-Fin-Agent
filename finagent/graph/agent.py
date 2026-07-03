@@ -2874,9 +2874,22 @@ single item is irrelevant."""
             )
             tail = f" — {r['summary']}" if r.get("summary") else ""
             return f"{ticker} {metric} trend: {pts}{tail}"
-        # scalar (ratio / margin / growth / cagr)
-        head = f"{ticker} {metric} = {r.get('value_str', '')}"
-        return f"{head}\n{r.get('source', '')}"
+        # scalar (ratio / margin / growth / cagr). State the formula and the
+        # input figures alongside the result: the RAGAS faithfulness judge (and
+        # any reader) can't do the arithmetic from raw inputs alone, so a bare
+        # "ratio = 24.26" chunk scores as unsupported even when it's exact.
+        lines = [f"{ticker} {metric} = {r.get('value_str', '')}"]
+        if r.get("formula"):
+            lines.append(f"Derivation: {r['formula']}")
+        inputs = [i for i in (r.get("inputs") or []) if isinstance(i, dict)]
+        if inputs:
+            lines.append("Inputs: " + "; ".join(
+                f"{i.get('concept', '?')} ({i.get('period', i.get('fy', '?'))})"
+                f" = {i.get('value_str', i.get('value', '?'))}"
+                for i in inputs))
+        if r.get("source"):
+            lines.append(str(r["source"]))
+        return "\n".join(lines)
 
     def _dedupe_evidence(self, items: list[dict], text_key: str) -> list[dict]:
         """Phase 10 near-duplicate filter: keep one representative per cluster of
