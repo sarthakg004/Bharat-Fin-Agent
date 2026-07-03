@@ -91,7 +91,7 @@ class TableAgent:
     """Retrieval-augmented table QA via LLM-generated pandas snippets."""
 
     DEFAULT_CODE_MODELS = {
-        "groq": "llama-3.3-70b-versatile",
+        "groq": "qwen/qwen3.6-27b",
         "gemini": "gemini-2.5-flash",
         "openai": "gpt-4o",
         "anthropic": "claude-sonnet-4-6",

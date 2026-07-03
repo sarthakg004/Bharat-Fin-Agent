@@ -191,17 +191,17 @@ class AgenticRAG:
     """
 
     # Groq tier picks:
-    #   planner / grader / router (structured output)  → llama-3.3-70b-versatile
+    #   planner / grader / router (structured output)  → qwen/qwen3.6-27b
     #   synth + critic  (long-form writing, reasoning) → openai/gpt-oss-120b
     # The planner's decomposition drives retrieval and the grader DROPS chunks,
-    # so both sit on the quality path — 8b-instant there was measurably
-    # mis-decomposing multi-hop questions and mis-grading relevant chunks
-    # (and its structured-output calls fail more often, which used to discard
-    # whole evidence sets). 70B-versatile keeps these calls on a different
-    # quota bucket from the 120B synth/critic.
+    # so both sit on the quality path — small (≤8B) models there measurably
+    # mis-decomposed multi-hop questions and mis-graded relevant chunks.
+    # Qwen (replacing the deprecated llama-3.3-70b) keeps these calls on a
+    # different quota bucket from the 120B synth/critic, so the roles don't
+    # hit rate limits in lockstep.
     DEFAULTS = {
         "groq": {
-            "planner": "llama-3.3-70b-versatile",
+            "planner": "qwen/qwen3.6-27b",
             "synth":   "openai/gpt-oss-120b",
             "critic":  "openai/gpt-oss-120b",
         },

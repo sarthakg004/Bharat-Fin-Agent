@@ -34,7 +34,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 EMBED_MODEL = "BAAI/bge-small-en-v1.5"
-GEN_MODEL = "llama-3.1-8b-instant"
+GEN_MODEL = "qwen/qwen3.6-27b"
 CACHE = Path("data/eval_cache/reranker_questions.json")
 
 _GEN_PROMPT = (

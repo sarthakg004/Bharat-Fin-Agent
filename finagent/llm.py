@@ -505,7 +505,13 @@ def _build_single(provider: str, model: str, api_key: str,
     # default: groq
     from langchain_groq import ChatGroq
 
+    kwargs = {}
+    if model.startswith("qwen/"):
+        # Qwen 3.x are reasoning models: without this they prepend a <think>…
+        # block to every plain-text completion, which would leak into rewritten
+        # queries and judged answers. "hidden" strips it server-side.
+        kwargs["reasoning_format"] = "hidden"
     return ChatGroq(
         model=model, api_key=api_key,
-        temperature=temperature, max_retries=max_retries,
+        temperature=temperature, max_retries=max_retries, **kwargs,
     )

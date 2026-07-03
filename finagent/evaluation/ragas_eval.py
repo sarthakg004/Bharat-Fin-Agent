@@ -46,7 +46,7 @@ def run_ragas_eval(
 
     Model control:
       * `synth_model` sets the model that writes the final answer (e.g.
-        ``"llama-3.3-70b-versatile"``); ``None`` keeps the agent's default.
+        ``"qwen/qwen3.6-27b"``); ``None`` keeps the agent's default.
       * `judge_model` sets the RAGAS judge (e.g. ``"openai/gpt-oss-120b"``).
 
     `output_path` is the agent-answer cache. Generation is resumable, so a
