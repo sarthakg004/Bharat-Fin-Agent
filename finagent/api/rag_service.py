@@ -22,9 +22,7 @@ import time
 from threading import Lock
 from typing import Callable, Optional
 
-# Canonical agent namespace (the class chain itself lives in finagent.graph.*,
-# re-exported through finagent.agents during the layout restructure).
-from finagent.agents import AgenticRAGv4
+from finagent.graph import AgenticRAGv4
 from finagent.config import settings
 
 # Phase 1 (US-only): active retrieval searches the US filings corpus exclusively.

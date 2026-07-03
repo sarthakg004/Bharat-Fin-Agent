@@ -107,12 +107,6 @@ Return only the rewritten question.
 """
 
 
-# --------------------------------------------------------------------------- #
-# Hybrid retriever + reranker — MOVED to finagent.retrieval during the layout
-# restructure. Re-exported here so existing import paths keep working, e.g.:
-#     from finagent.graph.corrective import HybridRetriever, _get_shared_reranker
-# Remove this shim once every consumer imports from finagent.retrieval directly.
-# --------------------------------------------------------------------------- #
 # Codepoint ranges for scripts a US English filing should not be written in
 # (Cyrillic, Hebrew, Arabic, Devanagari, Hiragana/Katakana, CJK, Hangul).
 _NON_LATIN_RE = re.compile(
@@ -134,12 +128,7 @@ def _mostly_non_english(text: str) -> bool:
     return len(_NON_LATIN_RE.findall(text)) / letters > 0.30
 
 
-from finagent.retrieval.hybrid import HybridRetriever  # noqa: E402,F401
-from finagent.retrieval.reranker import (  # noqa: E402,F401
-    CrossEncoderReranker,
-    _get_shared_reranker,
-    _SHARED_RERANKERS,
-)
+from finagent.retrieval.hybrid import HybridRetriever  # noqa: E402
 
 
 # --------------------------------------------------------------------------- #

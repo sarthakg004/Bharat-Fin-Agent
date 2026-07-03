@@ -107,7 +107,7 @@ class RetrievalEvaluator:
 
     def _ensure_reranker(self):
         if self._reranker is None:
-            from finagent.graph.corrective import _get_shared_reranker
+            from finagent.retrieval.reranker import _get_shared_reranker
 
             self._reranker = _get_shared_reranker(self.reranker_model)
         return self._reranker

@@ -71,7 +71,6 @@ class Settings(BaseModel):
     chroma_dir: str = Field(default="data/chroma", description="CHROMA_DIR")
     static_dir: str = Field(default="static", description="STATIC_DIR")
     us_collection: str = Field(default="us_filings", description="US filings collection")
-    india_collection: str = Field(default="india_filings", description="India filings collection")
     financebench_collection: str = Field(default="financebench_eval", description="eval collection")
 
     @classmethod
@@ -91,7 +90,6 @@ class Settings(BaseModel):
             chroma_dir=os.getenv("CHROMA_DIR", "data/chroma"),
             static_dir=os.getenv("STATIC_DIR", "static"),
             us_collection=os.getenv("US_COLLECTION", "us_filings"),
-            india_collection=os.getenv("INDIA_COLLECTION", "india_filings"),
             financebench_collection=os.getenv("FINANCEBENCH_COLLECTION", "financebench_eval"),
         )
 

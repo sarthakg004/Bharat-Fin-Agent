@@ -135,7 +135,7 @@ def main() -> None:
     samples = [s for s in samples if s.get("q")]
 
     # ---- build one retriever per collection (for the candidate pool) ----
-    from finagent.graph.corrective import HybridRetriever
+    from finagent.retrieval import HybridRetriever
     from finagent.vectorstore import build_store
 
     retrievers = {

@@ -3,12 +3,6 @@
 This is the map a new contributor reads first. It explains what each top-level
 module under `finagent/` contains and the **dependency direction** between them.
 
-The codebase was reorganised into clean layers. To protect the deployed service,
-the migration was done as a **structural move with backwards-compatibility
-shims**: old import paths keep working, and the agent's tightly-coupled class
-chain was *relocated/re-exported, not rewritten*. Two scoped deviations from a
-"pure" layout are called out below.
-
 ## The Cloud Run contract (do not break)
 
 The container entry point is:
@@ -34,10 +28,10 @@ corpus/          ← config, (low-level) chroma_client, vectorstore
 ingestion/       ← config, corpus
 retrieval/       ← config, corpus, llm
 tools/           ← config, llm, retrieval (some tools)
-prompts/         ← (ideally) nothing — see deviation note
-agents/          ← config, llm, retrieval, tools, prompts, corpus
-api/             ← config, agents
-evaluation/      ← config, retrieval, agents
+prompts/         ← re-exports prompt strings from graph/ (see note)
+graph/           ← config, llm, retrieval, tools, corpus
+api/             ← config, graph
+evaluation/      ← config, retrieval, graph
 ```
 
 ## Top-level modules
@@ -77,17 +71,15 @@ shims left behind. Stubs for roadmap tools — `resolver` (Phase 2), `xbrl`
 **`prompts/`** — System prompts grouped by role (`planner`, `synthesizer`,
 `critic`). The canonical import surface for prompt strings.
 
-**`agents/`** — The LangGraph agent. Canonical public namespace exposing
-`AgentState`, `build_graph` / `build_agent`, `run_agent` + trace helpers, and the
-agent class chain `AgenticRAG → AgenticRAGv2 → AgenticRAGv3 → AgenticRAGv4`
-(the deployed agent). `AgentState` physically lives here (`agents/state.py`);
-the rest of the chain is re-exported from `finagent.graph.*` (see deviation).
+**`graph/`** — The LangGraph agent: `AgentState` (`graph/state.py`), the graph
+builder/runner, and the agent class chain
+`AgenticRAG → AgenticRAGv2 → AgenticRAGv3 → AgenticRAGv4` (the deployed agent,
+aliased `FinAgent`).
 
 **`api/`** — FastAPI layer. `main.py` holds the `app` (Cloud Run entry point),
 the `/api/query` SSE stream, chat endpoints, and static SPA hosting.
 `rag_service.py` builds/caches the agent and normalises its output;
-`history.py` / `models.py` are the chat store and Pydantic schemas. (Endpoint
-handlers could later be extracted into an `api/routes/` package; not done yet.)
+`history.py` / `models.py` are the chat store and Pydantic schemas.
 
 **`evaluation/`** — Dev-time only (never imported by the serve path). Canonical
 modules: `dataset` (load + tag FinanceBench), `retrieval` (pool-recall / Hit@k /
@@ -99,30 +91,13 @@ sharded multi-key run → merge → RAGAS → `final_metrics`), `answer_match`
 (deterministic numeric-accuracy metric, judge-free), and `compare` (the
 before/after metrics table). See **The evaluation & improvement loop** below.
 
-## Backwards-compatibility shims (transitional)
+## One known deviation
 
-These old paths still resolve via thin re-exports; remove them only after a
-passing Docker build, once every consumer imports from the canonical path:
-
-| Old path | Re-exports from |
-|---|---|
-| `graph/state.py` | `agents/state.py` |
-| `graph/corrective.py` (`HybridRetriever`, `_get_shared_reranker`) | `retrieval/` |
-| `graph/market_tools.py` | `tools/market.py` |
-| `graph/web_search.py` | `tools/web_search.py` |
-
-## Scoped deviations (deliberate, to protect production)
-
-1. **The agent class chain was not decomposed into per-node function modules.**
-   The nodes are bound methods on the `AgenticRAG*` classes; extracting them is a
-   rewrite, not a move. `agents/` re-exports the intact chain from `graph/`; a
-   future `agents/nodes/` package would hold that decomposition.
-
-2. **`prompts/` re-exports prompt constants** from their `graph/*` definition
-   sites rather than owning them. This means `prompts` currently imports from
-   `graph` (against the ideal "prompts is a zero-import leaf"). Flipping the
-   dependency — moving the string bodies into `prompts/` and importing them into
-   the nodes — is a follow-up tied to deviation (1).
+**`prompts/` re-exports prompt constants** from their `graph/*` definition
+sites rather than owning them, so `prompts` currently imports from `graph`
+(against the ideal "prompts is a zero-import leaf"). Flipping the dependency —
+moving the string bodies into `prompts/` — is a follow-up tied to decomposing
+the agent class chain into per-node modules.
 
 ## The agent pipeline (what actually runs per question)
 

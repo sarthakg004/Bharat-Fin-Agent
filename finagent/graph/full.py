@@ -50,7 +50,8 @@ import re
 from typing import Optional
 
 from finagent.graph.base import append_comparison_row  # noqa: F401 (re-export)
-from finagent.graph.corrective import AgenticRAGv2, HybridRetriever
+from finagent.graph.corrective import AgenticRAGv2
+from finagent.retrieval import HybridRetriever
 from finagent.graph.state import AgentState, QueryPlan, RouterReport
 from finagent.graph.table_agent import TableAgent
 

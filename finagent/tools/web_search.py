@@ -1,5 +1,5 @@
 """
-web_search.py  ·  finagent/graph/web_search.py
+web_search.py  ·  finagent/tools/web_search.py
 
 Web search for out-of-corpus questions, with a graceful local fallback.
 
@@ -18,7 +18,7 @@ so the synthesizer can cite them identically. `source` is either `"tavily"` or
 
 Usage as a library
 ------------------
-    from finagent.graph.web_search import WebSearcher
+    from finagent.tools.web_search import WebSearcher
 
     ws = WebSearcher(collection_name="news")
     hits = ws.search("Reliance Q3 FY24 results", k=3)
