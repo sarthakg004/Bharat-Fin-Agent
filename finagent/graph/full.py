@@ -31,16 +31,16 @@ Usage as a library
 ------------------
     from finagent.graph.full import AgenticRAGv3
 
-    agent = AgenticRAGv3(collection_name="india_filings", market="india")
-    state = agent.run("What was HDFC Bank's net interest margin in FY23?")
+    agent = AgenticRAGv3(collection_name="us_filings")
+    state = agent.run("What was JPMorgan's net interest margin in FY23?")
     print(state["final_answer"])
     print(state["query_routes"])
 
 CLI
 ---
     python -m finagent.graph.full \\
-        --collection india_filings --market india \\
-        --question "What was HDFC Bank's net interest margin in FY23?"
+        --collection us_filings \\
+        --question "What was JPMorgan's net interest margin in FY23?"
 """
 
 from __future__ import annotations
@@ -50,7 +50,8 @@ import re
 from typing import Optional
 
 from finagent.graph.base import append_comparison_row  # noqa: F401 (re-export)
-from finagent.graph.corrective import AgenticRAGv2, HybridRetriever
+from finagent.graph.corrective import AgenticRAGv2
+from finagent.retrieval import HybridRetriever
 from finagent.graph.state import AgentState, QueryPlan, RouterReport
 from finagent.graph.table_agent import TableAgent
 
@@ -82,7 +83,7 @@ You route financial-QA sub-queries to one of FIVE retrievers:
   developments that aren't specifically about market data.
 
 Numeric markers: "what was", "how much", "ratio", "margin", "growth %",
-specific fiscal years (FY23, FY2024), currency amounts (₹, $), "crore", "billion".
+specific fiscal years (FY23, FY2024), currency amounts ($), "billion".
 
 Market markers: "current price", "premarket", "intraday", "today's move",
 "stock chart", "52-week", "OHLC", "candlestick", "compare X and Y stock".
@@ -91,17 +92,17 @@ Cross-document markers: "which companies", "what companies", "list companies/fir
 "how many filings/companies", "across filings" — when no single company is the subject.
 
 Examples:
-  - "What is HDFC Bank's net interest margin in FY23?"           → numeric
-  - "How much did Reliance earn from oil-to-chemicals in FY23?"  → numeric
-  - "Describe Infosys' AI strategy"                              → narrative
-  - "What were the principal risks listed in TCS' annual report?" → narrative
+  - "What is JPMorgan's net interest margin in FY23?"            → numeric
+  - "How much did Amazon earn from AWS in FY23?"                 → numeric
+  - "Describe Microsoft's AI strategy"                           → narrative
+  - "What were the principal risks listed in Apple's 10-K?"      → narrative
   - "EBITDA margin growth from FY21 to FY23?"                    → numeric
-  - "What is Wipro's current share price?"                       → market
+  - "What is Nvidia's current share price?"                     → market
   - "Show me Apple's 1-year stock chart"                         → market
   - "How is Tesla doing as a stock?"                             → market
   - "Which companies disclosed a material weakness in FY2023?"   → cross_document
   - "List firms that mention quantum computing in their 10-K"    → cross_document
-  - "Latest macro headlines from India today"                    → external
+  - "Latest macro headlines today"                               → external
 """
 
 ROUTER_PROMPT = """\
@@ -177,8 +178,8 @@ Examples:
   - "What drove the gross-margin change for J&J in FY2022?"      → narrative
   - "Was American Express able to retain card members in 2022?"  → narrative
   - "Does AMD have a healthy liquidity profile (quick ratio)?"   → narrative
-  - "Describe Infosys' AI strategy"                               → narrative
-  - "What is Wipro's current share price?"                        → market
+  - "Describe Microsoft's AI strategy"                            → narrative
+  - "What is Nvidia's current share price?"                      → market
   - "Which companies disclosed a material weakness in FY2023?"    → cross_document
   - "Latest macro headlines today"                                → external
 """
@@ -197,7 +198,7 @@ Citations
 ---------
 Cite by **number** only. After every factual claim, append the index of the
 evidence item(s) that support it in ASCII square brackets, e.g.
-"Reliance's FY24 revenue was ₹9.74 lakh crore [1]."
+"Apple's FY24 revenue was $391 billion [1]."
 Multiple sources for one claim: `[1,3]`. Use `[N]` — NOT `【N】`, `(N)`, or
 any other bracket style. NEVER write out the source title, the URL, or any
 tag in prose — the user sees those in a sidebar already.
@@ -266,7 +267,7 @@ Write the final answer now, with an inline citation after every fact.
 _NUMERIC_MARKERS = (
     "what was", "what is", "how much", "how many",
     "ratio", "margin", "growth", "yield", "return on",
-    "%", "₹", "$", "crore", "lakh", "billion", "million",
+    "%", "$", "billion", "million",
     "revenue", "profit", "earnings", "income", "ebitda",
     "interest", "net interest", "tax", "capex", "asset",
     "liability", "equity", "share", "dividend",
@@ -662,7 +663,6 @@ def _build_cli() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Run the table-augmented RAG (v3) graph.")
     p.add_argument("--collection", default="us_filings")
     p.add_argument("--chroma-dir", default="data/chroma")
-    p.add_argument("--market", choices=["india", "us"], default="us")
     p.add_argument("--table-collection", default="tables")
     p.add_argument("--provider", choices=["groq", "gemini", "openai", "anthropic"],
                    default="groq")
@@ -705,7 +705,6 @@ def main():
     agent = AgenticRAGv3(
         collection_name=args.collection,
         chroma_dir=args.chroma_dir,
-        market=args.market,
         embedding_model=args.embedding_model,
         provider=args.provider,
         planner_model=args.planner_model,

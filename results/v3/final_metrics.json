@@ -1,0 +1,181 @@
+{
+  "outputs": "results/v3/financebench_full_outputs.json",
+  "behaviour": {
+    "questions": 150,
+    "answered": 112,
+    "answer_rate": 0.7467,
+    "refused": 38,
+    "refusal_rate": 0.2533,
+    "errors": 0,
+    "error_rate": 0.0,
+    "mean_confidence": 0.6423,
+    "numeric_accuracy": 0.7463,
+    "numeric_accuracy_detail": {
+      "overall": {
+        "n": 67,
+        "correct": 50,
+        "accuracy": 0.7463
+      },
+      "by_type": {
+        "numeric": {
+          "n": 67,
+          "correct": 50,
+          "accuracy": 0.7463
+        }
+      },
+      "tolerance": 0.01,
+      "misses": [
+        {
+          "question": "Based on the information provided primarily in the statement of financial position and the statement of income, what is AES's FY2022 return on assets (ROA)? ROA",
+          "company": "AES Corporation",
+          "gold": "-0.02",
+          "answer": "**-1.50% (FY2022)** [1]"
+        },
+        {
+          "question": "Does AMD have a reasonably healthy liquidity profile based on its quick ratio for FY22? If the quick ratio is not relevant to measure liquidity, please state th",
+          "company": "AMD",
+          "gold": "Yes. The quick ratio is 1.57, calculated as (cash and cash equivalents+Short term investments+Accounts receivable, net+receivables from related parties)/ (current liabilities).",
+          "answer": "**Insufficient evidence to answer.** The retrieved filings and sources do not contain the specific information this question asks for, so I can't give a grounde"
+        },
+        {
+          "question": "How much (in USD billions) did American Water Works pay out in cash dividends for FY2020? Compute or extract the answer by primarily using the details outlined ",
+          "company": "American Water Works",
+          "gold": "$0.40",
+          "answer": "**$0.389\u202fbillion** (FY2020)\u202f[1]"
+        },
+        {
+          "question": "Does American Water Works have positive working capital based on FY2022 data? If working capital is not a useful or relevant metric for this company, then pleas",
+          "company": "American Water Works",
+          "gold": "No, American Water Works had negative working capital of -$1561M in FY 2022.",
+          "answer": "**Insufficient evidence to answer.** The retrieved filings and sources do not contain the specific information this question asks for, so I can't give a grounde"
+        },
+        {
+          "question": "Does Corning have positive working capital based on FY2022 data? If working capital is not a useful or relevant metric for this company, then please state that ",
+          "company": "Corning",
+          "gold": "Yes. Corning had a positive working capital amount of $831 million by FY 2022 close. This answer considers only operating current assets and current liabilities that were clearly shown in the balance sheet.",
+          "answer": "**Insufficient evidence to answer.** The retrieved filings and sources do not contain the specific information this question asks for, so I can't give a grounde"
+        },
+        {
+          "question": "According to the information provided in the statement of cash flows, what is the FY2020 free cash flow (FCF) for General Mills? FCF here is defined as: (cash f",
+          "company": "General Mills",
+          "gold": "$3215.00",
+          "answer": "**Insufficient evidence to answer.** The retrieved filings and sources do not contain the specific information this question asks for, so I can't give a grounde"
+        },
+        {
+          "question": "What is Lockheed Martin's FY2021 net working capital? Define net working capital as total current assets less total current liabilities. Answer in USD millions.",
+          "company": "Lockheed Martin",
+          "gold": "$5818.00",
+          "answer": "**Insufficient evidence to answer.** The retrieved filings and sources do not contain the specific information this question asks for, so I can't give a grounde"
+        },
+        {
+          "question": "What is the FY2022 unadjusted EBITDA less capex for PepsiCo? Define unadjusted EBITDA as unadjusted operating income + depreciation and amortization [from cash ",
+          "company": "PepsiCo",
+          "gold": "$9068.00",
+          "answer": "**Insufficient evidence to answer.** The retrieved filings and sources do not contain the specific information this question asks for, so I can't give a grounde"
+        },
+        {
+          "question": "Is Verizon a capital intensive business based on FY 2022 data?",
+          "company": "Verizon",
+          "gold": "Yes. Verizon's capital intensity ratio was approximately 2.774729. This means that it took approximately $2.77 of assets to generate $1 of revenue and thus, Verizon can be considered capital intensive.",
+          "answer": "No FY\u202f2022 capital\u2011expenditure\u2011as\u2011a\u2011percentage\u2011of\u2011revenue figure for Verizon is present in the supplied evidence."
+        },
+        {
+          "question": "Considering the data in the balance sheet, what is Block's (formerly known as Square) FY2016 working capital ratio? Define working capital ratio as total curren",
+          "company": "Block",
+          "gold": "1.73",
+          "answer": "**Insufficient evidence to answer.** The retrieved filings and sources do not contain the specific information this question asks for, so I can't give a grounde"
+        },
+        {
+          "question": "What is the FY2018 - FY2020 3 year average of capex as a % of revenue for MGM Resorts? Answer in units of percents and round to one decimal place. Please utiliz",
+          "company": "MGM Resorts",
+          "gold": "7.9%",
+          "answer": "**7.8%** (FY2018\u2011FY2020 3\u2011year average capex\u2011to\u2011revenue) [1,2,3]\n\n*Basis: 12.6% FY2018\u202f[1]; 5.7% FY2019\u202f[2]; 5.2% FY2020\u202f[3]*"
+        },
+        {
+          "question": "Does Verizon have a reasonably healthy liquidity profile based on its quick ratio for FY 2022? If the quick ratio is not relevant to measure liquidity, please s",
+          "company": "Verizon",
+          "gold": "No. The quick ratio was approximately 0.54 for Verizon. It indicated that Verizon does not have a healthy liquidity profile.",
+          "answer": "**0.71\u00d7** (FY\u202f2022) [1]\n\n*The quick ratio measures liquid assets versus current liabilities; however, without a benchmark or comparative context, we cannot dete"
+        },
+        {
+          "question": "Does AMCOR have an improving gross margin profile as of FY2023? If gross margin is not a useful metric for a company like this, then state that and explain why.",
+          "company": "Amcor",
+          "gold": "No. For AMCOR there has been a slight decline in gross margins by 0.8%.",
+          "answer": "**Gross margin fell to **18.5%** (FY2023) from **21.2%** (FY2021), indicating a deteriorating profile**\u202f[3,1].\n\n- FY2021: **21.2%** gross margin\u202f[1]  \n- FY2022:"
+        },
+        {
+          "question": "Answer the following question as if you are an equity research analyst and have lost internet connection so you do not have access to financial metric providers",
+          "company": "AMD",
+          "gold": "4.2%",
+          "answer": "No FY2015 depreciation and amortization margin is provided in the available evidence."
+        },
+        {
+          "question": "Basing your judgments off of the cash flow statement and the income statement, what is American Water Works's FY2021 unadjusted operating income + depreciation ",
+          "company": "American Water Works",
+          "gold": "$1832.00",
+          "answer": "**No disclosed FY\u202f2021 unadjusted operating income\u202f+\u202fdepreciation and amortization (unadjusted EBITDA) amount (USD\u202fmillions) is available in the provided eviden"
+        },
+        {
+          "question": "Using the cash flow statement, answer the following question to the best of your abilities: how much did Block (formerly known as Square) generate in cash flow ",
+          "company": "Block",
+          "gold": "$382.00",
+          "answer": "**Insufficient evidence to answer.** The retrieved filings and sources do not contain the specific information this question asks for, so I can't give a grounde"
+        },
+        {
+          "question": "What drove gross margin change as of FY2022 for JnJ? If gross margin is not a useful metric for a company like this, then please state that and explain why.",
+          "company": "Johnson & Johnson",
+          "gold": "For FY22, JnJ had changes in gross margin due to: One-time COVID-19 vaccine manufacturing exit related costs, Currency impacts in the Pharmaceutical segment, Commodity inflation in the MedTech and Consumer Health segments, partially offset by Supply chain benefits in the Consumer Health segment.",
+          "answer": "**Gross margin slipped ~100\u202fbps in FY\u202f2022, falling from 69.7\u202f% in Q1 to 68.7\u202f% in Q2, driven by a 1.0\u202f% rise in cost of products sold (30.3\u202f% \u2192\u202f31.3\u202f% of sales"
+        }
+      ]
+    },
+    "by_type": {
+      "numeric": {
+        "questions": 71,
+        "answered": 62,
+        "refused": 9,
+        "errors": 0
+      },
+      "comparison": {
+        "questions": 22,
+        "answered": 15,
+        "refused": 7,
+        "errors": 0
+      },
+      "narrative": {
+        "questions": 57,
+        "answered": 35,
+        "refused": 22,
+        "errors": 0
+      }
+    }
+  },
+  "ragas": {
+    "overall": {
+      "faithfulness": 0.5724,
+      "answer_relevancy": 0.4494,
+      "context_precision": 0.4999,
+      "context_recall": 0.4706
+    },
+    "by_type": {
+      "comparison": {
+        "faithfulness": 0.529,
+        "answer_relevancy": 0.4389,
+        "context_precision": 0.2941,
+        "context_recall": 0.4091
+      },
+      "narrative": {
+        "faithfulness": 0.5051,
+        "answer_relevancy": 0.356,
+        "context_precision": 0.3798,
+        "context_recall": 0.2895
+      },
+      "numeric": {
+        "faithfulness": 0.6349,
+        "answer_relevancy": 0.5276,
+        "context_precision": 0.6006,
+        "context_recall": 0.635
+      }
+    }
+  }
+}

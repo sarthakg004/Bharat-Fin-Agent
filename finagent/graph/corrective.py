@@ -34,16 +34,16 @@ Usage as a library
 ------------------
     from finagent.graph.corrective import AgenticRAGv2
 
-    agent = AgenticRAGv2(collection_name="india_filings", market="india")
-    state = agent.run("Compare Reliance and Tata Motors revenue in FY23.")
+    agent = AgenticRAGv2(collection_name="us_filings")
+    state = agent.run("Compare Microsoft and Apple revenue in FY23.")
     print(state["final_answer"])
     print("avg_grade:", state["avg_grade"], "low_conf:", state.get("low_confidence"))
 
 CLI
 ---
     python -m finagent.graph.corrective \\
-        --collection india_filings --market india \\
-        --question "Compare Reliance and Tata Motors revenue in FY23."
+        --collection us_filings \\
+        --question "Compare Microsoft and Apple revenue in FY23."
 """
 
 from __future__ import annotations
@@ -107,12 +107,6 @@ Return only the rewritten question.
 """
 
 
-# --------------------------------------------------------------------------- #
-# Hybrid retriever + reranker — MOVED to finagent.retrieval during the layout
-# restructure. Re-exported here so existing import paths keep working, e.g.:
-#     from finagent.graph.corrective import HybridRetriever, _get_shared_reranker
-# Remove this shim once every consumer imports from finagent.retrieval directly.
-# --------------------------------------------------------------------------- #
 # Codepoint ranges for scripts a US English filing should not be written in
 # (Cyrillic, Hebrew, Arabic, Devanagari, Hiragana/Katakana, CJK, Hangul).
 _NON_LATIN_RE = re.compile(
@@ -134,12 +128,7 @@ def _mostly_non_english(text: str) -> bool:
     return len(_NON_LATIN_RE.findall(text)) / letters > 0.30
 
 
-from finagent.retrieval.hybrid import HybridRetriever  # noqa: E402,F401
-from finagent.retrieval.reranker import (  # noqa: E402,F401
-    CrossEncoderReranker,
-    _get_shared_reranker,
-    _SHARED_RERANKERS,
-)
+from finagent.retrieval.hybrid import HybridRetriever  # noqa: E402
 
 
 # --------------------------------------------------------------------------- #
@@ -211,7 +200,7 @@ class AgenticRAGv2(AgenticRAG):
     def _get_hybrids(self) -> list[HybridRetriever]:
         """One hybrid retriever per filings collection (BM25 + dense + rerank).
         Retrieving over several collections and letting the grader/reranker sort
-        it out is how the agent serves both US + India without a market toggle."""
+        it out keeps every collection searchable without a toggle."""
         if self._hybrids is None:
             from finagent.vectorstore import build_store
 
@@ -315,8 +304,27 @@ class AgenticRAGv2(AgenticRAG):
             from finagent.retrieval.reranker import _get_shared_reranker
             reranker = _get_shared_reranker(self.reranker_model)
             scores = reranker.predict([(state["question"], c["text"]) for c in chunks])
-            order = sorted(range(len(chunks)), key=lambda i: -scores[i])[:cap]
-            kept = [chunks[i] for i in order]
+            ranked = sorted(range(len(chunks)), key=lambda i: -scores[i])
+            # Per-sub-query floor: a comparison question's sub-queries each cover
+            # a different (entity × year); ranking the merged pool purely against
+            # the ORIGINAL question lets one entity's chunks crowd out the
+            # other's entirely. Reserve each sub-query's single best chunk first,
+            # then fill the remaining slots by global score.
+            kept_idx: list[int] = []
+            seen_subs: set = set()
+            for i in ranked:
+                sub = chunks[i].get("sub_query", "")
+                if sub not in seen_subs:
+                    seen_subs.add(sub)
+                    kept_idx.append(i)
+                if len(kept_idx) >= cap:
+                    break
+            for i in ranked:
+                if len(kept_idx) >= cap:
+                    break
+                if i not in kept_idx:
+                    kept_idx.append(i)
+            kept = [chunks[i] for i in sorted(kept_idx, key=ranked.index)]
             self._log(state, f"capped retrieval pool {len(chunks)}→{len(kept)} "
                              f"by cross-encoder rerank vs. the question")
             return kept
@@ -535,7 +543,6 @@ def _build_cli() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Run the Corrective-RAG (v2) graph.")
     p.add_argument("--collection", default="us_filings")
     p.add_argument("--chroma-dir", default="data/chroma")
-    p.add_argument("--market", choices=["india", "us"], default="us")
     p.add_argument("--provider", choices=["groq", "gemini", "openai", "anthropic"],
                    default="groq")
     p.add_argument("--planner-model", default=None)
@@ -574,7 +581,6 @@ def main():
     agent = AgenticRAGv2(
         collection_name=args.collection,
         chroma_dir=args.chroma_dir,
-        market=args.market,
         embedding_model=args.embedding_model,
         provider=args.provider,
         planner_model=args.planner_model,

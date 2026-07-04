@@ -2,7 +2,6 @@ import { useEffect, useRef } from "react";
 import { motion } from "framer-motion";
 
 import { useChatStore } from "@/store/chatStore";
-import { useConfigStore } from "@/store/configStore";
 import { useRAGQuery } from "@/hooks/useRAGQuery";
 import { useThreadStore } from "@/store/threadStore";
 import { MessageBubble } from "./MessageBubble";
@@ -28,9 +27,8 @@ interface Props {
 export function ChatPanel({ backendStatus }: Props) {
   const messages = useChatStore((s) => s.messages);
   const streamingId = useChatStore((s) => s.streamingId);
-  const market = useConfigStore((s) => s.market);
   const createChat = useThreadStore((s) => s.createChat);
-  const { ask, regenerate } = useRAGQuery(market);
+  const { ask, regenerate } = useRAGQuery();
   const backendOnline = backendStatus === "online";
 
   const lastAssistantId = (() => {
@@ -77,7 +75,7 @@ export function ChatPanel({ backendStatus }: Props) {
         <div className="mx-auto max-w-[760px]">
           <InputBar
             onSend={ask}
-            onClear={() => createChat("New chat", market)}
+            onClear={() => createChat("New chat")}
             streaming={!!streamingId}
             disabled={!backendOnline}
           />

@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { ChartSpec, Chunk, Market, QueryMetadata } from "@/lib/api";
+import type { ChartSpec, Chunk, QueryMetadata } from "@/lib/api";
 
 export type MessageRole = "user" | "assistant";
 
@@ -25,7 +25,6 @@ export interface ChatMessage {
   chunks?: Chunk[];
   charts?: ChartSpec[];
   metadata?: QueryMetadata;
-  market?: Market;
   ragas?: RagasScores;
   error?: string;
   streaming?: boolean;

@@ -1,37 +1,31 @@
 """
-web_search.py  ·  finagent/graph/web_search.py
+web_search.py  ·  finagent/tools/web_search.py
 
-Web search for out-of-corpus questions, with a graceful local fallback.
+Web search for out-of-corpus questions via Tavily (`TAVILY_API_KEY`).
+Without a key (or on error) the search degrades to an empty result and the
+agent's other lanes carry the answer.
 
-Strategy:
-    1. If `TAVILY_API_KEY` is set → `TavilyClient.search` (best quality).
-    2. Otherwise (or on Tavily error) → similarity-search the local `news`
-       Chroma collection, which we built from the Indian_Financial_News dataset.
+Results are a uniform list[dict] shape:
 
-Both paths return a uniform list[dict] shape:
+    [{"title", "url", "content", "score", "source", "tier", "published_date"}]
 
-    [{"title", "url", "content", "score", "source"}, ...]
-
-so the synthesizer can cite them identically. `source` is either `"tavily"` or
-`"news_local"` so the answer text can mark the provenance with a tag like
-`<News: ...>` while staying inside the inline-citation regex used elsewhere.
+so the synthesizer can cite them identically.
 
 Usage as a library
 ------------------
-    from finagent.graph.web_search import WebSearcher
+    from finagent.tools.web_search import WebSearcher
 
-    ws = WebSearcher(collection_name="news")
-    hits = ws.search("Reliance Q3 FY24 results", k=3)
+    ws = WebSearcher()
+    hits = ws.search("Apple Q3 FY24 results", k=3)
     for h in hits:
-        print(h["source"], h["title"])
+        print(h["tier"], h["title"])
 """
 
 from __future__ import annotations
 
 import os
 import re
-from pathlib import Path
-from typing import Optional, Union
+from typing import Optional
 
 from dotenv import load_dotenv
 
@@ -39,19 +33,7 @@ load_dotenv()
 
 
 TRUSTED_FINANCIAL_DOMAINS: tuple[str, ...] = (
-    # India
-    "moneycontrol.com",
-    "economictimes.indiatimes.com",
-    "livemint.com",
-    "business-standard.com",
-    "thehindubusinessline.com",
     "tradingview.com",
-    "screener.in",
-    "nseindia.com",
-    "bseindia.com",
-    "sebi.gov.in",
-    "rbi.org.in",
-    # Global
     "reuters.com",
     "bloomberg.com",
     "ft.com",
@@ -73,9 +55,6 @@ TRUSTED_FINANCIAL_DOMAINS: tuple[str, ...] = (
     "simplywall.st",
     "morningstar.com",
     "zacks.com",
-    "moneyview.in",
-    "businesstoday.in",
-    "ndtvprofit.com",
 )
 
 
@@ -139,17 +118,16 @@ def is_historical(query: str) -> bool:
 
 
 class WebSearcher:
-    """Unified web/news search with Tavily → local-news fallback.
+    """Tavily web search, trusted-financial-domains first.
 
-    The Tavily path runs **two passes** per call: one restricted to
-    `TRUSTED_FINANCIAL_DOMAINS` (Moneycontrol, ET, TradingView, Reuters,
-    Bloomberg, …) and one unrestricted general search. Trusted hits are
-    returned first so the synthesizer can prefer them; each hit carries a
-    `tier` of `"trusted"` or `"web"` for that decision.
+    Each call runs **two passes**: one restricted to
+    `TRUSTED_FINANCIAL_DOMAINS` (TradingView, Reuters, Bloomberg, …) and one
+    unrestricted general search. Trusted hits are returned first so the
+    synthesizer can prefer them; each hit carries a `tier` of `"trusted"` or
+    `"web"` for that decision.
 
-    All Tavily calls request `topic="news"` and a `time_range` inferred from
-    the query (day / week / month), so dated content gets filtered server-side
-    rather than being lumped into the synthesizer's context.
+    A `time_range` inferred from the query (day / week / month) filters dated
+    content server-side, except for historical lookups which search all-time.
     """
 
     # Tavily's `max_results` accepts up to 20. We default to 10 so the
@@ -158,41 +136,26 @@ class WebSearcher:
     MAX_RESULTS_CAP = 20
     TRUSTED_DOMAINS = TRUSTED_FINANCIAL_DOMAINS
 
-    def __init__(
-        self,
-        tavily_api_key: Optional[str] = None,
-        chroma_dir: Union[str, Path] = "data/chroma",
-        collection_name: str = "news",
-        embedding_model: str = "BAAI/bge-small-en-v1.5",
-        top_k: int = 10,
-        trusted_ratio: float = 0.7,
-    ):
+    def __init__(self, tavily_api_key: Optional[str] = None, top_k: int = 10):
         self.tavily_api_key = tavily_api_key or os.getenv("TAVILY_API_KEY")
-        self.chroma_dir = str(chroma_dir)
-        self.collection_name = collection_name
-        self.embedding_model = embedding_model
         self.top_k = min(top_k, self.MAX_RESULTS_CAP)
-        # Share of slots reserved for trusted-domain results (the rest go to
-        # general web). 0.7 → with k=10, ~7 trusted + ~3 general.
-        self.trusted_ratio = max(0.0, min(1.0, trusted_ratio))
-
         self._tavily = None
-        self._news_store = None
 
     # ------------------------------------------------------------------ #
     # Public
     # ------------------------------------------------------------------ #
 
     def search(self, query: str, k: Optional[int] = None) -> list[dict]:
-        """Return top-k results. Tavily first; falls back to local news on any error."""
+        """Return top-k results; empty when Tavily is unavailable or errors."""
         k = min(k or self.top_k, self.MAX_RESULTS_CAP)
-        if self.tavily_api_key:
-            try:
-                return self._tavily_search(query, k)
-            except Exception as e:
-                print(f"[WebSearcher] Tavily failed ({type(e).__name__}: {e}); "
-                      f"falling back to local news collection.")
-        return self._local_news_search(query, k)
+        if not self.tavily_api_key:
+            return []
+        try:
+            return self._tavily_search(query, k)
+        except Exception as e:
+            print(f"[WebSearcher] Tavily failed ({type(e).__name__}: {e}); "
+                  f"returning no web results.")
+            return []
 
     # ------------------------------------------------------------------ #
     # Tavily
@@ -296,36 +259,3 @@ class WebSearcher:
             "tier": tier,
             "published_date": pub,
         }
-
-    # ------------------------------------------------------------------ #
-    # Local news fallback
-    # ------------------------------------------------------------------ #
-
-    def _news_store_handle(self):
-        if self._news_store is None:
-            from finagent.vectorstore import build_store
-
-            self._news_store = build_store(
-                self.collection_name, self.embedding_model, self.chroma_dir
-            )
-        return self._news_store
-
-    def _local_news_search(self, query: str, k: int) -> list[dict]:
-        try:
-            store = self._news_store_handle()
-            docs = store.similarity_search(query, k=k)
-        except Exception as e:
-            print(f"[WebSearcher] news collection unavailable ({e}); returning [].")
-            return []
-        return [
-            {
-                "title": (d.metadata.get("title") or "")[:240],
-                "url": d.metadata.get("url") or "",
-                "content": (d.page_content or "")[:1200],
-                "score": 1.0,           # similarity scores aren't exposed by the wrapper
-                "source": "news_local",
-                "tier": "web",
-                "published_date": (d.metadata.get("date") or "")[:10],
-            }
-            for d in docs
-        ]

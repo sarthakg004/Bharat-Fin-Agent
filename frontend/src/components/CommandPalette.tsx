@@ -4,7 +4,6 @@ import { Search } from "lucide-react";
 import toast from "react-hot-toast";
 
 import { useChatStore, selectLastAssistant } from "@/store/chatStore";
-import { useConfigStore } from "@/store/configStore";
 import { useThreadStore } from "@/store/threadStore";
 import { cls } from "@/lib/utils";
 
@@ -27,7 +26,6 @@ export function CommandPalette({ open, onClose, onShortcuts, onSettings }: Props
   const [active, setActive] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const { setMarket, market } = useConfigStore();
   const clear = useChatStore((s) => s.clear);
   const createChat = useThreadStore((s) => s.createChat);
 
@@ -40,10 +38,8 @@ export function CommandPalette({ open, onClose, onShortcuts, onSettings }: Props
   }, [open]);
 
   const commands = useMemo<CommandItem[]>(() => [
-    { id: "new",   label: "New chat",                    hint: "⌘N",  run: () => createChat("New chat", market) },
+    { id: "new",   label: "New chat",                    hint: "⌘N",  run: () => createChat("New chat") },
     { id: "set",   label: "Provider & model settings",   hint: "⌘,",  run: onSettings },
-    { id: "us",    label: "Switch market → US",          hint: "🇺🇸",  run: () => setMarket("us") },
-    { id: "in",    label: "Switch market → India",       hint: "🇮🇳",  run: () => setMarket("india") },
     { id: "clear", label: "Clear current view",          run: clear },
     { id: "copy",  label: "Copy last answer",            run: () => {
       const last = selectLastAssistant(useChatStore.getState());
@@ -55,7 +51,7 @@ export function CommandPalette({ open, onClose, onShortcuts, onSettings }: Props
       window.open("https://smith.langchain.com/", "_blank");
     } },
     { id: "kbd",   label: "Keyboard shortcuts",          hint: "?",   run: onShortcuts },
-  ], [setMarket, market, clear, createChat, onShortcuts, onSettings]);
+  ], [clear, createChat, onShortcuts, onSettings]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();

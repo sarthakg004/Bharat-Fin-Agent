@@ -26,8 +26,43 @@ permissions:
   id-token: write              # REQUIRED for Workload Identity Federation
 
 jobs:
+  # Gate: nothing deploys unless the test suite and the frontend typecheck pass.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies (CPU torch)
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt pytest
+
+      - name: Run tests
+        run: pytest tests/ -q
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Typecheck frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npx tsc --noEmit
+
   deploy:
     runs-on: ubuntu-latest
+    needs: test
     steps:
       - name: Checkout
         uses: actions/checkout@v4

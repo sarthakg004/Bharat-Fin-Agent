@@ -12,20 +12,20 @@ from __future__ import annotations
 from typing import Optional
 
 
-def build_agent(market: str = "us", provider: str = "groq"):
+def build_agent(provider: str = "groq"):
     """Return the singleton production agent (`AgenticRAGv4`)."""
     from finagent.api.rag_service import get_agentic
 
-    return get_agentic(market=market, provider=provider)
+    return get_agentic(provider=provider)
 
 
-def build_graph(market: str = "us", provider: str = "groq"):
+def build_graph(provider: str = "groq"):
     """Return the compiled LangGraph for the production agent.
 
     The result supports `.get_graph().draw_mermaid_png()` for visualization and
     `.invoke()` / `.stream()` for execution.
     """
-    return build_agent(market=market, provider=provider).graph
+    return build_agent(provider=provider).graph
 
 
 # Node reference table — name → (reads, does, writes, llm). Surfaced so the
@@ -35,8 +35,8 @@ NODE_REFERENCE = [
     ("router", "sub_queries, query_routes", "No-op when the plan carries aligned routes; re-classifies after a rewrite", "query_routes", "router tier (gpt-oss-120b, only on re-route)"),
     ("fetch_filing", "question", "Corpus gate: fetches a missing company's 10-K(s) from EDGAR (in-memory on cloud), year-aware depth", "fetch_status, fetched_chunks", "router tier (gpt-oss-120b)"),
     ("retrieve", "sub_queries", "Hybrid BM25∪dense retrieval + metadata filter + cross-encoder rerank per sub-query", "retrieved_chunks", "—"),
-    ("grader", "retrieved_chunks", "Scores each chunk 1-5 for relevance; drops low ones", "grades, avg_grade", "grader (llama-3.3-70b)"),
-    ("rewrite", "question, avg_grade", "Reformulates the query when retrieval graded poorly (loops back to router)", "sub_queries, rewrite_history", "grader (llama-3.3-70b)"),
+    ("grader", "retrieved_chunks", "Scores each chunk 1-5 for relevance; drops low ones", "grades, avg_grade", "grader (qwen3.6-27b)"),
+    ("rewrite", "question, avg_grade", "Reformulates the query when retrieval graded poorly (loops back to router)", "sub_queries, rewrite_history", "grader (qwen3.6-27b)"),
     ("xbrl", "numeric sub-queries", "Looks up the exact reported figure from SEC XBRL company-facts", "xbrl_facts", "router tier (gpt-oss-120b, batched extraction)"),
     ("calculator", "numeric sub-queries", "Deterministically computes derived metrics (margins/ratios/growth/CAGR) over XBRL inputs", "calc_results", "router tier (gpt-oss-120b, batched extraction)"),
     ("table_agent", "unanswered numeric sub-queries", "Retrieves tables and runs generated pandas code (numeric fallback)", "table_results", "code (gpt-oss-120b)"),

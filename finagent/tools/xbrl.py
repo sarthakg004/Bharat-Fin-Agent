@@ -45,6 +45,23 @@ COMPANYFACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
 DEFAULT_CACHE_DIR = "data/cache/xbrl"
 DEFAULT_TTL_DAYS = 7
 
+
+def dual_scale_money(value: float) -> str:
+    """"$32,780,000,000 ($32,780 million; $32.78 billion)".
+
+    Filings state raw dollars but answers state millions/billions; without the
+    restated scales an LLM judge (RAGAS faithfulness) often fails to equate
+    "$32,780 million" in the answer with "$32,780,000,000" in the evidence —
+    correct extractive answers were scoring zero on exactly this mismatch.
+    """
+    raw = f"${value:,.0f}"
+    if abs(value) < 1e6:
+        return raw
+    scales = [f"${value / 1e6:,.0f} million"]
+    if abs(value) >= 1e9:
+        scales.append(f"${value / 1e9:,.2f} billion")
+    return f"{raw} ({'; '.join(scales)})"
+
 # Concept → candidate US-GAAP tags, most-preferred first. The picker walks this
 # list and takes the first tag the company actually reports. Covers the line
 # items FinanceBench numeric questions ask about; the LLM fallback handles the
@@ -550,7 +567,7 @@ class XBRLClient(BaseTool):
 
         value = fact.get("val")
         is_money = unit_key == "USD"
-        value_str = (f"${value:,.0f}" if is_money and isinstance(value, (int, float))
+        value_str = (dual_scale_money(value) if is_money and isinstance(value, (int, float))
                      else f"{value:,}" if isinstance(value, (int, float)) else str(value))
         fy = self._fiscal_year(fact) or fact.get("fy")
         fp = fact.get("fp")

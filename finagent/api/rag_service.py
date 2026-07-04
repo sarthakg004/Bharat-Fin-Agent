@@ -6,10 +6,10 @@ retrieve → grader → rewrite/proceed → xbrl → calculator → table_agent 
 market_data (yfinance) ∥ web_search ∥ edgar_search → synthesize → critic →
 numeric verification → confidence gate.
 
-Web search uses Tavily when `TAVILY_API_KEY` is set and falls back to the
-local `news` Chroma collection otherwise; web_search escalates automatically
-when text retrieval comes back empty or weakly graded, so questions about
-companies not in the corpus hit the web instead of returning "no information".
+Web search uses Tavily when `TAVILY_API_KEY` is set; web_search escalates
+automatically when text retrieval comes back empty or weakly graded, so
+questions about companies not in the corpus hit the web instead of returning
+"no information".
 
 We default to the small reranker (`bge-reranker-base`) so backend startup is
 quick; swap to `bge-reranker-large` once you don't mind the download.
@@ -22,28 +22,17 @@ import time
 from threading import Lock
 from typing import Callable, Optional
 
-# Canonical agent namespace (the class chain itself lives in finagent.graph.*,
-# re-exported through finagent.agents during the layout restructure).
-from finagent.agents import AgenticRAGv4
+from finagent.graph import AgenticRAGv4
 from finagent.config import settings
 
-# Phase 1 (US-only): active retrieval searches the US filings corpus exclusively.
-# `india_filings` was dropped from the live pool — the eval is US-only and any
-# non-US / non-corpus company now falls through to the web-search branch (the
-# agent's web_search_node escalates automatically on empty/weak retrieval) with
-# a graceful "searched the web instead" answer rather than off-market noise.
-_COLLECTIONS = {
-    "us": "us_filings",
-}
-
-# Each (market, provider, synth_model) combo gets its own instance. Most
+# Each (provider, synth_model, collection) combo gets its own instance. Most
 # users will hit one of two cache keys (server-default Groq + their picked
 # OpenAI/Anthropic/Gemini override) so the cache stays small.
 _lock = Lock()
 _agentic_cache: dict[tuple, AgenticRAGv4] = {}
 
 
-def _build_agent(market: str, provider: str, synth_model: Optional[str],
+def _build_agent(provider: str, synth_model: Optional[str],
                  api_key: Optional[str],
                  collection: Optional[str] = None) -> AgenticRAGv4:
     # Production serves `us_filings` (+ live SEC fetch for anything missing). The
@@ -55,10 +44,9 @@ def _build_agent(market: str, provider: str, synth_model: Optional[str],
     coll = collection or "us_filings"
     return AgenticRAGv4(
         collection_name=coll,
-        # Phase 1: US-only active retrieval. Non-US / non-corpus questions get
+        # US-only active retrieval. Non-US / non-corpus questions get
         # empty/weak filing retrieval and escalate to web_search automatically.
         collections=[coll],
-        market="us",
         provider=provider,
         synth_model=synth_model,                # None → AgenticRAG picks per-provider default
         api_key=api_key,                        # None → reads env via build_llm()
@@ -78,17 +66,16 @@ def _build_agent(market: str, provider: str, synth_model: Optional[str],
         # for the session and never grow the baked index.
         persist_fetch=settings.persist_dynamic_fetch,
         table_collection="tables",
-        news_collection="news",
         web_top_k=10,
         table_top_k=3,
     )
 
 
-def get_agentic(market: str, provider: str = "groq",
+def get_agentic(provider: str = "groq",
                 synth_model: Optional[str] = None,
                 api_key: Optional[str] = None,
                 collection: Optional[str] = None) -> AgenticRAGv4:
-    """Return a singleton AgenticRAGv4 for (market, provider, synth_model, collection).
+    """Return a singleton AgenticRAGv4 for (provider, synth_model, collection).
 
     User-supplied keys are NOT used as part of the cache key — multiple users
     with the same provider + model share an instance. The instance's
@@ -96,10 +83,10 @@ def get_agentic(market: str, provider: str = "groq",
     the LLM client. `collection` is part of the key so the eval's
     `financebench_eval` instance never collides with the served `us_filings` one.
     """
-    key = (market, provider, synth_model or "_default_", collection or "us_filings")
+    key = (provider, synth_model or "_default_", collection or "us_filings")
     with _lock:
         if key not in _agentic_cache:
-            _agentic_cache[key] = _build_agent(market, provider, synth_model, api_key,
+            _agentic_cache[key] = _build_agent(provider, synth_model, api_key,
                                                collection=collection)
         agent = _agentic_cache[key]
         # If the caller supplied an api_key, propagate it now and clear the
@@ -334,9 +321,7 @@ def _normalise_chunk(text: str, meta: dict, idx: int) -> dict:
     company = meta.get("company") or meta.get("ticker", "?")
     year = str(meta.get("year", "?"))
     page = meta.get("page", "?")
-    market = meta.get("market", "")
-    doc_kind = "10-K" if market == "us" else "AR"
-    citation = f"[{company} {doc_kind} {year}, p. {page}]"
+    citation = f"[{company} 10-K {year}, p. {page}]"
     return {
         "id": idx,
         "text": text,
@@ -344,19 +329,38 @@ def _normalise_chunk(text: str, meta: dict, idx: int) -> dict:
         "ticker": meta.get("ticker", ""),
         "year": year,
         "page": page,
-        "market": market,
         "source_url": meta.get("source_url", ""),
         "citation": citation,
     }
 
 
-def run_agentic(market: str, question: str, top_k: int = 5,
+def _langfuse_handler():
+    """Langfuse tracing (open-source LLM observability) — one CallbackHandler
+    per request captures the whole LangGraph run as a nested trace (per-node
+    spans, prompts/completions, token usage → cost).
+
+    Active only when LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY are set (plus
+    LANGFUSE_BASE_URL for the region); returns None otherwise so tracing is a
+    zero-cost no-op locally, in CI, and on deployments without keys.
+    """
+    if not (os.getenv("LANGFUSE_PUBLIC_KEY") and os.getenv("LANGFUSE_SECRET_KEY")):
+        return None
+    try:
+        from langfuse.langchain import CallbackHandler
+        return CallbackHandler()
+    except Exception as e:
+        print(f"[langfuse] tracing disabled ({type(e).__name__}: {e})")
+        return None
+
+
+def run_agentic(question: str, top_k: int = 5,
                 company_filter: Optional[list[str]] = None,
                 chat_history: Optional[list[dict]] = None,
                 provider: str = "groq",
                 synth_model: Optional[str] = None,
                 api_key: Optional[str] = None,
                 collection: Optional[str] = None,
+                session_id: Optional[str] = None,
                 on_step: Optional[Callable[[str], None]] = None,
                 on_step_done: Optional[Callable[[str, Optional[str]], None]] = None) -> dict:
     """Synchronous v4 agentic run with optional conversation memory + per-request
@@ -375,7 +379,7 @@ def run_agentic(market: str, question: str, top_k: int = 5,
     each node finishes, with a short outcome line ("12 passages", "2 exact
     figures"). When both are omitted we fall back to a single blocking `invoke`.
     """
-    rag = get_agentic(market, provider=provider, synth_model=synth_model,
+    rag = get_agentic(provider=provider, synth_model=synth_model,
                       api_key=api_key, collection=collection)
     if top_k:
         rag.final_top_k = top_k
@@ -406,39 +410,65 @@ def run_agentic(market: str, question: str, top_k: int = 5,
     # critic→retrieve loop can never spin forever — it terminates with whatever
     # we have instead of hanging the request.
     config: dict = {"recursion_limit": 50}
-    if usage_cb is not None:
-        config["callbacks"] = [usage_cb]
+    langfuse_cb = _langfuse_handler()
+    callbacks = [cb for cb in (usage_cb, langfuse_cb) if cb is not None]
+    if callbacks:
+        config["callbacks"] = callbacks
+
+    # Trace attributes: a stable name (findable in the UI), the chat thread as
+    # session_id (groups follow-up turns in the Sessions view), and tags for
+    # filtering prod vs eval runs and per-provider comparisons.
+    import contextlib
+    trace_ctx = contextlib.nullcontext()
+    if langfuse_cb is not None:
+        from langfuse import propagate_attributes
+        attrs: dict = {"trace_name": "finagent-query",
+                       "tags": [provider, collection or "us_filings"]}
+        if session_id:
+            attrs["session_id"] = str(session_id)
+        trace_ctx = propagate_attributes(**attrs)
 
     node_latencies: dict[str, float] = {}
-    if on_step is None and on_step_done is None:
-        state = rag.graph.invoke(initial_state, config=config)
-    else:
-        # "tasks" events fire when a node STARTS (accurate current-stage label
-        # — "updates" only fires on completion, so the old label lagged one
-        # node), "updates" carries each node's delta (for the outcome detail +
-        # latency attribution), and "values" keeps the final accumulated state.
-        state: dict = {}
-        last_ts = time.time()
-        for mode, data in rag.graph.stream(
-            initial_state, stream_mode=["updates", "values", "tasks"], config=config
-        ):
-            if mode == "values":
-                state = data
-            elif mode == "tasks" and isinstance(data, dict):
-                # A start event has no "result"/"error" yet.
-                if "result" not in data and "error" not in data and on_step:
-                    on_step(data.get("name", ""))
-            elif mode == "updates" and isinstance(data, dict):
-                now = time.time()
-                # Attribute the elapsed wall-clock since the previous update to
-                # the node(s) that just produced one (rough but useful; parallel
-                # lanes that land together share the interval).
-                for node_name, delta in data.items():
-                    node_latencies[node_name] = round(
-                        node_latencies.get(node_name, 0.0) + (now - last_ts), 3)
-                    if on_step_done:
-                        on_step_done(node_name, _step_detail(node_name, delta or {}))
-                last_ts = now
+    with trace_ctx:
+        if on_step is None and on_step_done is None:
+            state = rag.graph.invoke(initial_state, config=config)
+        else:
+            # "tasks" events fire when a node STARTS (accurate current-stage label
+            # — "updates" only fires on completion, so the old label lagged one
+            # node), "updates" carries each node's delta (for the outcome detail +
+            # latency attribution), and "values" keeps the final accumulated state.
+            state: dict = {}
+            last_ts = time.time()
+            for mode, data in rag.graph.stream(
+                initial_state, stream_mode=["updates", "values", "tasks"], config=config
+            ):
+                if mode == "values":
+                    state = data
+                elif mode == "tasks" and isinstance(data, dict):
+                    # A start event has no "result"/"error" yet.
+                    if "result" not in data and "error" not in data and on_step:
+                        on_step(data.get("name", ""))
+                elif mode == "updates" and isinstance(data, dict):
+                    now = time.time()
+                    # Attribute the elapsed wall-clock since the previous update to
+                    # the node(s) that just produced one (rough but useful; parallel
+                    # lanes that land together share the interval).
+                    for node_name, delta in data.items():
+                        node_latencies[node_name] = round(
+                            node_latencies.get(node_name, 0.0) + (now - last_ts), 3)
+                        if on_step_done:
+                            on_step_done(node_name, _step_detail(node_name, delta or {}))
+                    last_ts = now
+
+    if langfuse_cb is not None:
+        # Cloud Run throttles CPU to ~0 once the response is sent (and freezes
+        # the instance on scale-to-zero), so the SDK's background exporter may
+        # never get to run. Flush synchronously while we still own the request.
+        try:
+            from langfuse import get_client
+            get_client().flush()
+        except Exception as e:
+            print(f"[langfuse] flush failed ({type(e).__name__}: {e})")
 
     chunks: list[dict] = []
     next_id = 0
@@ -459,7 +489,6 @@ def run_agentic(market: str, question: str, top_k: int = 5,
             "ticker": f.get("ticker", ""),
             "year": str(f.get("fy", "?")),
             "page": "—",
-            "market": market,
             "source_url": "",
             "citation": f.get("source", ""),
             "sub_query": f.get("sub_query", ""),
@@ -480,7 +509,6 @@ def run_agentic(market: str, question: str, top_k: int = 5,
             "ticker": r.get("ticker", ""),
             "year": str(r.get("fy", r.get("end_period", "?"))),
             "page": "—",
-            "market": market,
             "source_url": "",
             "citation": f"(Computed: {str(r.get('metric','')).replace('_',' ')} from XBRL)",
             "sub_query": r.get("sub_query", ""),
@@ -501,7 +529,6 @@ def run_agentic(market: str, question: str, top_k: int = 5,
             "ticker": c.get("ticker", ""),
             "year": str(c.get("year", "?")),
             "page": c.get("page", "?"),
-            "market": market,
             "source_url": "",
             "citation": c.get("source", ""),
             "sub_query": c.get("sub_query", ""),
@@ -525,8 +552,7 @@ def run_agentic(market: str, question: str, top_k: int = 5,
                 "ticker": comp.get("ticker", ""),
                 "year": str(comp.get("date", ""))[:4] or "?",
                 "page": "—",
-                "market": market,
-                "source_url": comp.get("url", ""),
+                    "source_url": comp.get("url", ""),
                 "citation": f"<EDGAR: {comp.get('company','?')} {comp.get('form','')} {comp.get('date','')}>",
                 "sub_query": r.get("sub_query", ""),
                 "kind": "edgar",
@@ -542,7 +568,6 @@ def run_agentic(market: str, question: str, top_k: int = 5,
             "ticker": "",
             "year": h.get("date", "")[:4] or "?",
             "page": "—",
-            "market": market,
             "source_url": h.get("url", ""),
             "citation": f"<News: {h.get('title','')[:80]} — {h.get('source','web')}>",
             "sub_query": h.get("sub_query", ""),
@@ -566,7 +591,6 @@ def run_agentic(market: str, question: str, top_k: int = 5,
             "ticker": "",
             "year": str(first.get("year", "?")),
             "page": first.get("page", "—"),
-            "market": market,
             "source_url": "",
             "citation": (
                 f"(Table: {first.get('title','?')}, "
@@ -598,7 +622,6 @@ def run_agentic(market: str, question: str, top_k: int = 5,
             "ticker": sym,
             "year": "—",
             "page": "—",
-            "market": market,
             "source_url": "",
             "citation": f"<Market: yfinance.{tool} {sym}>",
             "sub_query": m.get("sub_query", ""),
@@ -679,6 +702,6 @@ def health() -> dict:
     # We don't probe the LLM (would burn quota). Just confirm imports + collections.
     return {
         "status": "ok",
-        "collections": list(_COLLECTIONS.values()),
+        "collections": ["us_filings"],
         "configs": ["agentic"],
     }

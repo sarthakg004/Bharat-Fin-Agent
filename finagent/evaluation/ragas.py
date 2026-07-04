@@ -13,8 +13,7 @@ measures quality using four RAGAS metrics:
 
 The judge LLM is intentionally DIFFERENT from the generator LLM to
 avoid self-evaluation bias. The agent generates with gpt-oss-120b (synth) +
-llama-3.3-70b-versatile (planner/grader); the judge uses llama-3.3-70b-versatile.
-No sub-70B models are used anywhere in the pipeline.
+qwen3.6-27b (planner/grader); the judge is qwen/qwen3.6-27b.
 
 Usage:
     from finagent.evaluation.ragas import RAGASEvaluator
@@ -101,7 +100,7 @@ class RAGASEvaluator:
     """
 
     DEFAULT_MODELS = {
-        "groq": "llama-3.3-70b-versatile",
+        "groq": "qwen/qwen3.6-27b",
         "gemini": "gemini-2.5-flash",
         "openai": "gpt-4o",
         "anthropic": "claude-sonnet-4-6",

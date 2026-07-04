@@ -31,6 +31,7 @@ COMPANY_ALIASES: dict[str, str] = {
     "coke": "coca cola",
     "walmart inc": "walmart",
     "the coca cola company": "coca cola",
+    "mgm": "mgm resorts",       # too short for the auto single-token alias
 }
 
 _YEAR_RE = re.compile(r"\b(?:FY\s?)?((?:19|20)\d{2})\b", re.I)

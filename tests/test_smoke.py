@@ -35,11 +35,11 @@ def _build_agent():
     from finagent.graph import AgenticRAGv4
 
     return AgenticRAGv4(
-        collection_name="us_filings", market="us", provider="groq",
+        collection_name="us_filings", provider="groq",
         reranker_model="BAAI/bge-reranker-base",
         bm25_top_k=8, dense_top_k=8, final_top_k=5,
         max_rewrites=2, max_critic_retries=1,
-        table_collection="tables", news_collection="news",
+        table_collection="tables",
         web_top_k=10, table_top_k=3,
     )
 
@@ -562,7 +562,7 @@ def test_numeric_accuracy_metric():
 def test_explicit_abstention_detection():
     """Soft-refusal phrasing is detected, real cited answers are not, and the
     metrics layer counts an explicit abstention as a refusal."""
-    from finagent.graph.agent import _SOFT_REFUSAL_RE
+    from finagent.graph.nodes.verification import _SOFT_REFUSAL_RE
     from finagent.evaluation.financebench.parallel import _is_refusal
 
     assert _SOFT_REFUSAL_RE.search("the figure cannot be calculated")
@@ -650,3 +650,110 @@ def test_ratio_from_spec_planned_formula():
     spec3 = {"numerator_add": ["goodwill"], "denominator_add": ["revenue"]}
     r3 = c.ratio_from_spec("X", spec3, "FY2022", "goodwill_intensity")
     assert not r3["ok"] and "missing" in r3["error"]
+
+
+def test_xbrl_dual_scale_money():
+    """XBRL money strings restate the filed value in millions/billions so a
+    judge (or reader) can match '$32,780 million' against the evidence."""
+    from finagent.tools.xbrl import dual_scale_money
+    assert dual_scale_money(32_780_000_000) == \
+        "$32,780,000,000 ($32,780 million; $32.78 billion)"
+    assert dual_scale_money(4_625_000_000).startswith("$4,625,000,000 ($4,625 million")
+    assert dual_scale_money(1_577_000_000).endswith("($1,577 million; $1.58 billion)")
+    assert dual_scale_money(950_000) == "$950,000"          # small: raw only
+    assert "million" in dual_scale_money(-2_000_000_000)    # sign-safe
+
+
+def test_calc_result_formats_derivation():
+    """A derived-metric chunk states the result AND its formula + inputs, so
+    the figure is verifiable from the chunk alone."""
+    from finagent.graph.agent import AgenticRAGv4
+    text = AgenticRAGv4._format_calc_result({
+        "ticker": "ATVI", "metric": "fixed_asset_turnover", "value_str": "24.26",
+        "formula": "revenue / avg(ppe_net)",
+        "inputs": [
+            {"concept": "revenue", "period": "FY2019", "value_str": "$6,489M"},
+            {"concept": "ppe_net", "period": "FY2018", "value_str": "$282M"},
+        ],
+        "source": "computed from SEC XBRL",
+    })
+    assert "ATVI fixed asset turnover = 24.26" in text
+    assert "Derivation: revenue / avg(ppe_net)" in text
+    assert "revenue (FY2019) = $6,489M" in text and "ppe_net (FY2018)" in text
+
+
+def test_cap_pool_keeps_every_sub_query():
+    """The global pool cap must not let one sub-query's chunks crowd out the
+    others entirely — each sub-query keeps its best chunk."""
+    agent = _build_agent()
+    agent.retrieve_cap = 4
+    agent._log = lambda s, m: None
+
+    class FakeReranker:
+        def predict(self, pairs):
+            # Chunks 0-4 (sub A) score highest; 5-6 (sub B) would be crowded out.
+            return [9, 8, 7, 6, 5, 3, 2][: len(pairs)]
+
+    import finagent.retrieval.reranker as R
+    chunks = ([{"text": f"a{i}", "sub_query": "A"} for i in range(5)]
+              + [{"text": f"b{i}", "sub_query": "B"} for i in range(2)])
+    orig = R._get_shared_reranker
+    R._get_shared_reranker = lambda model: FakeReranker()
+    try:
+        kept = agent._cap_pool({"question": "q"}, chunks)
+    finally:
+        R._get_shared_reranker = orig
+    assert len(kept) == 4
+    subs = {c["sub_query"] for c in kept}
+    assert subs == {"A", "B"}, f"sub-query B was crowded out: {kept}"
+    assert kept[0]["text"] == "a0"          # global best still first
+
+
+def test_behaviour_metrics_aggregate_latency_and_tokens(tmp_path):
+    """summarize_outputs reports latency percentiles + token totals when the
+    runner recorded them, and omits them cleanly for older outputs."""
+    import json
+    from finagent.evaluation.financebench.parallel import summarize_outputs
+
+    rows = [{"question": f"q{i}", "answer": f"${i} million [1].", "qtype": "numeric",
+             "gold": f"${i}.00", "confidence": 0.9, "answer_status": "answered",
+             "latency_s": float(i + 1), "input_tokens": 1000, "output_tokens": 100,
+             "error": None} for i in range(10)]
+    p = tmp_path / "out.json"; p.write_text(json.dumps(rows))
+    b = summarize_outputs(p)
+    assert b["latency"]["mean_s"] == 5.5
+    assert b["latency"]["p50_s"] == 6.0 and b["latency"]["p95_s"] == 10.0
+    assert b["tokens"] == {"mean_per_question": 1100, "total": 11000}
+
+    for r in rows:                          # old outputs: fields absent
+        for k in ("latency_s", "input_tokens", "output_tokens"): r.pop(k)
+    p.write_text(json.dumps(rows))
+    b2 = summarize_outputs(p)
+    assert b2["latency"] is None and b2["tokens"] is None
+
+
+def test_averaged_ratio_targets_latest_named_year():
+    """Regression (caught via Langfuse trace): 'FY2021 inventory turnover using
+    average inventory between FY2020 and FY2021' must compute FY2021, even when
+    the LLM extraction returns only the earlier year as the period."""
+    agent = _build_agent()
+    calls = {}
+
+    class FakeCalc:
+        def ratio(self, ticker, metric, period):
+            calls.update(ticker=ticker, metric=metric, period=period)
+            return {"ok": True, "metric": metric, "period": period, "value": 3.46}
+        def run(self, **kw):
+            raise AssertionError("should have taken the averaged-ratio shortcut")
+
+    agent._calc = FakeCalc()
+
+    class Q:
+        metric, ticker, concept = "inventory turnover", "NKE", ""
+        periods = ["FY2020"]                       # the bad extraction
+
+    sub_q = ("When primarily referencing the income statement, what is the FY2021 "
+             "inventory turnover ratio for Nike? Defined as FY2021 COGS / "
+             "average inventory between FY2020 and FY2021.")
+    res = agent._run_calc({}, sub_q, Q())
+    assert res["ok"] and calls["period"] == "FY2021" and calls["metric"] == "inventory_turnover"

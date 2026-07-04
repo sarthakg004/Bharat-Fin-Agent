@@ -6,9 +6,6 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-Market = Literal["us", "india"]
-
-
 # --------------------------------------------------------------------------- #
 # Query
 # --------------------------------------------------------------------------- #
@@ -41,7 +38,6 @@ class ChatTurn(BaseModel):
 
 class QueryRequest(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
-    market: Market = "us"
     chat_id: Optional[int] = Field(
         default=None,
         description="Existing chat to append to. If null, the server creates one.",
@@ -83,7 +79,6 @@ class ChatSummary(BaseModel):
     """List-view chat row."""
     id: int
     title: str
-    market: str
     created_at: str
     updated_at: str
     message_count: int = 0
@@ -96,7 +91,6 @@ class ChatListResponse(BaseModel):
 
 class CreateChatRequest(BaseModel):
     title: str = "New chat"
-    market: Market = "us"
 
 
 class RenameChatRequest(BaseModel):

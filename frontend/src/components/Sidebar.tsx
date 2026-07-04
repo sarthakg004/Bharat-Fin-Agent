@@ -3,14 +3,12 @@ import { motion } from "framer-motion";
 import { Plus, Trash2, Pencil, MessageSquare, Check, X } from "lucide-react";
 import toast from "react-hot-toast";
 
-import { useConfigStore } from "@/store/configStore";
 import { useThreadStore } from "@/store/threadStore";
 import { cls, timeAgo } from "@/lib/utils";
 
 export function Sidebar() {
   const { threads, activeId, createChat, switchTo, renameChat, deleteChat } =
     useThreadStore();
-  const market = useConfigStore((s) => s.market);
 
   return (
     <motion.aside
@@ -20,7 +18,7 @@ export function Sidebar() {
       {/* New chat — primary action, top of sidebar */}
       <div className="border-b border-border-subtle p-3">
         <button
-          onClick={() => createChat("New chat", market)}
+          onClick={() => createChat("New chat")}
           className="group flex w-full items-center justify-between border border-accent bg-accent px-3 py-2 font-ui text-[13px] text-bg-base transition-colors hover:bg-accent-hover"
         >
           <span className="inline-flex items-center gap-2">
@@ -66,7 +64,7 @@ export function Sidebar() {
       </nav>
 
       <div className="border-t border-border-subtle px-3 py-2 font-mono text-[10px] uppercase tracking-wider text-text-muted">
-        {threads.length} chat{threads.length === 1 ? "" : "s"} · market {market} · this session
+        {threads.length} chat{threads.length === 1 ? "" : "s"} · this session
       </div>
     </motion.aside>
   );

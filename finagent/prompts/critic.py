@@ -8,7 +8,7 @@ rewrite" scope).
 """
 
 from finagent.graph.base import CRITIC_SYSTEM, CRITIC_PROMPT  # noqa: F401
-from finagent.graph.agent import (  # noqa: F401
+from finagent.graph.nodes.verification import (  # noqa: F401
     NUM_VERIFY_SYSTEM,
     NUM_VERIFY_PROMPT,
     REFUSAL_TEMPLATE,

@@ -16,14 +16,14 @@ Usage as a library
 ------------------
     from finagent.ingestion.table_ingest import TableExtractor
 
-    tx = TableExtractor(tables_dir="data/tables", market="india")
-    tx.ingest_corpus("data/India/pdfs/manifest.json")
+    tx = TableExtractor(tables_dir="data/tables", market="us")
+    tx.ingest_corpus("data/us/sec_manifest.json")
 
 CLI
 ---
     python -m finagent.ingestion.table_ingest \\
-        --manifest data/India/pdfs/manifest.json \\
-        --tables-dir data/tables --market india
+        --manifest data/us/sec_manifest.json \\
+        --tables-dir data/tables --market us
 
 Heads-up
 --------
@@ -71,7 +71,7 @@ class TableExtractor:
     def __init__(
         self,
         tables_dir: Union[str, Path] = "data/tables",
-        market: str = "india",
+        market: str = "us",
         provider: str = "groq",
         title_model: Optional[str] = None,
         use_llm_titles: bool = True,
@@ -81,7 +81,7 @@ class TableExtractor:
         """
         Args:
             tables_dir: Output directory (parquet files + index.json).
-            market: "india" or "us" — stored on every row.
+            market: stored on every row (default "us").
             provider: LLM provider for title extraction (rotates if multi-key).
             title_model: Fast model. Default: per-provider planner-tier model.
             use_llm_titles: If False, skip the LLM call and use a heuristic
@@ -292,12 +292,12 @@ class TableExtractor:
         if self._llm is None:
             from finagent.llm import build_llm
 
-            # Best free Groq model, not a tiny one: 8b-instant mislabelled
+            # A strong model, not a tiny one: 8b-instant mislabelled
             # financial tables often enough to poison table retrieval. This runs
             # at ingestion only (one-off, free tier), so the strong model is
             # cost-neutral on the cloud serve path.
             model = self.title_model or {
-                "groq": "llama-3.3-70b-versatile",
+                "groq": "qwen/qwen3.6-27b",
                 "gemini": "gemini-2.5-flash",
                 "openai": "gpt-4o",
                 "anthropic": "claude-sonnet-4-6",
@@ -331,7 +331,7 @@ def _build_cli() -> argparse.ArgumentParser:
     p.add_argument("--manifest", required=True,
                    help="manifest.json or sec_manifest.json produced by fetchPDFs.py")
     p.add_argument("--tables-dir", default="data/tables")
-    p.add_argument("--market", choices=["india", "us"], default="india")
+    p.add_argument("--market", choices=["us"], default="us")
     p.add_argument("--provider", choices=["groq", "gemini", "openai", "anthropic"],
                    default="groq")
     p.add_argument("--title-model", default=None)

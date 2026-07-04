@@ -2,10 +2,10 @@
 ingest.py
 
 Unified ingestion pipeline for financial filings. Reads the manifest produced
-by fetch_pdfs.py, parses each document (PDFs from India, HTML from SEC),
+by fetch_pdfs.py, parses each document (PDF or SEC HTML),
 chunks the text, embeds the chunks, and stores everything in Chroma.
 
-Handles both markets — PDFs (India) are parsed with pypdf, HTML (US SEC
+Handles both formats — PDFs are parsed with pypdf, HTML (US SEC
 filings) with unstructured.io.
 
 Usage as a library
@@ -29,11 +29,11 @@ Usage as CLI
                      --collection us_filings \\
                      --market us
 
-    python ingest.py --manifest data/India/pdfs/manifest.json \\
-                     --corpus-dir data/India/pdfs \\
+    python ingest.py --manifest data/us/sec_manifest.json \\
+                     --corpus-dir data/us \\
                      --chroma-dir data/chroma \\
-                     --collection india_filings \\
-                     --market india
+                     --collection us_filings \\
+                     --market us
 
 Design notes
 ------------
@@ -48,7 +48,7 @@ Design notes
   RecursiveCharacterTextSplitter so chunks respect paragraph and sentence
   boundaries when possible.
 * PDFs are extracted per-page with pypdf. unstructured.io's "fast" strategy
-  silently returned zero elements on several born-digital Indian annual-report
+  silently returned zero elements on several born-digital annual-report
   PDFs that pypdf reads fine, so pypdf is the reliable choice here. HTML (SEC
   filings) still goes through unstructured's `partition()`, which gives Element
   objects with section metadata. Page numbers are preserved in Chroma so the
@@ -94,7 +94,7 @@ class IngestionStats:
 class CorpusIngester:
     """Parse, chunk, embed, and index a corpus of financial filings into Chroma.
 
-    Works identically for Indian annual report PDFs and US SEC 10-K HTML files.
+    Works identically for annual-report PDFs and US SEC 10-K HTML files.
     The market parameter is stored as document metadata so the agent can
     filter by market at query time.
     """
@@ -108,10 +108,10 @@ class CorpusIngester:
 
     def __init__(
         self,
-        corpus_dir: Union[str, Path] = "data/India/pdfs",
+        corpus_dir: Union[str, Path] = "data/us",
         chroma_dir: Union[str, Path] = "data/chroma",
         collection_name: str = "financial_filings",
-        market: str = "india",
+        market: str = "us",
         embedding_model: str = "BAAI/bge-small-en-v1.5",
         embedding_provider: str = "huggingface",
         chunk_size: int = DEFAULT_CHUNK_SIZE,
@@ -126,9 +126,8 @@ class CorpusIngester:
         Args:
             corpus_dir: Where the source files live (output_dir from fetch_pdfs.py).
             chroma_dir: Persistent Chroma directory. Can be shared across collections.
-            collection_name: One per market is recommended (e.g. "us_filings",
-                "india_filings"). The agent picks which one to query.
-            market: "india" or "us" — stored as document metadata.
+            collection_name: Chroma collection to write into (e.g. "us_filings").
+            market: stored as document metadata (default "us").
             embedding_model: Model name. For HuggingFace: any sentence-transformers
                 model. For OpenAI: "text-embedding-3-small" or similar.
             embedding_provider: "huggingface" (free, local) or "openai" (faster, paid).
@@ -259,9 +258,8 @@ class CorpusIngester:
         """
         from langchain_core.documents import Document
 
-        # Metadata fields that exist for both markets. Some are empty depending
-        # on the source (e.g. ticker is only meaningful for SEC; company is
-        # only meaningful for India).
+        # Metadata fields shared by all sources. Some are empty depending on
+        # the source (e.g. ticker is only meaningful for SEC filings).
         base_meta = {
             "market": self.market,
             "source_url": record.get("source_url", ""),
@@ -590,8 +588,8 @@ def _build_cli() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--corpus-dir",
-        default="data/India/pdfs",
-        help="Source files directory (default: data/India/pdfs)",
+        default="data/us",
+        help="Source files directory (default: data/us)",
     )
     parser.add_argument(
         "--chroma-dir",
@@ -601,14 +599,13 @@ def _build_cli() -> argparse.ArgumentParser:
     parser.add_argument(
         "--collection",
         default="financial_filings",
-        help="Chroma collection name (default: financial_filings). "
-             "Use separate names for US and India.",
+        help="Chroma collection name (default: financial_filings).",
     )
     parser.add_argument(
         "--market",
-        choices=["india", "us"],
-        default="india",
-        help="Stored as document metadata (default: india)",
+        choices=["us"],
+        default="us",
+        help="Stored as document metadata (default: us)",
     )
     parser.add_argument(
         "--embedding-model",

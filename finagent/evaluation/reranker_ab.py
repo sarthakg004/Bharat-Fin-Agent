@@ -34,7 +34,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 EMBED_MODEL = "BAAI/bge-small-en-v1.5"
-GEN_MODEL = "llama-3.1-8b-instant"
+GEN_MODEL = "qwen/qwen3.6-27b"
 CACHE = Path("data/eval_cache/reranker_questions.json")
 
 _GEN_PROMPT = (
@@ -107,7 +107,7 @@ def _gold_rank(ranked_texts: list[str], gold_text: str) -> int | None:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--n", type=int, default=60, help="chunks sampled per collection")
-    ap.add_argument("--collections", default="us_filings,india_filings")
+    ap.add_argument("--collections", default="us_filings")
     ap.add_argument("--chroma-dir", default="data/chroma")
     ap.add_argument(
         "--rerankers",
@@ -135,7 +135,7 @@ def main() -> None:
     samples = [s for s in samples if s.get("q")]
 
     # ---- build one retriever per collection (for the candidate pool) ----
-    from finagent.graph.corrective import HybridRetriever
+    from finagent.retrieval import HybridRetriever
     from finagent.vectorstore import build_store
 
     retrievers = {
