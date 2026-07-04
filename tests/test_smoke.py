@@ -730,3 +730,30 @@ def test_behaviour_metrics_aggregate_latency_and_tokens(tmp_path):
     p.write_text(json.dumps(rows))
     b2 = summarize_outputs(p)
     assert b2["latency"] is None and b2["tokens"] is None
+
+
+def test_averaged_ratio_targets_latest_named_year():
+    """Regression (caught via Langfuse trace): 'FY2021 inventory turnover using
+    average inventory between FY2020 and FY2021' must compute FY2021, even when
+    the LLM extraction returns only the earlier year as the period."""
+    agent = _build_agent()
+    calls = {}
+
+    class FakeCalc:
+        def ratio(self, ticker, metric, period):
+            calls.update(ticker=ticker, metric=metric, period=period)
+            return {"ok": True, "metric": metric, "period": period, "value": 3.46}
+        def run(self, **kw):
+            raise AssertionError("should have taken the averaged-ratio shortcut")
+
+    agent._calc = FakeCalc()
+
+    class Q:
+        metric, ticker, concept = "inventory turnover", "NKE", ""
+        periods = ["FY2020"]                       # the bad extraction
+
+    sub_q = ("When primarily referencing the income statement, what is the FY2021 "
+             "inventory turnover ratio for Nike? Defined as FY2021 COGS / "
+             "average inventory between FY2020 and FY2021.")
+    res = agent._run_calc({}, sub_q, Q())
+    assert res["ok"] and calls["period"] == "FY2021" and calls["metric"] == "inventory_turnover"

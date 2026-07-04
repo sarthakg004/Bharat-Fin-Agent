@@ -65,7 +65,11 @@ FY2018-FY2019" question is metric='ccc' with periods ['FY2018','FY2019']),
 period-over-period GROWTH, a CAGR,
 or a multi-year TREND of any of those. Set is_derived=true and fill ticker, the
 canonical metric name, periods (fiscal years, earliest first), and — for
-growth/cagr only — the underlying concept. Set is_derived=false for a single reported figure (revenue,
+growth/cagr only — the underlying concept. List EVERY fiscal year the sub-query
+names: "FY2021 inventory turnover using average inventory between FY2020 and
+FY2021" → periods ['FY2020','FY2021'] (the LAST period is the target year; the
+earlier one only feeds the averaged input — never return just the earlier year).
+Set is_derived=false for a single reported figure (revenue,
 net income, total assets, …); those are handled by the XBRL facts tool, not here.
 Use the conversation context to resolve a follow-up's company/periods.
 """
@@ -298,7 +302,8 @@ class NumericNodes:
                     try:
                         res = self.calc.ratio_from_spec(
                             q.ticker, spec.model_dump(),
-                            period=(q.periods[0] if q.periods else None),
+                            period=(self._averaging_target_period(sub_q)
+                                    or (q.periods[0] if q.periods else None)),
                             metric_name=q.metric or "custom_metric")
                     except Exception as e:
                         self._log(state, f"dynamic formula failed for {sub_q!r}: {e}")
@@ -314,11 +319,34 @@ class NumericNodes:
                 self._log(state, f"calc miss for {sub_q!r}: {res.get('error')}")
         return {"calc_results": results}
 
+    @staticmethod
+    def _averaging_target_period(sub_q: str) -> Optional[str]:
+        """'FY2021 ratio … average X between FY2020 and FY2021' → 'FY2021'.
+
+        An averaged-input ratio names two years, but the target is always the
+        LATEST — the earlier year only feeds the averaged input. Read it from
+        the question itself so a wrong-period extraction (observed via a
+        Langfuse trace: the LLM returning just FY2020, which computed the prior
+        year's ratio and got refused as "no FY2021 evidence") can't reach the
+        calculator. None when the phrasing doesn't apply.
+        """
+        if "average" not in sub_q.lower():
+            return None
+        years = sorted({int(y) for y in
+                        re.findall(r"\b(?:FY\s*)?((?:19|20)\d{2})\b", sub_q)})
+        return f"FY{years[-1]}" if len(years) >= 2 else None
+
     def _run_calc(self, state: AgentState, sub_q: str, q) -> Optional[dict]:
         """The hardcoded deterministic calculator path (margins/ratios/growth/
         cagr/trend/days). Returns None on an exception so the caller can fall
         through to the dynamic planner."""
+        from finagent.tools.calculator import AVG_DENOMINATOR_RATIOS, _canonical_metric
+
         try:
+            metric = _canonical_metric(q.metric)
+            target = self._averaging_target_period(sub_q)
+            if metric in AVG_DENOMINATOR_RATIOS and target:
+                return self.calc.ratio(q.ticker, metric, target)
             return self.calc.run(
                 metric=q.metric, ticker=q.ticker, concept=q.concept,
                 periods=q.periods,
