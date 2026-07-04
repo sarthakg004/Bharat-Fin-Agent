@@ -45,6 +45,10 @@ jobs:
           pip install -r requirements.txt pytest
 
       - name: Run tests
+        env:
+          # The smoke tests build the agent (which requires a key to be
+          # PRESENT) but never call the network — a dummy satisfies them.
+          GROQ_API_KEY: ci-dummy-key
         run: pytest tests/ -q
 
       - name: Set up Node
