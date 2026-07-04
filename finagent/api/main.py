@@ -268,6 +268,7 @@ async def _run_rag(request: QueryRequest, hist: list[dict],
         lambda: rag_service.run_agentic(
             request.question, request.top_k, None, hist,
             provider, synth_model, api_key,
+            session_id=str(request.chat_id) if request.chat_id else None,
             on_step=on_step, on_step_done=on_step_done,
         ),
     )

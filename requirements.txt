@@ -30,6 +30,7 @@ langchain-groq>=0.2.0           # default provider (Groq)
 langchain-google-genai>=2.0.0   # optional per-request provider
 langchain-openai>=0.2.0         # optional per-request provider
 langchain-anthropic>=0.3.0      # optional per-request provider
+langfuse>=4.13,<5               # open-source LLM tracing; inert without LANGFUSE_* keys
 
 # ── Vector store + hybrid retrieval ──────────────────────────────────────────
 langchain-chroma>=0.1.4

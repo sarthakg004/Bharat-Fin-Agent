@@ -291,6 +291,19 @@ class RotatingChatModel(BaseChatModel):
     def _llm_type(self) -> str:
         return f"rotating-{self.provider}"
 
+    def _get_ls_params(self, stop: Optional[List[str]] = None, **kwargs):
+        """Standard LangChain tracing params. Delegate to the inner client so
+        tracers (Langfuse/LangSmith) attribute each generation to the REAL
+        model name — enabling per-model cost/latency analytics — instead of
+        seeing only this wrapper class."""
+        try:
+            return self._llm._get_ls_params(stop=stop, **kwargs)
+        except Exception:
+            from langchain_core.language_models.chat_models import LangSmithParams
+            return LangSmithParams(ls_provider=self.provider,
+                                   ls_model_name=self.chat_model,
+                                   ls_model_type="chat")
+
     # ------------------------------------------------------------------ #
     # Rotation
     # ------------------------------------------------------------------ #

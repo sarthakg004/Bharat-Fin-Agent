@@ -251,4 +251,21 @@ Set in `.env` (see `.env.example`):
 | `CHROMA_DIR` | Chroma directory (default `data/chroma`) |
 | `PERSIST_DYNAMIC_FETCH` | `false` on Cloud Run: fetched filings stay in-memory |
 | `OPENAI_API_KEY` / `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` | Optional; usually set in the UI |
+| `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_BASE_URL` | [Langfuse](https://langfuse.com) tracing (optional; open source) |
 | `LANGCHAIN_*` | LangSmith tracing (optional) |
+
+## Observability
+
+With `LANGFUSE_*` keys set, every query is traced to
+[Langfuse](https://langfuse.com) (open source): one `finagent-query` trace per
+question with nested per-node spans, every LLM generation (model, prompt,
+completion, token usage), retrieval inputs/outputs, and latency. Chat threads
+map to Langfuse **sessions** (follow-up turns group together); traces are
+tagged with the provider and collection, so production traffic and
+FinanceBench eval runs are separable in the UI. Traces are flushed
+synchronously before each response returns, so tracing survives Cloud Run's
+CPU throttling and scale-to-zero. Without keys, tracing is a no-op.
+
+The answer payload separately carries in-app metrics — token totals per model,
+per-node latencies, tool-lane health, and the confidence/verification audit —
+independent of any tracing backend.

@@ -334,6 +334,25 @@ def _normalise_chunk(text: str, meta: dict, idx: int) -> dict:
     }
 
 
+def _langfuse_handler():
+    """Langfuse tracing (open-source LLM observability) — one CallbackHandler
+    per request captures the whole LangGraph run as a nested trace (per-node
+    spans, prompts/completions, token usage → cost).
+
+    Active only when LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY are set (plus
+    LANGFUSE_BASE_URL for the region); returns None otherwise so tracing is a
+    zero-cost no-op locally, in CI, and on deployments without keys.
+    """
+    if not (os.getenv("LANGFUSE_PUBLIC_KEY") and os.getenv("LANGFUSE_SECRET_KEY")):
+        return None
+    try:
+        from langfuse.langchain import CallbackHandler
+        return CallbackHandler()
+    except Exception as e:
+        print(f"[langfuse] tracing disabled ({type(e).__name__}: {e})")
+        return None
+
+
 def run_agentic(question: str, top_k: int = 5,
                 company_filter: Optional[list[str]] = None,
                 chat_history: Optional[list[dict]] = None,
@@ -341,6 +360,7 @@ def run_agentic(question: str, top_k: int = 5,
                 synth_model: Optional[str] = None,
                 api_key: Optional[str] = None,
                 collection: Optional[str] = None,
+                session_id: Optional[str] = None,
                 on_step: Optional[Callable[[str], None]] = None,
                 on_step_done: Optional[Callable[[str, Optional[str]], None]] = None) -> dict:
     """Synchronous v4 agentic run with optional conversation memory + per-request
@@ -390,39 +410,65 @@ def run_agentic(question: str, top_k: int = 5,
     # critic→retrieve loop can never spin forever — it terminates with whatever
     # we have instead of hanging the request.
     config: dict = {"recursion_limit": 50}
-    if usage_cb is not None:
-        config["callbacks"] = [usage_cb]
+    langfuse_cb = _langfuse_handler()
+    callbacks = [cb for cb in (usage_cb, langfuse_cb) if cb is not None]
+    if callbacks:
+        config["callbacks"] = callbacks
+
+    # Trace attributes: a stable name (findable in the UI), the chat thread as
+    # session_id (groups follow-up turns in the Sessions view), and tags for
+    # filtering prod vs eval runs and per-provider comparisons.
+    import contextlib
+    trace_ctx = contextlib.nullcontext()
+    if langfuse_cb is not None:
+        from langfuse import propagate_attributes
+        attrs: dict = {"trace_name": "finagent-query",
+                       "tags": [provider, collection or "us_filings"]}
+        if session_id:
+            attrs["session_id"] = str(session_id)
+        trace_ctx = propagate_attributes(**attrs)
 
     node_latencies: dict[str, float] = {}
-    if on_step is None and on_step_done is None:
-        state = rag.graph.invoke(initial_state, config=config)
-    else:
-        # "tasks" events fire when a node STARTS (accurate current-stage label
-        # — "updates" only fires on completion, so the old label lagged one
-        # node), "updates" carries each node's delta (for the outcome detail +
-        # latency attribution), and "values" keeps the final accumulated state.
-        state: dict = {}
-        last_ts = time.time()
-        for mode, data in rag.graph.stream(
-            initial_state, stream_mode=["updates", "values", "tasks"], config=config
-        ):
-            if mode == "values":
-                state = data
-            elif mode == "tasks" and isinstance(data, dict):
-                # A start event has no "result"/"error" yet.
-                if "result" not in data and "error" not in data and on_step:
-                    on_step(data.get("name", ""))
-            elif mode == "updates" and isinstance(data, dict):
-                now = time.time()
-                # Attribute the elapsed wall-clock since the previous update to
-                # the node(s) that just produced one (rough but useful; parallel
-                # lanes that land together share the interval).
-                for node_name, delta in data.items():
-                    node_latencies[node_name] = round(
-                        node_latencies.get(node_name, 0.0) + (now - last_ts), 3)
-                    if on_step_done:
-                        on_step_done(node_name, _step_detail(node_name, delta or {}))
-                last_ts = now
+    with trace_ctx:
+        if on_step is None and on_step_done is None:
+            state = rag.graph.invoke(initial_state, config=config)
+        else:
+            # "tasks" events fire when a node STARTS (accurate current-stage label
+            # — "updates" only fires on completion, so the old label lagged one
+            # node), "updates" carries each node's delta (for the outcome detail +
+            # latency attribution), and "values" keeps the final accumulated state.
+            state: dict = {}
+            last_ts = time.time()
+            for mode, data in rag.graph.stream(
+                initial_state, stream_mode=["updates", "values", "tasks"], config=config
+            ):
+                if mode == "values":
+                    state = data
+                elif mode == "tasks" and isinstance(data, dict):
+                    # A start event has no "result"/"error" yet.
+                    if "result" not in data and "error" not in data and on_step:
+                        on_step(data.get("name", ""))
+                elif mode == "updates" and isinstance(data, dict):
+                    now = time.time()
+                    # Attribute the elapsed wall-clock since the previous update to
+                    # the node(s) that just produced one (rough but useful; parallel
+                    # lanes that land together share the interval).
+                    for node_name, delta in data.items():
+                        node_latencies[node_name] = round(
+                            node_latencies.get(node_name, 0.0) + (now - last_ts), 3)
+                        if on_step_done:
+                            on_step_done(node_name, _step_detail(node_name, delta or {}))
+                    last_ts = now
+
+    if langfuse_cb is not None:
+        # Cloud Run throttles CPU to ~0 once the response is sent (and freezes
+        # the instance on scale-to-zero), so the SDK's background exporter may
+        # never get to run. Flush synchronously while we still own the request.
+        try:
+            from langfuse import get_client
+            get_client().flush()
+        except Exception as e:
+            print(f"[langfuse] flush failed ({type(e).__name__}: {e})")
 
     chunks: list[dict] = []
     next_id = 0
