@@ -164,9 +164,13 @@ abstentions — numeric accuracy (+13.4 pts) is the honest correctness signal.
 
 RAGAS scores non-answers as zeros by construction, so the abstentions cap the
 overall numbers. On the **79 plainly-answered questions** the same judge scores
-faithfulness **0.75**, relevancy **0.65**, precision **0.60**, recall **0.72** —
-the gap between those two views is the refusal calibration, tracked as the
-main open item. `results/comparison.md` has the full v1 → v3 delta table, and
+faithfulness **0.73**, relevancy **0.65**, precision **0.59**, recall **0.72**
+(the eval now reports this split automatically) — the gap between those two
+views is the refusal calibration, tracked as the main open item. The eval also
+reports per-question **latency and token cost**, and a **gold-chunk reranker
+ablation** (strict exact-chunk match): the cross-encoder lifts Hit@3 by 53%
+and MRR by 39% over the fused BM25+dense pool order
+(`results/retrieval_ablation.json`). `results/comparison.md` has the full v1 → v3 delta table, and
 `STRUCTURE.md` → *Bottleneck analysis & fixes* documents each root cause found
 along the way (corpus wiring, historical-year fetch, refusal confidence,
 mis-routing, web-escalation pollution — all fixed cost-neutrally).

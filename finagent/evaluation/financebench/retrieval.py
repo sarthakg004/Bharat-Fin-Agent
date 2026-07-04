@@ -241,3 +241,58 @@ class RetrievalEvaluator:
             qtype: self._summarize(acc).as_dict() for qtype, acc in by_type.items()
         }
         return res
+
+
+def rerank_ablation(gold_map: Optional[dict] = None,
+                    hit_ks: tuple = (1, 3, 5),
+                    limit: Optional[int] = None) -> dict:
+    """Before/after cross-encoder ablation: gold-chunk Hit@k / MRR of the
+    RRF-fused pool order vs the reranked order, over the SAME candidates —
+    the delta isolates the reranker's contribution. Local compute only
+    (no LLM quota); strict exact-gold-chunk matching, so absolute numbers
+    read low — compare relatively.
+    """
+    from finagent.evaluation.financebench.gold import build_gold_map
+
+    gold_map = gold_map or build_gold_map(reuse=True)
+    evaluator = RetrievalEvaluator(hit_ks=hit_ks)
+    reranker = evaluator._ensure_reranker()
+
+    base_ranks: list[int] = []
+    reranked_ranks: list[Optional[int]] = []
+    n = 0
+    for entry in gold_map.values():
+        gold = entry.get("gold_chunks") or []
+        if not gold:
+            continue
+        if limit is not None and n >= limit:
+            break
+        n += 1
+        fused = evaluator._fused_pool(entry["question"])
+        pool_rank = evaluator._first_gold_rank(fused, gold)
+        if pool_rank is None:
+            continue                 # first-stage miss; reranker never sees it
+        base_ranks.append(pool_rank)
+        candidates = fused[:POOL_DEPTH]
+        scores = reranker.predict([(entry["question"], t) for t in candidates])
+        reranked = [t for _, t in
+                    sorted(zip(scores, candidates), key=lambda x: -x[0])]
+        reranked_ranks.append(evaluator._first_gold_rank(reranked, gold))
+
+    def _metrics(ranks):
+        found = [r for r in ranks if r]
+        if not found:
+            return {"mrr": 0.0, **{f"hit@{k}": 0.0 for k in hit_ks}}
+        out = {f"hit@{k}": round(sum(1 for r in found if r <= k) / len(ranks), 4)
+               for k in hit_ks}
+        out["mrr"] = round(sum(1.0 / r for r in found) / len(ranks), 4)
+        return out
+
+    in_pool = len(base_ranks)
+    return {
+        "n_questions": n,
+        "gold_in_pool": in_pool,
+        f"pool_recall@{POOL_DEPTH}": round(in_pool / n, 4) if n else 0.0,
+        "before_rerank": _metrics(base_ranks),
+        "after_rerank": _metrics(reranked_ranks),
+    }

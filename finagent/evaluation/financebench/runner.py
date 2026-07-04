@@ -102,6 +102,7 @@ def run_agent_outputs(
             company = q.get("company") or ""
             if company and company.split()[0].lower() not in question.lower():
                 question = f"{question} (Company: {company})"
+            question_started = time.time()
             for attempt in (1, 2):
                 try:
                     res = run_agentic(
@@ -131,6 +132,12 @@ def run_agent_outputs(
                 "company": q.get("company", ""),
                 "confidence": meta.get("confidence"),
                 "answer_status": meta.get("answer_status"),
+                # Per-question cost/latency (aggregated into final_metrics):
+                # wall-clock end-to-end, and token totals across every LLM call
+                # in the run (from the usage callback).
+                "latency_s": round(time.time() - question_started, 2),
+                "input_tokens": meta.get("input_tokens"),
+                "output_tokens": meta.get("output_tokens"),
                 "error": None,
             }
         except Exception as e:  # record the failure
@@ -221,4 +228,15 @@ def score_answers(
     by_type = {
         qt: _means(grp) for qt, grp in per_q.groupby("qtype") if qt
     }
-    return {"overall": _means(per_q), "by_type": by_type}
+
+    # Answered-subset view. RAGAS scores refusals as ~0 by construction
+    # (a non-answer has no relevant claims), so the overall means conflate
+    # "answers badly" with "abstains". Splitting them shows answer quality and
+    # refusal cost separately — the honest headline pair.
+    status_by_q = {o["question"]: o.get("answer_status", "") for o in outputs}
+    answered_mask = per_q["question"].map(status_by_q) == "answered"
+    answered_only = _means(per_q[answered_mask]) if answered_mask.any() else {}
+
+    return {"overall": _means(per_q), "by_type": by_type,
+            "answered_only": answered_only,
+            "n_answered": int(answered_mask.sum()), "n_scored": len(per_q)}

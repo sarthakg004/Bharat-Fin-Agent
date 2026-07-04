@@ -236,6 +236,24 @@ def summarize_outputs(outputs_path: Union[str, Path]) -> dict:
     from finagent.evaluation.financebench.answer_match import numeric_accuracy
     num_acc = numeric_accuracy(rows)
 
+    # Latency + token cost per question (recorded by the runner since v4;
+    # older outputs simply lack the fields and these stay None).
+    latencies = sorted(r["latency_s"] for r in rows
+                       if isinstance(r.get("latency_s"), (int, float)))
+    tokens = [r["input_tokens"] + r["output_tokens"] for r in rows
+              if isinstance(r.get("input_tokens"), int)
+              and isinstance(r.get("output_tokens"), int)]
+
+    def _pct(sorted_vals, p):
+        return sorted_vals[min(len(sorted_vals) - 1,
+                               int(p / 100 * len(sorted_vals)))]
+
+    latency = ({"mean_s": round(sum(latencies) / len(latencies), 2),
+                "p50_s": _pct(latencies, 50), "p95_s": _pct(latencies, 95)}
+               if latencies else None)
+    token_cost = ({"mean_per_question": round(sum(tokens) / len(tokens)),
+                   "total": sum(tokens)} if tokens else None)
+
     return {
         "questions": n,
         "answered": answered,
@@ -245,6 +263,8 @@ def summarize_outputs(outputs_path: Union[str, Path]) -> dict:
         "errors": len(errors),
         "error_rate": round(len(errors) / n, 4) if n else None,
         "mean_confidence": round(sum(confs) / len(confs), 4) if confs else None,
+        "latency": latency,
+        "tokens": token_cost,
         # Numeric accuracy: gold figure present in the answer within 1% tol,
         # scored over numeric questions only (overall rate + per-qtype + misses).
         "numeric_accuracy": num_acc["overall"]["accuracy"],
@@ -258,12 +278,15 @@ def final_report(
     ragas_scores: Optional[dict] = None,
     metrics_json: Union[str, Path] = DEFAULT_METRICS_JSON,
     metrics_md: Union[str, Path] = DEFAULT_METRICS_MD,
+    retrieval: Optional[dict] = None,
 ) -> dict:
-    """Assemble the single final-metrics record (behaviour + RAGAS) and write
-    it as JSON + a readable markdown table."""
+    """Assemble the single final-metrics record (behaviour + RAGAS + retrieval)
+    and write it as JSON + a readable markdown table."""
     behaviour = summarize_outputs(outputs_path)
     report = {"outputs": str(outputs_path), "behaviour": behaviour,
               "ragas": ragas_scores or {}}
+    if retrieval:
+        report["retrieval"] = retrieval
 
     Path(metrics_json).parent.mkdir(parents=True, exist_ok=True)
     Path(metrics_json).write_text(json.dumps(report, indent=2))
@@ -284,6 +307,15 @@ def final_report(
         f"| numeric accuracy (gold in answer, 1% tol) | {behaviour.get('numeric_accuracy')} |",
         "",
     ]
+    if behaviour.get("latency"):
+        lat, tok = behaviour["latency"], behaviour.get("tokens") or {}
+        lines += ["## Latency & tokens", "", "| metric | value |", "|---|---|",
+                  f"| latency mean / p50 / p95 (s) | {lat['mean_s']} / "
+                  f"{lat['p50_s']} / {lat['p95_s']} |"]
+        if tok:
+            lines.append(f"| tokens mean per question / total | "
+                         f"{tok['mean_per_question']:,} / {tok['total']:,} |")
+        lines.append("")
     num_detail = behaviour.get("numeric_accuracy_detail") or {}
     if num_detail.get("by_type"):
         lines += ["## Numeric accuracy (deterministic, judge-free)", "",
@@ -298,6 +330,15 @@ def final_report(
         overall = ragas_scores.get("overall", {})
         lines += ["## RAGAS (overall)", "", "| metric | score |", "|---|---|"]
         lines += [f"| {k} | {v} |" for k, v in overall.items()]
+        # Answered-subset: RAGAS zeroes non-answers by construction, so this
+        # is the answer-quality signal with the abstention cost factored out.
+        answered = ragas_scores.get("answered_only") or {}
+        if answered:
+            lines += ["",
+                      f"## RAGAS (answered subset — "
+                      f"{ragas_scores.get('n_answered')}/{ragas_scores.get('n_scored')} plainly answered)",
+                      "", "| metric | score |", "|---|---|"]
+            lines += [f"| {k} | {v} |" for k, v in answered.items()]
         by_type = ragas_scores.get("by_type", {})
         if by_type:
             metrics = sorted({m for d in by_type.values() for m in d})
@@ -307,6 +348,17 @@ def final_report(
             for qt, d in sorted(by_type.items()):
                 lines.append(f"| {qt} | " + " | ".join(
                     str(d.get(m, "—")) for m in metrics) + " |")
+    if retrieval:
+        before, after = retrieval.get("before_rerank", {}), retrieval.get("after_rerank", {})
+        pool_key = next((k for k in retrieval if k.startswith("pool_recall")), "")
+        lines += ["", "## Retrieval (gold-chunk, strict exact match)", "",
+                  f"Pool: {pool_key} = {retrieval.get(pool_key)} over "
+                  f"{retrieval.get('n_questions')} questions "
+                  f"({retrieval.get('gold_in_pool')} in pool)", "",
+                  "| metric | RRF pool (before rerank) | cross-encoder (after) |",
+                  "|---|---|---|"]
+        for m in sorted(set(before) | set(after)):
+            lines.append(f"| {m} | {before.get(m)} | {after.get(m)} |")
     lines += ["", "## Coverage by question type", "",
               "| qtype | questions | answered | refused | errors |",
               "|---|---|---|---|---|"]
@@ -363,6 +415,9 @@ def main() -> None:
     p.add_argument("--score", action="store_true",
                    help="RAGAS-score --output and write the final metrics report")
     p.add_argument("--judge-model", default=None)
+    p.add_argument("--no-retrieval-eval", action="store_true",
+                   help="skip the gold-chunk rerank ablation during --score "
+                        "(it is local-only compute, ~10 min, no LLM quota)")
     p.add_argument("--log", default=None, metavar="FILE",
                    help="mirror all output to this log file (default: logs/ragas_score.log "
                         "when --score is used)")
@@ -411,7 +466,21 @@ def main() -> None:
             print("\nLIMIT EXHAUSTED — re-run this command once your daily quota resets.")
             print("Already-scored rows are saved; the run will resume from where it stopped.")
             raise SystemExit(1)
-        final_report(args.output, ragas_scores=scores,
+
+        # Gold-chunk retrieval ablation (before/after cross-encoder). Local
+        # compute only, no LLM quota; never let it sink the whole score run.
+        retrieval = None
+        if not args.no_retrieval_eval:
+            try:
+                from finagent.evaluation.financebench.retrieval import rerank_ablation
+                print("[scorer] measuring retrieval (gold-chunk Hit@k/MRR, "
+                      "local, no quota)…", flush=True)
+                retrieval = rerank_ablation()
+            except Exception as e:
+                print(f"[scorer] retrieval ablation skipped "
+                      f"({type(e).__name__}: {e})")
+
+        final_report(args.output, ragas_scores=scores, retrieval=retrieval,
                      metrics_json=run_dir / "final_metrics.json",
                      metrics_md=run_dir / "final_metrics.md")
         return

@@ -707,3 +707,26 @@ def test_cap_pool_keeps_every_sub_query():
     subs = {c["sub_query"] for c in kept}
     assert subs == {"A", "B"}, f"sub-query B was crowded out: {kept}"
     assert kept[0]["text"] == "a0"          # global best still first
+
+
+def test_behaviour_metrics_aggregate_latency_and_tokens(tmp_path):
+    """summarize_outputs reports latency percentiles + token totals when the
+    runner recorded them, and omits them cleanly for older outputs."""
+    import json
+    from finagent.evaluation.financebench.parallel import summarize_outputs
+
+    rows = [{"question": f"q{i}", "answer": f"${i} million [1].", "qtype": "numeric",
+             "gold": f"${i}.00", "confidence": 0.9, "answer_status": "answered",
+             "latency_s": float(i + 1), "input_tokens": 1000, "output_tokens": 100,
+             "error": None} for i in range(10)]
+    p = tmp_path / "out.json"; p.write_text(json.dumps(rows))
+    b = summarize_outputs(p)
+    assert b["latency"]["mean_s"] == 5.5
+    assert b["latency"]["p50_s"] == 6.0 and b["latency"]["p95_s"] == 10.0
+    assert b["tokens"] == {"mean_per_question": 1100, "total": 11000}
+
+    for r in rows:                          # old outputs: fields absent
+        for k in ("latency_s", "input_tokens", "output_tokens"): r.pop(k)
+    p.write_text(json.dumps(rows))
+    b2 = summarize_outputs(p)
+    assert b2["latency"] is None and b2["tokens"] is None
