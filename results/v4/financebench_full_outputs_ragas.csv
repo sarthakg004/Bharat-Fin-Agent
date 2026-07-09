@@ -1,0 +1,137 @@
+question,answer,company,year,faithfulness,answer_relevancy,context_precision,context_recall,error
+What is the FY2018 capital expenditure amount (in USD millions) for 3M? Give a response to the question by relying on the details shown in the cash flow statement.,"**$1,577 million** (FY2018) [1]",3M,,0.0,0.6250023225061523,0.9999999999,1.0,
+"What drove operating margin change as of FY2022 for 3M? If operating margin is not a useful metric for a company like this, then please state that and explain why.","**FY 2022 operating margin was affected by a change in segment‑performance measurement, foreign‑currency translation effects, and net purchases/unrealized gains‑losses together with currency‑exchange impacts**【5,1】.  
+
+- **Segment‑performance measurement change** – In Q1 2022 3M altered the metric used by its chief operating decision maker, which revised the disclosed segment profit/loss (and thus operating income) for all periods presented【5】.  
+- **Foreign‑currency translation** – The company’s operating income was adjusted for translation of foreign‑currency balances, with the change in exchange rates decreasing the balance by **$42 million** in FY 2022【1】.  
+- **Net purchases and unrealized gains/losses** – Derivative‑related net purchases and unrealized gains/losses reduced the balance by **$24 million** in FY 2022, contributing to the margin shift【1】.  
+
+*No evidence suggests that operating margin is an unsuitable metric for 3M; the cited items explain the FY 2022 drivers.*
+
+*_Confidence: 66% — moderate. Some figures or claims are only partially corroborated by the available sources; verify against the primary filing before relying on them._*",3M,,,0.7780191178561514,,,The LLM generation was not completed. Please increase the max_tokens and try again.
+Which debt securities are registered to trade on a national securities exchange under 3M's name as of Q2 of 2023?,"**Insufficient evidence to answer.** The retrieved filings and sources do not contain the specific information this question asks for, so I can't give a grounded answer. Rather than infer an unsupported figure, I'm flagging this as not answerable from the available evidence.",3M,,,0.0,,,The LLM generation was not completed. Please increase the max_tokens and try again.
+What is the FY2017 - FY2019 3 year average of capex as a % of revenue for Activision Blizzard? Answer in units of percents and round to one decimal place. Calculate (or extract) the answer from the statement of income and the cash flow statement.,**1.9%** (FY2017‑FY2019 3‑year average capex to revenue) [1],Activision Blizzard,,,0.7488328059866054,0.9999999999,,The LLM generation was not completed. Please increase the max_tokens and try again.
+What is the FY2017 operating cash flow ratio for Adobe? Operating cash flow ratio is defined as: cash from operations / total current liabilities. Round your answer to two decimal places. Please utilize information provided primarily within the balance sheet and the cash flow statement.,"**0.83** (FY2017) [1]
+
+*Operating cash flow $2.91 bn ÷ current liabilities $3.53 bn (FY2017) [1]*",Adobe,,,0.8330685705294593,0.9999999999,1.0,The LLM generation was not completed. Please increase the max_tokens and try again.
+What is the quantity of restructuring costs directly outlined in AES Corporation's income statements for FY2022? If restructuring costs are not explicitly outlined then state 0.,**$0** (FY 2022) [9],AES Corporation,,0.0,0.6241999819734196,,1.0,
+What is Amazon's FY2017 days payable outstanding (DPO)? DPO is defined as: 365 * (average accounts payable between FY2016 and FY2017) / (FY2017 COGS + change in inventory between FY2016 and FY2017). Round your answer to two decimal places. Address the question by using the line items and information shown within the balance sheet and the P&L statement.,"**93.86 days** (FY2017)  
+
+- Average accounts payable = ($25,309 bn FY2016 [1] + $34,616 bn FY2017 [2]) ÷ 2 = $29,962.5 bn.  
+- FY2017 cost of goods sold = $111,934 bn [5]; inventory change = $16,047 bn FY2017 [4] – $11,461 bn FY2016 [3] = $4,586 bn.  
+- DPO = 365 × $29,962.5 bn / ($111,934 bn + $4,586 bn) = 93.86 days.",Amazon,,,0.844803917846986,,1.0,The LLM generation was not completed. Please increase the max_tokens and try again.
+What is Amcor's year end FY2020 net AR (in USD millions)? Address the question by adopting the perspective of a financial analyst who can only use the details shown within the balance sheet.,"**$1,609 million** (FY 2020) [1]",Amcor,,0.0,0.5529123023766062,,0.0,
+"What are major acquisitions that AMCOR has done in FY2023, FY2022 and FY2021?","**Insufficient evidence to answer.** The retrieved filings and sources do not contain the specific information this question asks for, so I can't give a grounded answer. Rather than infer an unsupported figure, I'm flagging this as not answerable from the available evidence.",Amcor,,,0.0,,,The LLM generation was not completed. Please increase the max_tokens and try again.
+What is the nature & purpose of AMCOR's restructuring liability as oF Q2 of FY2023 close?,"**Amcor’s Q2 FY 2023 restructuring liability reflects accrued employee‑related, fixed‑asset and other restructuring costs totaling **$14 million** (≈ $5 m employee, $5 m fixed‑asset, $4 m other) as part of its FY 2023 restructuring program** [1].
+
+- **Nature:** The liability is comprised of:
+  - Employee‑related expenses (~$5 m)  
+  - Fixed‑asset‑related expenses (~$5 m)  
+  - Other restructuring expenses (~$4 m) [1].
+
+- **Purpose:** These costs fund material restructuring plans that aim to reduce structural costs, optimize the manufacturing footprint and mitigate the impact of external events such as the Russia‑Ukraine conflict [1].
+
+*The filing discloses FY 2023 totals; a Q2‑specific breakdown is not separately provided.* [1]
+
+*_Confidence: 69% — moderate. Some figures or claims are only partially corroborated by the available sources; verify against the primary filing before relying on them._*",Amcor,,,0.9282487243769073,,0.0,The LLM generation was not completed. Please increase the max_tokens and try again.
+"Answer the following question as if you are an equity research analyst and have lost internet connection so you do not have access to financial metric providers. According to the details clearly outlined within the P&L statement and the statement of cash flows, what is the FY2015 depreciation and amortization (D&A from cash flow statement) % margin for AMD?","**4.2%** (FY2015) [1]  
+
+Derived from $167 million depreciation & amortization and $3.991 billion revenue [1].",AMD,,,0.7802186452152995,0.9999999999,1.0,The LLM generation was not completed. Please increase the max_tokens and try again.
+What drove revenue change as of the FY22 for AMD?,"**No FY 2022 revenue‑driver details are provided in the available evidence.**  
+
+*The supplied filings discuss revenue trends for FY 2015 (e.g., segment declines tied to lower client‑processor sales and unit‑shipment drops) but contain no commentary on FY 2022 drivers.*
+
+*_Confidence: 69% — moderate. Some figures or claims are only partially corroborated by the available sources; verify against the primary filing before relying on them._*",AMD,,,,,0.0,The LLM generation was not completed. Please increase the max_tokens and try again.
+"From FY21 to FY22, excluding Embedded, in which AMD reporting segment did sales proportionally increase the most?","**Computing and Graphics** and **Semi‑Custom** each rose **≈43.6% YoY** (FY 2021 $16.434 billion → FY 2022 $23.601 billion) [1,2,3,4]",AMD,,,0.6500266929525708,,0.0,The LLM generation was not completed. Please increase the max_tokens and try again.
+What are the geographies that American Express primarily operates in as of 2022?,"**American Express’s primary geographies in FY 2022 were the United States and, outside the United States, the United Kingdom, the European Union, Australia, Japan, Canada and Mexico** [5].
+
+| Geography | Role in FY 2022 |
+|-----------|----------------|
+| United States | Core domestic market |
+| United Kingdom | Significant billed business outside the U.S. |
+| European Union | Significant billed business outside the U.S. |
+| Australia | Significant billed business outside the U.S. |
+| Japan | Significant billed business outside the U.S. |
+| Canada | Significant billed business outside the U.S. |
+| Mexico | Significant billed business outside the U.S. | [5]",American Express,,,0.9545510593347731,,,The LLM generation was not completed. Please increase the max_tokens and try again.
+How much has the effective tax rate of American Express changed between FY2021 and FY2022?,"**Insufficient evidence to answer.** The retrieved filings and sources do not contain the specific information this question asks for, so I can't give a grounded answer. Rather than infer an unsupported figure, I'm flagging this as not answerable from the available evidence.",American Express,,,0.0,,,The LLM generation was not completed. Please increase the max_tokens and try again.
+How much (in USD billions) did American Water Works pay out in cash dividends for FY2020? Compute or extract the answer by primarily using the details outlined in the statement of cash flows.,**$0.389 billion** (FY2020) [1],American Water Works,,0.0,0.6582360317538473,0.9999999999,,The LLM generation was not completed. Please increase the max_tokens and try again.
+"In agreement with the information outlined in the income statement, what is the FY2015 - FY2017 3 year average net profit margin (as a %) for Best Buy? Answer in units of percents and round to one decimal place.","**2.8%** (FY2015‑FY2017 average net profit margin) [1,2,3]
+
+- FY2015: **3.1%** net margin [1]  
+- FY2016: **2.3%** net margin [2]  
+- FY2017: **3.1%** net margin [3]  ",Best Buy,,,0.8141838303023792,0.0,,The LLM generation was not completed. Please increase the max_tokens and try again.
+"What are major acquisitions that Best Buy has done in FY2023, FY2022 and FY2021?","**Bottom line:** Best Buy’s only disclosed major acquisition in FY 2021‑FY 2023 was the purchase of Two Peaks, LLC d/b/a Yardbird Furniture, which added 9 Yardbird stores by FY 2022 and grew to 14 stores by FY 2023; no Yardbird stores existed in FY 2021 [3,4].
+
+| Fiscal year | Acquisition (entity) | Yardbird stores at FY end |
+|-------------|----------------------|---------------------------|
+| FY 2021 | – (no Yardbird stores) | 0 stores [4] |
+| FY 2022 | Two Peaks, LLC d/b/a Yardbird Furniture | 9 stores [4] |
+| FY 2023 | Two Peaks, LLC d/b/a Yardbird Furniture (continuing) | 14 stores [4] |
+
+- The 10‑K notes that Best Buy accounts for business combinations under the acquisition method and specifically references the acquisition of Yardbird Furniture [3].
+- Store‑count data show Yardbird’s presence emerging in FY 2022 (9 stores) and expanding to 14 stores by FY 2023, with none in FY 2021 [4].
+
+*Sources only detail the Yardbird acquisition; other acquisitions, if any, are not disclosed in the provided evidence.*",Best Buy,,,0.8232670914620424,,,The LLM generation was not completed. Please increase the max_tokens and try again.
+Was there any change in the number of Best Buy stores between Q2 of FY2024 and FY2023?,"**Insufficient evidence to answer.** The retrieved filings and sources do not contain the specific information this question asks for, so I can't give a grounded answer. Rather than infer an unsupported figure, I'm flagging this as not answerable from the available evidence.",Best Buy,,,0.0,,0.0,The LLM generation was not completed. Please increase the max_tokens and try again.
+What is the FY2019 - FY2020 total revenue growth rate for Block (formerly known as Square)? Answer in units of percents and round to one decimal place. Approach the question asked by assuming the standpoint of an investment banking analyst who only has access to the statement of income.,**101.5%** (FY2019 → FY2020) [1],Block,,1.0,0.697514353399588,,1.0,
+Are there any product categories / service categories that represent more than 20% of Boeing's revenue for FY2022?,"**Insufficient evidence to answer.** The retrieved filings and sources do not contain the specific information this question asks for, so I can't give a grounded answer. Rather than infer an unsupported figure, I'm flagging this as not answerable from the available evidence.",Boeing,,,0.0,,,The LLM generation was not completed. Please increase the max_tokens and try again.
+Who are the primary customers of Boeing as of FY2022?,"**Non‑U.S. airlines are Boeing’s primary customers in FY 2022, comprising about 70 % of the Commercial Airplanes backlog (dollar terms) [1].**
+
+- The backlog concentration shows that roughly seven‑tenths of commercial‑airplane orders are held by airlines outside the United States, indicating the dominant customer base for Boeing’s core commercial segment [1].
+
+*Backlog data is the available proxy for customer composition in FY 2022.*",Boeing,,,0.8708622508666144,,,The LLM generation was not completed. Please increase the max_tokens and try again.
+How does Boeing's effective tax rate in FY2022 compare to FY2021?,"**-0.6%** (FY2022) vs **14.8%** (FY2021) — FY2022 rate is lower.
+
+| Fiscal Year | Effective Tax Rate |
+|-------------|--------------------|
+| FY2022 | -0.6% [1] |
+| FY2021 | 14.8% [2] |",Boeing,,,0.9120931475745456,0.0,,The LLM generation was not completed. Please increase the max_tokens and try again.
+What is Coca Cola's FY2022 dividend payout ratio (using total cash dividends paid and net income attributable to shareholders)? Round answer to two decimal places. Answer the question asked by assuming you only have access to information clearly displayed in the cash flow statement and the income statement.,"**79.80%** (FY2022) [1]  
+
+*Based on $7.62 billion total cash dividends paid and $9.54 billion net income attributable to shareholders* [1].",Coca-Cola,,,0.7804006499575379,,1.0,The LLM generation was not completed. Please increase the max_tokens and try again.
+How much has the effective tax rate of Corning changed between FY2021 and FY2022?,"**Insufficient evidence to answer.** The retrieved filings and sources do not contain the specific information this question asks for, so I can't give a grounded answer. Rather than infer an unsupported figure, I'm flagging this as not answerable from the available evidence.",Corning,,,0.0,,,The LLM generation was not completed. Please increase the max_tokens and try again.
+What is the FY2018 fixed asset turnover ratio for CVS Health? Fixed asset turnover ratio is defined as: FY2018 revenue / (average PP&E between FY2017 and FY2018). Round your answer to two decimal places. Calculate what was asked by utilizing the line items clearly shown in the P&L statement and the balance sheet.,**17.98×** (FY2018) [1],CVS Health,,1.0,0.5891579368197291,0.9999999999,,The LLM generation was not completed. Please increase the max_tokens and try again.
+Has CVS Health paid dividends to common shareholders in Q2 of FY2022?,"**Insufficient evidence to answer.** The retrieved filings and sources do not contain the specific information this question asks for, so I can't give a grounded answer. Rather than infer an unsupported figure, I'm flagging this as not answerable from the available evidence.",CVS Health,,,0.0,,,The LLM generation was not completed. Please increase the max_tokens and try again.
+What is the FY2019 cash conversion cycle (CCC) for General Mills? CCC is defined as: DIO + DSO - DPO. DIO is defined as: 365 * (average inventory between FY2018 and FY2019) / (FY2019 COGS). DSO is defined as: 365 * (average accounts receivable between FY2018 and FY2019) / (FY2019 Revenue). DPO is defined as: 365 * (average accounts payable between FY2018 and FY2019) / (FY2019 COGS + change in inventory between FY2018 and FY2019). Round your answer to two decimal places. Address the question by using the line items and information shown within the income statement and the balance sheet.,"**‑3.64 days (FY2019)**  
+
+Based on inventory FY2018 $1,642.2 bn [3] and FY2019 $1,559.3 bn [4]; COGS FY2019 $11,108.4 bn [1]; revenue FY2019 $16,865.2 bn [2]; accounts‑receivable FY2018 $1,684.2 bn [5] and FY2019 $1,679.7 bn [6]; accounts‑payable FY2018 $2,746.2 bn [7] and FY2019 $2,854.1 bn [8].
+
+*_Confidence: 70% — moderate. Some figures or claims are only partially corroborated by the available sources; verify against the primary filing before relying on them._*",General Mills,,,0.7558251874268038,,,The LLM generation was not completed. Please increase the max_tokens and try again.
+We want to calculate a financial metric. Please help us compute it by basing your answers off of the cash flow statement and the income statement. Here's the question: what is the FY2022 retention ratio (using total cash dividends paid and net income attributable to shareholders) for General Mills? Round answer to two decimal places.,**54.00%** (FY2022) [1],General Mills,,1.0,0.6287902574363817,0.9999999999,1.0,
+Roughly how many times has JnJ sold its inventory in FY2022? Calculate inventory turnover ratio for FY2022; if conventional inventory management is not meaningful for the company then state that and explain why.,"**2.72×** (FY2022) — Johnson & Johnson sold its inventory roughly 2.7 times during FY2022 [1].
+
+*_Confidence: 62% — moderate. Some figures or claims are only partially corroborated by the available sources; verify against the primary filing before relying on them._*",Johnson & Johnson,,,,,,The LLM generation was not completed. Please increase the max_tokens and try again.
+"Which business segment of JnJ will be treated as a discontinued operation from August 30, 2023 onward?","**Consumer Health (the former Consumer Health business, now Kenvue Inc.) will be presented as a discontinued operation beginning August 30, 2023**【1】.  
+
+- The separation of Kenvue Inc. converts Johnson & Johnson’s Consumer Health segment into discontinued‑operation financial results, including a ~$20 billion gain in Q3 2023【1】.  
+- The August 30, 2023 press release formalizes this treatment as part of the Kenvue separation【2】.  ",Johnson & Johnson,,,0.7833724745066104,,1.0,The LLM generation was not completed. Please increase the max_tokens and try again.
+Did JnJ's net earnings as a percent of sales increase in Q2 of FY2023 compared to Q2 of FY2022?,"**Insufficient evidence to answer.** The retrieved filings and sources do not contain the specific information this question asks for, so I can't give a grounded answer. Rather than infer an unsupported figure, I'm flagging this as not answerable from the available evidence.",Johnson & Johnson,,,0.0,,,The LLM generation was not completed. Please increase the max_tokens and try again.
+"Are JPM's gross margins historically consistent (not fluctuating more than roughly 2% each year)? If gross margins are not a relevant metric for a company like this, then please state that and explain why.","**No gross‑margin figure is disclosed for JPMorgan, so year‑to‑year consistency cannot be measured** [1].
+
+- The 10‑K excerpts list total net revenue ($32,266 million FY2021, $28,286 million FY2020) and interest expense ($1,382 million FY2021, $4,722 million FY2020) but do not present a gross‑margin metric or the cost component needed to compute it [1].
+
+*_Confidence: 52% — low. Parts of this answer are weakly corroborated by the available sources; verify against the primary filing before relying on it._*",JPMorgan,,,0.8143976493942113,,0.0,The LLM generation was not completed. Please increase the max_tokens and try again.
+What is Kraft Heinz's FY2019 inventory turnover ratio? Inventory turnover ratio is defined as: (FY2019 COGS) / (average inventory between FY2018 and FY2019). Round your answer to two decimal places. Please base your judgments on the information provided primarily in the balance sheet and the P&L statement.,**6.25×** (FY2019) [1],Kraft Heinz,,,0.6026095618676948,0.9999999999,1.0,The LLM generation was not completed. Please increase the max_tokens and try again.
+What is Lockheed Martin's 2 year total revenue CAGR from FY2020 to FY2022 (in units of percents and round to one decimal place)? Provide a response to the question by primarily using the statement of income.,"**0.4% CAGR** (FY2020‑FY2022)  
+
+- Revenue FY2020: **$65.398 billion** (FY2020) [1]  
+- Revenue FY2022: **$65.984 billion** (FY2022) [2]  
+- CAGR = \[(65.984 / 65.398)^(1/2) − 1\] ≈ 0.4% (rounded to one decimal place)  
+
+*_Confidence: 71% — moderate. Some figures or claims are only partially corroborated by the available sources; verify against the primary filing before relying on them._*",Lockheed Martin,,,0.7481330936794182,,,The LLM generation was not completed. Please increase the max_tokens and try again.
+Has MGM Resorts paid dividends to common shareholders in FY2022?,"**$4.0 million** (FY2022) dividends paid to common shareholders by **MGM Resorts International** [1].
+
+*_Confidence: 67% — moderate. Some figures or claims are only partially corroborated by the available sources; verify against the primary filing before relying on them._*",MGM Resorts,,,0.9545048367444812,0.9999999999,0.5,The LLM generation was not completed. Please increase the max_tokens and try again.
+Which region had the worst topline performance for MGM during FY2022?,"**Insufficient evidence to answer.** The retrieved filings and sources do not contain the specific information this question asks for, so I can't give a grounded answer. Rather than infer an unsupported figure, I'm flagging this as not answerable from the available evidence.",MGM Resorts,,,0.0,,0.0,The LLM generation was not completed. Please increase the max_tokens and try again.
+Has Microsoft increased its debt on balance sheet between FY2023 and the FY2022 period?,"**$47.24 billion** (FY2023) vs **$49.78 billion** (FY2022) – debt fell by $2.54 billion.  
+
+| Fiscal Year | Total Debt |
+|-------------|------------|
+| FY2022 | **$49.78 billion** [1] |
+| FY2023 | **$47.24 billion** [2] |",Microsoft,,,0.7940612144660266,0.0,,The LLM generation was not completed. Please increase the max_tokens and try again.
+"We need to calculate a reasonable approximation (or exact number if possible) of a financial metric. Basing your judgment by information plainly provided in the statement of income, what is Nike's three year average of cost of goods sold as a % of revenue from FY2016 to FY2018? Answer in units of percents and round to one decimal place.","**55.1 %** (average COGS as % of revenue FY2016‑FY2018)  
+
+Based on COGS FY2016 **$17.4 bn** and revenue FY2016 **$32.4 bn** [1,2]; COGS FY2017 **$19.0 bn** and revenue FY2017 **$34.4 bn** [3,4]; COGS FY2018 **$20.4 bn** and revenue FY2018 **$36.4 bn** [5,6].  ",Nike,,,0.6596483646577656,,1.0,The LLM generation was not completed. Please increase the max_tokens and try again.
+"Among operations, investing, and financing activities, which brought in the most (or lost the least) cash flow for Nike in FY2023?","**Insufficient evidence to answer.** The retrieved filings and sources do not contain the specific information this question asks for, so I can't give a grounded answer. Rather than infer an unsupported figure, I'm flagging this as not answerable from the available evidence.",Nike,,,0.0,,,The LLM generation was not completed. Please increase the max_tokens and try again.
+*** MEAN ***,,,,0.42857142857142855,0.5580774229808054,0.749999999925,0.6052631578947368,

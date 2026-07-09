@@ -1,0 +1,175 @@
+{
+  "outputs": "results/v4/financebench_full_outputs.json",
+  "behaviour": {
+    "questions": 150,
+    "answered": 104,
+    "answer_rate": 0.6933,
+    "refused": 46,
+    "refusal_rate": 0.3067,
+    "errors": 0,
+    "error_rate": 0.0,
+    "mean_confidence": 0.5742,
+    "latency": {
+      "mean_s": 60.92,
+      "p50_s": 43.81,
+      "p95_s": 157.66
+    },
+    "tokens": {
+      "mean_per_question": 14314,
+      "total": 2147064
+    },
+    "numeric_accuracy": 0.7164,
+    "numeric_accuracy_detail": {
+      "overall": {
+        "n": 67,
+        "correct": 48,
+        "accuracy": 0.7164
+      },
+      "by_type": {
+        "numeric": {
+          "n": 67,
+          "correct": 48,
+          "accuracy": 0.7164
+        }
+      },
+      "tolerance": 0.01,
+      "misses": [
+        {
+          "question": "How much has the effective tax rate of American Express changed between FY2021 and FY2022?",
+          "company": "American Express",
+          "gold": "The effective tax rate for American Express has changed/dropped from 24.6% in FY 2021 to 21.6% in FY 2022.",
+          "answer": "**Insufficient evidence to answer.** The retrieved filings and sources do not contain the specific information this question asks for, so I can't give a grounde"
+        },
+        {
+          "question": "How much (in USD billions) did American Water Works pay out in cash dividends for FY2020? Compute or extract the answer by primarily using the details outlined ",
+          "company": "American Water Works",
+          "gold": "$0.40",
+          "answer": "**$0.389\u202fbillion** (FY2020) [1]"
+        },
+        {
+          "question": "How much has the effective tax rate of Corning changed between FY2021 and FY2022?",
+          "company": "Corning",
+          "gold": "The effective tax rate of Corning has changed from 20% in FY2021 to 23% in FY 2022.",
+          "answer": "**Insufficient evidence to answer.** The retrieved filings and sources do not contain the specific information this question asks for, so I can't give a grounde"
+        },
+        {
+          "question": "Among operations, investing, and financing activities, which brought in the most (or lost the least) cash flow for Nike in FY2023?",
+          "company": "Nike",
+          "gold": "Among the three, cash flow from operations was the highest for Nike in FY2023.",
+          "answer": "**Insufficient evidence to answer.** The retrieved filings and sources do not contain the specific information this question asks for, so I can't give a grounde"
+        },
+        {
+          "question": "What is the FY2022 unadjusted EBITDA less capex for PepsiCo? Define unadjusted EBITDA as unadjusted operating income + depreciation and amortization [from cash ",
+          "company": "PepsiCo",
+          "gold": "$9068.00",
+          "answer": "**Insufficient evidence to answer.** The retrieved filings and sources do not contain the specific information this question asks for, so I can't give a grounde"
+        },
+        {
+          "question": "Does Verizon have a reasonably healthy liquidity profile based on its quick ratio for FY 2022? If the quick ratio is not relevant to measure liquidity, please s",
+          "company": "Verizon",
+          "gold": "No. The quick ratio was approximately 0.54 for Verizon. It indicated that Verizon does not have a healthy liquidity profile.",
+          "answer": "**Verizon\u2019s FY\u202f2022 quick ratio was **0.71\u00d7** \u2013 below the 1.0 level, indicating that its most liquid assets did not fully cover current liabilities** [1].\n\n- Th"
+        },
+        {
+          "question": "Does AMD have a reasonably healthy liquidity profile based on its quick ratio for FY22? If the quick ratio is not relevant to measure liquidity, please state th",
+          "company": "AMD",
+          "gold": "Yes. The quick ratio is 1.57, calculated as (cash and cash equivalents+Short term investments+Accounts receivable, net+receivables from related parties)/ (current liabilities).",
+          "answer": "**Insufficient evidence to answer.** The retrieved filings and sources do not contain the specific information this question asks for, so I can't give a grounde"
+        },
+        {
+          "question": "Among operations, investing, and financing activities, which brought in the most (or lost the least) cash flow for Best Buy in FY2023?",
+          "company": "Best Buy",
+          "gold": "Best Buy generated the most cash flow from operating activities in FY 2023 ($1.8 bn)",
+          "answer": "**Insufficient evidence to answer.** The retrieved filings and sources do not contain the specific information this question asks for, so I can't give a grounde"
+        },
+        {
+          "question": "Using the cash flow statement, answer the following question to the best of your abilities: how much did Block (formerly known as Square) generate in cash flow ",
+          "company": "Block",
+          "gold": "$382.00",
+          "answer": "**Insufficient evidence to answer.** The retrieved filings and sources do not contain the specific information this question asks for, so I can't give a grounde"
+        },
+        {
+          "question": "Does Corning have positive working capital based on FY2022 data? If working capital is not a useful or relevant metric for this company, then please state that ",
+          "company": "Corning",
+          "gold": "Yes. Corning had a positive working capital amount of $831 million by FY 2022 close. This answer considers only operating current assets and current liabilities that were clearly shown in the balance sheet.",
+          "answer": "**Insufficient evidence to answer.** The retrieved filings and sources do not contain the specific information this question asks for, so I can't give a grounde"
+        },
+        {
+          "question": "Based on the information provided primarily in the statement of financial position and the statement of income, what is AES's FY2022 return on assets (ROA)? ROA",
+          "company": "AES Corporation",
+          "gold": "-0.02",
+          "answer": "**-1.50% (FY2022)** [1]\n\n*Based on net income of **$\u2011546\u202fmillion** (FY2022) and total assets of **$32.96\u202fbillion** (FY2021) and **$38.36\u202fbillion** (FY2022) \u2192 RO"
+        },
+        {
+          "question": "Does AMCOR have an improving gross margin profile as of FY2023? If gross margin is not a useful metric for a company like this, then state that and explain why.",
+          "company": "Amcor",
+          "gold": "No. For AMCOR there has been a slight decline in gross margins by 0.8%.",
+          "answer": "**Amcor\u2019s gross margin fell from **21.2%** in FY\u202f2021 to **18.5%** in FY\u202f2023, showing a declining rather than improving profile**\u30101,2,3\u3011.\n\n| Fiscal Year | Gros"
+        },
+        {
+          "question": "Among operations, investing, and financing activities, which brought in the most (or lost the least) cash flow for AMD in FY22?",
+          "company": "AMD",
+          "gold": "In 2022, AMD brought in the most cashflow from Operations",
+          "answer": "**Insufficient evidence to answer.** The retrieved filings and sources do not contain the specific information this question asks for, so I can't give a grounde"
+        },
+        {
+          "question": "Does American Water Works have positive working capital based on FY2022 data? If working capital is not a useful or relevant metric for this company, then pleas",
+          "company": "American Water Works",
+          "gold": "No, American Water Works had negative working capital of -$1561M in FY 2022.",
+          "answer": "**Insufficient evidence to answer.** The retrieved filings and sources do not contain the specific information this question asks for, so I can't give a grounde"
+        },
+        {
+          "question": "Considering the data in the balance sheet, what is Block's (formerly known as Square) FY2016 working capital ratio? Define working capital ratio as total curren",
+          "company": "Block",
+          "gold": "1.73",
+          "answer": "**Insufficient evidence to answer.** The retrieved filings and sources do not contain the specific information this question asks for, so I can't give a grounde"
+        },
+        {
+          "question": "According to the information provided in the statement of cash flows, what is the FY2020 free cash flow (FCF) for General Mills? FCF here is defined as: (cash f",
+          "company": "General Mills",
+          "gold": "$3215.00",
+          "answer": "**Insufficient evidence to answer.** The retrieved filings and sources do not contain the specific information this question asks for, so I can't give a grounde"
+        },
+        {
+          "question": "What drove gross margin change as of FY2022 for JnJ? If gross margin is not a useful metric for a company like this, then please state that and explain why.",
+          "company": "Johnson & Johnson",
+          "gold": "For FY22, JnJ had changes in gross margin due to: One-time COVID-19 vaccine manufacturing exit related costs, Currency impacts in the Pharmaceutical segment, Commodity inflation in the MedTech and Consumer Health segments, partially offset by Supply chain benefits in the Consumer Health segment.",
+          "answer": "**Insufficient evidence to answer.** The retrieved filings and sources do not contain the specific information this question asks for, so I can't give a grounde"
+        },
+        {
+          "question": "What is Lockheed Martin's FY2021 net working capital? Define net working capital as total current assets less total current liabilities. Answer in USD millions.",
+          "company": "Lockheed Martin",
+          "gold": "$5818.00",
+          "answer": "**Insufficient evidence to answer.** The retrieved filings and sources do not contain the specific information this question asks for, so I can't give a grounde"
+        },
+        {
+          "question": "What is the FY2018 - FY2020 3 year average of capex as a % of revenue for MGM Resorts? Answer in units of percents and round to one decimal place. Please utiliz",
+          "company": "MGM Resorts",
+          "gold": "7.9%",
+          "answer": "**7.8%** (FY2018\u2011FY2020 3\u2011year average)\n\nDerived from FY2018 capex **$1.487\u202fbn** / revenue **$11.76\u202fbn** = **12.6%** [1]; FY2019 capex **$739\u202fm** / revenue **$1"
+        }
+      ]
+    },
+    "by_type": {
+      "numeric": {
+        "questions": 71,
+        "answered": 56,
+        "refused": 15,
+        "errors": 0
+      },
+      "narrative": {
+        "questions": 57,
+        "answered": 33,
+        "refused": 24,
+        "errors": 0
+      },
+      "comparison": {
+        "questions": 22,
+        "answered": 15,
+        "refused": 7,
+        "errors": 0
+      }
+    }
+  },
+  "ragas": {}
+}
