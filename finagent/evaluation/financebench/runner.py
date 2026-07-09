@@ -81,7 +81,11 @@ def run_agent_outputs(
 
     outputs: list[dict] = []
     stop_reason = ""
-    for _, q in tqdm(questions.iterrows(), total=len(questions), desc="agent"):
+    # Quiet under the parallel orchestrator: the parent draws the single
+    # progress bar, so a worker's own bar would just interleave garbage.
+    quiet = os.getenv("FINAGENT_EVAL_QUIET") == "1"
+    for _, q in tqdm(questions.iterrows(), total=len(questions), desc="agent",
+                     disable=quiet):
         if stop_reason:
             break
         fb_id = q.get("financebench_id", q["question"])
