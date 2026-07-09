@@ -130,6 +130,10 @@ class FetchNodes:
         # text as ephemeral chunks — `hybrid_retrieve_node` ranks them first.
         # This runs regardless of the corpus gate: the company being indexed
         # only means its ANNUAL reports are, never its event filings.
+        # `fetched_chunks` is an overwrite channel; chunks seeded before this
+        # node (user-uploaded documents) must be carried through every return
+        # that sets the key, or a same-turn fetch would silently drop them.
+        prior = state.get("fetched_chunks") or []
         extra: dict = {}
         dated = self._dated_form_request(question)
         if dated:
@@ -143,7 +147,7 @@ class FetchNodes:
                 self._log(state, f"fetched {res.get('form')} filed "
                                  f"{res.get('filing_date')} from EDGAR "
                                  f"({len(res['chunks'])} chunks)")
-                extra["fetched_chunks"] = res["chunks"]
+                extra["fetched_chunks"] = prior + res["chunks"]
 
         try:
             gate = self.fetcher.gate(company)
@@ -204,7 +208,7 @@ class FetchNodes:
                             deep = res.get("chunks", []) if res.get("ok") else []
                             if deep:
                                 extra["fetched_chunks"] = (
-                                    extra.get("fetched_chunks", []) + deep)
+                                    extra.get("fetched_chunks", prior) + deep)
                                 self._log(state, f"deepened in-memory with "
                                                  f"{len(deep)} chunks")
                     except Exception as e:
@@ -232,7 +236,7 @@ class FetchNodes:
                 self._log(state, f"fetched {len(chunks)} in-memory chunks for {gate['ticker']} "
                                  f"({res.get('form')})")
             return {
-                "fetched_chunks": extra.get("fetched_chunks", []) + chunks,
+                "fetched_chunks": extra.get("fetched_chunks", prior) + chunks,
                 "fetch_status": {**gate, "status": "fetched" if chunks else "error",
                                  "ephemeral": True, "form": res.get("form"),
                                  "chunks_fetched": len(chunks)},
@@ -327,5 +331,7 @@ class FetchNodes:
 
     @staticmethod
     def _fetched_source(c: dict) -> str:
+        if c.get("filing_type") == "uploaded":
+            return f"[{c.get('filename') or c.get('company', 'uploaded document')}]"
         return f"[{c.get('company', c.get('ticker', '?'))} filing {c.get('year', '?')}]"
 

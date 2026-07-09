@@ -361,6 +361,7 @@ def run_agentic(question: str, top_k: int = 5,
                 api_key: Optional[str] = None,
                 collection: Optional[str] = None,
                 session_id: Optional[str] = None,
+                extra_chunks: Optional[list[dict]] = None,
                 on_step: Optional[Callable[[str], None]] = None,
                 on_step_done: Optional[Callable[[str, Optional[str]], None]] = None) -> dict:
     """Synchronous v4 agentic run with optional conversation memory + per-request
@@ -372,6 +373,10 @@ def run_agentic(question: str, top_k: int = 5,
 
     `chat_history` is the last few (role, content) turns of the active chat —
     the agent uses it to resolve pronouns and follow-ups.
+
+    `extra_chunks` — pre-parsed ephemeral chunks (user-uploaded documents) that
+    seed the graph's `fetched_chunks` state: ranked in memory against the
+    question alongside retrieved passages, never written to the index.
 
     `on_step(node_name)` — optional callback invoked as each graph node STARTS
     (langgraph "tasks" stream events), so the API layer can stream live
@@ -390,7 +395,8 @@ def run_agentic(question: str, top_k: int = 5,
         "question": question,
         "iteration_count": 0, "errors": [],
         "table_results": [], "web_results": [], "xbrl_facts": [], "calc_results": [],
-        "fetch_status": {}, "edgar_results": [], "fetched_chunks": [],
+        "fetch_status": {}, "edgar_results": [],
+        "fetched_chunks": list(extra_chunks) if extra_chunks else [],
     }
     if chat_history:
         initial_state["chat_history"] = chat_history

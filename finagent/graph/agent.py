@@ -259,6 +259,10 @@ class AgenticRAGv4(FetchNodes, NumericNodes, ExternalNodes,
         # document.
         if self._dated_form_request(state["question"]):
             return "retrieval"
+        # Pre-seeded ephemeral chunks (user-uploaded documents) are only ranked
+        # inside the retrieval path, so never skip it when they're present.
+        if state.get("fetched_chunks"):
+            return "retrieval"
         routes = state.get("query_routes") or []
         has_narrative = (not routes) or any(r == "narrative" for r in routes)
         return "retrieval" if (not self.dispatch or has_narrative) else "tools"

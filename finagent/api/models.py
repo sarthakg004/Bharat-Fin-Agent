@@ -49,6 +49,19 @@ class QueryRequest(BaseModel):
         description="Recent turns for conversation memory. Used when the server "
                     "runs stateless (STATELESS=1); ignored otherwise.",
     )
+    upload_ids: Optional[list[str]] = Field(
+        default=None,
+        description="Ids returned by POST /api/upload. The referenced documents' "
+                    "chunks are ranked against this question in memory.",
+    )
+
+
+class UploadResponse(BaseModel):
+    upload_id: str
+    filename: str
+    pages: int
+    tables: int
+    chunks: int
 
 
 # --------------------------------------------------------------------------- #

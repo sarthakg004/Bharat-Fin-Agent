@@ -15,6 +15,7 @@ Endpoints
     PATCH  /api/chats/{id}           # rename
     DELETE /api/chats/{id}           # delete chat + its messages
     DELETE /api/chats                # delete all chats
+    POST   /api/upload               # parse a PDF/DOCX into ephemeral chunks
     POST   /api/query                # SSE stream — appends to a chat
 
 Streaming events on /api/query: status, sources, chart, chunk, metrics, done.
@@ -59,7 +60,7 @@ if os.getenv("FORCE_IPV4", "").strip().lower() in ("1", "true", "yes"):
 # worker thread is fragile — production (Cloud Run) is CPU anyway.
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -77,6 +78,7 @@ from finagent.api.models import (
     HealthResponse,
     QueryRequest,
     RenameChatRequest,
+    UploadResponse,
 )
 
 
@@ -255,7 +257,87 @@ _STEP_LABELS = {
 PIPELINE_ORDER = list(_STEP_LABELS.keys())
 
 
+# --------------------------------------------------------------------------- #
+# Document upload — ephemeral, per-session
+# --------------------------------------------------------------------------- #
+# Uploaded documents are parsed (Docling) into in-memory chunks and held in a
+# TTL dict keyed by upload_id; a query referencing the id rides the agent's
+# existing `fetched_chunks` lane (ranked against the question, never written
+# to the persistent index). Survives neither restarts nor scale-to-zero — the
+# client re-uploads after an idle gap, exactly like the dynamic-fetch path.
+# ponytail: in-memory, single-instance store; deploy pins --max-instances 1.
+# Swap for a GCS-backed store if multi-instance is ever needed.
+_UPLOADS: dict[str, tuple[float, dict]] = {}
+_UPLOAD_TTL_S = 3600
+_UPLOAD_MAX_ENTRIES = 20
+_UPLOAD_MAX_BYTES = 15 * 1024 * 1024
+_UPLOAD_SUFFIXES = {".pdf", ".docx"}
+
+
+def _uploads_gc() -> None:
+    now = time.time()
+    expired = [k for k, (ts, _) in _UPLOADS.items() if now - ts > _UPLOAD_TTL_S]
+    for k in expired:
+        _UPLOADS.pop(k, None)
+    while len(_UPLOADS) >= _UPLOAD_MAX_ENTRIES:     # evict oldest
+        _UPLOADS.pop(min(_UPLOADS, key=lambda k: _UPLOADS[k][0]), None)
+
+
+@app.post("/api/upload", response_model=UploadResponse)
+async def upload_document(file: UploadFile = File(...)):
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in _UPLOAD_SUFFIXES:
+        raise HTTPException(status_code=415,
+                            detail="Only PDF and DOCX files are supported.")
+    data = await file.read()
+    if len(data) > _UPLOAD_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="File exceeds the 15 MB limit.")
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty file.")
+
+    from finagent.ingestion.upload import parse_upload
+
+    # Same single-worker executor as the agent: Docling parsing is serialized
+    # behind RAG runs instead of racing them for CPU/memory.
+    loop = asyncio.get_event_loop()
+    try:
+        parsed = await loop.run_in_executor(
+            _executor, lambda: parse_upload(data, file.filename or "upload.pdf"))
+    except Exception as e:
+        print(f"[upload error] {type(e).__name__}", flush=True)
+        raise HTTPException(status_code=422,
+                            detail="Could not parse the document.") from e
+    if not parsed["ok"]:
+        raise HTTPException(status_code=422,
+                            detail="No extractable text found in the document "
+                                   "(scanned/image-only files are not supported).")
+
+    import uuid
+    _uploads_gc()
+    upload_id = uuid.uuid4().hex
+    _UPLOADS[upload_id] = (time.time(), parsed)
+    return UploadResponse(upload_id=upload_id, filename=parsed["filename"],
+                          pages=parsed["pages"], tables=parsed["tables"],
+                          chunks=len(parsed["chunks"]))
+
+
+def _resolve_uploads(upload_ids: list[str]) -> tuple[list[dict], list[str]]:
+    """(chunks, missing_ids) for the requested uploads; touches TTLs."""
+    chunks: list[dict] = []
+    missing: list[str] = []
+    for uid in upload_ids:
+        entry = _UPLOADS.get(uid)
+        if entry is None or time.time() - entry[0] > _UPLOAD_TTL_S:
+            _UPLOADS.pop(uid, None)
+            missing.append(uid)
+            continue
+        _UPLOADS[uid] = (time.time(), entry[1])     # keep alive while in use
+        chunks.extend(entry[1]["chunks"])
+    return chunks, missing
+
+
 async def _run_rag(request: QueryRequest, hist: list[dict],
+                   extra_chunks: list[dict] | None = None,
                    on_step=None, on_step_done=None) -> dict:
     loop = asyncio.get_event_loop()
     pc = request.provider_config
@@ -269,6 +351,7 @@ async def _run_rag(request: QueryRequest, hist: list[dict],
             request.question, request.top_k, None, hist,
             provider, synth_model, api_key,
             session_id=str(request.chat_id) if request.chat_id else None,
+            extra_chunks=extra_chunks,
             on_step=on_step, on_step_done=on_step_done,
         ),
     )
@@ -292,6 +375,19 @@ async def _stream_answer(request: QueryRequest) -> AsyncGenerator[str, None]:
         history.auto_title_if_default(chat_id, request.question)
         agent_history = _build_history_for_agent(chat_id)
     yield _sse({"type": "chat", "chat_id": chat_id})
+
+    # Resolve uploaded-document chunks up front so an expired upload fails the
+    # request cleanly instead of silently answering without the document.
+    upload_chunks: list[dict] = []
+    if request.upload_ids:
+        upload_chunks, missing = _resolve_uploads(request.upload_ids)
+        if missing:
+            yield _sse({"type": "error", "code": "upload_expired",
+                        "message": "The uploaded document has expired "
+                                   "(uploads are kept for 1 hour). Please "
+                                   "re-attach the file and ask again."})
+            yield _sse({"type": "done"})
+            return
 
     # Emit the first pipeline step UP FRONT so the progress bar appears the
     # instant the user submits — instead of only after the first node finishes.
@@ -331,7 +427,8 @@ async def _stream_answer(request: QueryRequest) -> AsyncGenerator[str, None]:
             )
 
     rag_task = asyncio.ensure_future(_run_rag(
-        request, agent_history, on_step=_on_step, on_step_done=_on_step_done))
+        request, agent_history, extra_chunks=upload_chunks or None,
+        on_step=_on_step, on_step_done=_on_step_done))
 
     try:
         while not (rag_task.done() and step_queue.empty()):
