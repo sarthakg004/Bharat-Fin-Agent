@@ -37,22 +37,10 @@ REFUSAL_TEMPLATE = (
     "not ground the requested figures{detail}."
 )
 
-# Explicit-abstention message (#5). When a low-confidence draft is itself a
-# hedged "the evidence doesn't cover this" answer, we replace its padded prose
-# with this crisp, citation-free abstention rather than presenting a paragraph
-# that buries the admission. Honest abstention beats a confident-looking
-# non-answer in a finance setting.
-ABSTAIN_TEMPLATE = (
-    "**Insufficient evidence to answer.** The retrieved filings and sources do "
-    "not contain the specific information this question asks for, so I can't give "
-    "a grounded answer{detail}. Rather than infer an unsupported figure, I'm "
-    "flagging this as not answerable from the available evidence."
-)
-
 # Phrases a synthesizer uses when it is *itself* conceding the evidence can't
 # answer the question — the "soft refusals" buried inside otherwise-formatted
-# answers. Detected so the low-confidence gate can promote them to an explicit
-# abstention (#5).
+# answers. Detected so the confidence blend can zero the citation component;
+# the draft is still shown (with a low-confidence caveat), never withheld.
 _SOFT_REFUSAL_RE = re.compile(
     r"\b(?:"
     r"not enough info(?:rmation)?|insufficient (?:info|information|evidence|data)|"
@@ -495,21 +483,6 @@ class VerificationNodes:
         ans = state.get("draft_answer", "") or state.get("final_answer", "") or ""
         if "_Confidence:" in ans:                      # idempotent on a re-entry
             return {"status": "answered_low_confidence"}
-
-        # Explicit-abstention promotion (#5): a low-band draft that is ALREADY
-        # conceding it can't answer (a "soft refusal") is presented as a clean,
-        # citation-free abstention rather than a padded paragraph that buries the
-        # admission. Only the leading prose is checked (the synthesizer's caveats
-        # often appear in the first sentences); a draft carrying real cited
-        # figures alongside a hedge is left as a low-confidence answer.
-        if self.abstain_on_insufficient and _SOFT_REFUSAL_RE.search(ans[:600]):
-            detail = ""
-            return {
-                "final_answer": ABSTAIN_TEMPLATE.format(detail=detail),
-                "refused": True,
-                "needs_retry": False,
-                "status": "insufficient_evidence",
-            }
 
         conf = state.get("confidence")
         pct = f"{conf:.0%}" if isinstance(conf, (int, float)) else "low"

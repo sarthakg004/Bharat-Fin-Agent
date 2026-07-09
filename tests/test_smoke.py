@@ -578,6 +578,35 @@ def test_explicit_abstention_detection():
     assert not _is_refusal("Revenue was $394.3 billion [1].")
 
 
+def test_count_rows_tolerates_partial_shards(tmp_path):
+    """The orchestrator's progress poll counts rows across shard files and
+    skips one that is mid-rewrite (unparseable) or missing."""
+    from finagent.evaluation.financebench.parallel import _count_rows
+
+    good = tmp_path / "shard0_outputs.json"
+    good.write_text('[{"a": 1}, {"a": 2}]')
+    torn = tmp_path / "shard1_outputs.json"
+    torn.write_text('[{"a": 1}, {"a"')          # mid-write
+    missing = tmp_path / "shard2_outputs.json"  # never created
+    assert _count_rows([good, torn, missing]) == 2
+
+
+def test_low_confidence_never_abstains():
+    """The low-confidence band always returns the draft with a caveat — even a
+    soft-refusal draft is shown, never replaced by an abstention template."""
+    from finagent.graph.nodes.verification import VerificationNodes
+
+    node = object.__new__(VerificationNodes)
+    state = {"draft_answer": "The filings do not disclose this figure, but "
+                             "segment revenue was $1.2 billion [1].",
+             "confidence": 0.35}
+    out = VerificationNodes.withhold_low_confidence_node(node, state)
+    assert out["refused"] is False
+    assert out["status"] == "answered_low_confidence"
+    assert out["final_answer"].startswith(state["draft_answer"])
+    assert "Confidence: 35%" in out["final_answer"]
+
+
 def test_turnover_ratio_averages_denominator():
     """Flow÷stock ratios average the balance-sheet denominator over (t-1, t);
     the numerator stays single-period. Stubs XBRL so no network is needed."""

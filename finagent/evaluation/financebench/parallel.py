@@ -40,6 +40,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Optional, Union
 
@@ -49,9 +50,9 @@ DEFAULT_METRICS_MD = "results/final_metrics.md"
 
 # The agent's explicit refusal opener (see graph.agent.REFUSAL_TEMPLATE).
 _REFUSAL_PREFIX = "I don't have enough information to answer this"
-# The explicit-abstention opener (graph.agent.ABSTAIN_TEMPLATE) — a low-band
-# soft-refusal promoted to a clean abstention (#5). Counts as "not answered"
-# alongside hard refusals.
+# The explicit-abstention opener emitted by agent versions up to v4 (the
+# abstention path was removed in v5 — low-band drafts are now always shown
+# with a caveat). Kept so older result files still summarize correctly.
 _ABSTAIN_PREFIX = "**Insufficient evidence to answer.**"
 
 
@@ -65,6 +66,24 @@ def _is_refusal(answer: str) -> bool:
 # --------------------------------------------------------------------------- #
 # Orchestrator
 # --------------------------------------------------------------------------- #
+
+def _log(msg: str) -> None:
+    """Status line that plays nicely with a live tqdm bar."""
+    from tqdm import tqdm
+    tqdm.write(f"[parallel] {msg}")
+
+
+def _count_rows(paths: list[Path]) -> int:
+    """Total rows across shard output files. A shard being rewritten mid-read
+    just fails to parse and is skipped — the next poll picks it up."""
+    total = 0
+    for p in paths:
+        try:
+            total += len(json.loads(Path(p).read_text()))
+        except Exception:
+            pass
+    return total
+
 
 def _worker_env(keys: list[str], worker_idx: int) -> dict:
     """Environment for one worker: the full key pool, rotated so worker i
@@ -82,6 +101,8 @@ def _worker_env(keys: list[str], worker_idx: int) -> dict:
     # Read-only corpus: fetched filings stay in-memory per question.
     env["PERSIST_DYNAMIC_FETCH"] = "false"
     env["TOKENIZERS_PARALLELISM"] = "false"
+    # Workers stay quiet: the orchestrator draws the single progress bar.
+    env["FINAGENT_EVAL_QUIET"] = "1"
     return env
 
 
@@ -120,7 +141,7 @@ def run_parallel(
     if not keys:
         raise RuntimeError(f"No {provider} API keys configured in .env")
     workers = workers or _default_workers(len(keys))
-    print(f"[parallel] using {workers} worker(s)")
+    _log(f"using {workers} worker(s)")
 
     output_path = Path(output_path)
     # Shards live next to the run's output (e.g. results/v2/shards/), so each
@@ -140,7 +161,7 @@ def run_parallel(
                 if not row.get("error"):     # errored rows are retried
                     done.setdefault(row.get("financebench_id", row.get("question")), row)
     if done:
-        print(f"[parallel] resuming: {len(done)} answers carried over")
+        _log(f"resuming: {len(done)} answers carried over")
 
     # Round-robin shard so slow question types spread evenly across workers.
     rows = questions.reset_index(drop=True)
@@ -165,19 +186,31 @@ def run_parallel(
         if synth_model:
             cmd += ["--synth-model", synth_model]
         procs.append(subprocess.Popen(cmd, env=_worker_env(keys, w)))
-        print(f"[parallel] worker {w}: {len(shard)} questions → {shard_out}")
+        _log(f"worker {w}: {len(shard)} questions → {shard_out}")
+
+    # One progress bar for the whole run: the workers write each answered row
+    # to their shard file immediately, so polling the shard row counts tracks
+    # progress without any child↔parent plumbing.
+    from tqdm import tqdm
+    with tqdm(total=len(rows), initial=len(done), desc="questions",
+              unit="q") as bar:
+        while any(p.poll() is None for p in procs):
+            bar.n = min(len(rows), _count_rows(shard_outs))
+            bar.refresh()
+            time.sleep(3)
+        bar.n = min(len(rows), _count_rows(shard_outs))
+        bar.refresh()
 
     failures = 0
     for w, p in enumerate(procs):
-        rc = p.wait()
-        if rc != 0:
+        if p.returncode != 0:
             failures += 1
-            print(f"[parallel] worker {w} exited with {rc} (its shard file "
-                  f"keeps whatever it completed; re-run to resume)")
+            _log(f"worker {w} exited with {p.returncode} (its shard file "
+                 f"keeps whatever it completed; re-run to resume)")
     merged = merge_shards(shard_outs, output_path)
     if failures:
-        print(f"[parallel] {failures} worker(s) failed — merged what completed; "
-              f"re-run the same command to resume the gaps.")
+        _log(f"{failures} worker(s) failed — merged what completed; "
+             f"re-run the same command to resume the gaps.")
     else:
         # Clean run → the merged output is the source of truth; drop the
         # per-shard intermediates so the results dir stays tidy. On a partial
@@ -199,7 +232,7 @@ def merge_shards(shard_outs: list[Path], output_path: Union[str, Path]) -> list[
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(out, indent=2))
-    print(f"[parallel] merged {len(out)} answers → {output_path}")
+    _log(f"merged {len(out)} answers → {output_path}")
     return out
 
 
@@ -366,7 +399,7 @@ def final_report(
         lines.append(f"| {qt} | {b['questions']} | {b['answered']} | "
                      f"{b['refused']} | {b['errors']} |")
     Path(metrics_md).write_text("\n".join(lines) + "\n")
-    print(f"[parallel] final metrics → {metrics_json} / {metrics_md}")
+    _log(f"final metrics → {metrics_json} / {metrics_md}")
     return report
 
 

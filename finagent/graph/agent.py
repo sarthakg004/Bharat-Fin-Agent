@@ -82,13 +82,6 @@ class AgenticRAGv4(FetchNodes, NumericNodes, ExternalNodes,
         confidence_answer: float = 0.80,
         confidence_warn: float = 0.60,
         active_critic: bool = True,
-        # Explicit-abstention path (#5). When a draft that landed in the LOW band
-        # is itself a hedged "the evidence doesn't cover this" answer, replace its
-        # padded prose with a crisp, citation-free abstention (status
-        # "insufficient_evidence") instead of presenting an answer-shaped
-        # non-answer. Set False to keep the prior behaviour (show the hedged draft
-        # with a low-confidence caveat).
-        abstain_on_insufficient: bool = True,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -131,7 +124,6 @@ class AgenticRAGv4(FetchNodes, NumericNodes, ExternalNodes,
         # existing critic_iterations cap. Set False to A/B against the prior
         # "critic always proceeds to verify" behaviour.
         self.active_critic = active_critic
-        self.abstain_on_insufficient = abstain_on_insufficient
         self.verifier_model = verifier_model or self.critic_model
         self.min_verify_score = min_verify_score
         self._web: Optional[WebSearcher] = None
