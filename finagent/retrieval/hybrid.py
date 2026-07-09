@@ -14,7 +14,6 @@ from __future__ import annotations
 import re
 from typing import Optional
 
-from finagent.retrieval.base import BaseRetriever
 from finagent.retrieval.reranker import _get_shared_reranker
 
 # BM25 tokenizer: lowercase alphanumeric tokens. A bare whitespace split left
@@ -24,7 +23,7 @@ from finagent.retrieval.reranker import _get_shared_reranker
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 
 
-class HybridRetriever(BaseRetriever):
+class HybridRetriever:
     """Fuse BM25 and dense retrieval, then rerank with a cross-encoder.
 
     Builds the BM25 index lazily over every chunk in the Chroma collection

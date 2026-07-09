@@ -1,6 +1,9 @@
 """
 table_embed.py  ·  finagent/ingestion/table_embed.py
 
+Offline, run-once CLI (not on the serve path): it built the `tables` Chroma
+collection consumed at runtime by `graph/table_agent.py`.
+
 Build a second Chroma collection (`tables`) keyed on extracted-table titles +
 first/last row + columns, so a question like "Reliance balance sheet 2023"
 retrieves the actual balance-sheet table rather than narrative chunks.
@@ -148,17 +151,13 @@ class TableEmbedder:
 
     def _get_store(self):
         from langchain_chroma import Chroma
-        from langchain_huggingface import HuggingFaceEmbeddings
 
         from finagent.chroma_client import chroma_kwargs_for_langchain
+        from finagent.vectorstore import get_embeddings
 
-        emb = HuggingFaceEmbeddings(
-            model_name=self.embedding_model,
-            encode_kwargs={"normalize_embeddings": True},
-        )
         return Chroma(
             collection_name=self.collection_name,
-            embedding_function=emb,
+            embedding_function=get_embeddings(self.embedding_model),
             **chroma_kwargs_for_langchain(self.chroma_dir),
         )
 

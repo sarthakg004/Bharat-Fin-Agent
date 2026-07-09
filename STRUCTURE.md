@@ -24,13 +24,12 @@ Strictly downward — a module may import from those above it, never below:
 ```
 config.py        ← imported by everything; imports nothing from finagent
 llm.py           ← config
-corpus/          ← config, (low-level) chroma_client, vectorstore
-ingestion/       ← config, corpus
-retrieval/       ← config, corpus, llm
+ingestion/       ← config, (low-level) chroma_client, vectorstore
+retrieval/       ← config, llm
 tools/           ← config, llm, retrieval (some tools)
 prompts/         ← re-exports prompt strings from graph/ (see note)
-graph/           ← config, llm, retrieval, tools, corpus
-api/             ← config, graph
+graph/           ← config, llm, retrieval, tools
+api/             ← config, graph, ingestion (upload parsing only)
 evaluation/      ← config, retrieval, graph
 ```
 
@@ -47,20 +46,20 @@ deliberate exception — it stays dynamic in `llm.py`.
 resolves keys, and provides `RotatingChatModel` (swaps keys on rate-limit). Kept
 at this path; imports only config-level concerns.
 
-**`corpus/`** — Read/inspect views over the Chroma vector store. `ChromaClient`
-(typed handle: counts, stores, paged fetch), `stats` (corpus summary, per-company
-counts), `inspect` (sample a stored chunk). Wraps the low-level `chroma_client.py`
-/ `vectorstore.py` helpers, which remain the single source of "where Chroma lives".
+**`ingestion/`** — The parse → chunk → embed → store pipeline.
+`pipeline.ingest_corpus` / `CorpusIngester` (pypdf for PDFs, unstructured for
+SEC HTML) write the corpus into Chroma via the low-level `chroma_client.py` /
+`vectorstore.py` helpers — the single source of "where Chroma lives".
+`upload.parse_upload` (Docling) parses user-uploaded documents into ephemeral
+in-memory chunks for the API. `table_ingest.py` / `table_embed.py` are offline
+run-once CLIs that built the `tables` collection consumed by
+`graph/table_agent.py`; they are not on the serve path.
 
-**`ingestion/`** — The parse → chunk → embed → store pipeline. `parse_document`
-(unstructured), `chunk_text` (production splitter config), `embed_text` (BGE),
-and `pipeline.ingest_corpus` / `CorpusIngester` orchestrating them into Chroma.
-
-**`retrieval/`** — The retrieval stack behind a `BaseRetriever` ABC:
-`HybridRetriever` (BM25 ∪ dense + cross-encoder rerank — the one the agent uses),
-standalone `BM25Retriever` / `DenseRetriever`, and `CrossEncoderReranker`.
-`HybridRetriever` was moved here from `graph/corrective.py`; that path keeps a
-re-export shim.
+**`retrieval/`** — `HybridRetriever` (BM25 ∪ dense + cross-encoder rerank — the
+retriever the agent uses) plus the shared cross-encoder loader
+(`reranker._get_shared_reranker`) and company/year metadata filters
+(`filters.py`). `HybridRetriever` was moved here from `graph/corrective.py`;
+that path keeps a re-export shim.
 
 **`tools/`** — Agent tools behind a `BaseTool` ABC + `ToolRegistry`. Live today:
 `market` (yfinance) and `web_search` (Tavily), moved here from `graph/` with

@@ -256,24 +256,7 @@ class CorpusIngester:
         Returns:
             Number of chunks added to Chroma.
         """
-        from langchain_core.documents import Document
-
-        # Metadata fields shared by all sources. Some are empty depending on
-        # the source (e.g. ticker is only meaningful for SEC filings).
-        base_meta = {
-            "market": self.market,
-            "source_url": record.get("source_url", ""),
-            "local_path": str(file_path),
-            "company": record.get("company", record.get("ticker", "")),
-            "ticker": record.get(
-                "ticker", record.get("nse_symbol", "")
-            ),
-            "year": str(record.get("year", "")),
-            "sector": record.get("sector", ""),
-            "filing_type": record.get("filing_type", "annual_report"),
-        }
-
-        docs = self._documents_for(file_path, base_meta)
+        docs = self._documents_for(file_path, self._base_meta(record, file_path))
         if not docs:
             return 0
 
@@ -282,6 +265,20 @@ class CorpusIngester:
         store.add_documents(docs)
 
         return len(docs)
+
+    def _base_meta(self, record: dict, file_path: Path) -> dict:
+        """Metadata fields shared by all sources. Some are empty depending on
+        the source (e.g. ticker is only meaningful for SEC filings)."""
+        return {
+            "market": self.market,
+            "source_url": record.get("source_url", ""),
+            "local_path": str(file_path),
+            "company": record.get("company", record.get("ticker", "")),
+            "ticker": record.get("ticker", record.get("nse_symbol", "")),
+            "year": str(record.get("year", "")),
+            "sector": record.get("sector", ""),
+            "filing_type": record.get("filing_type", "annual_report"),
+        }
 
     def _documents_for(self, file_path: Path, base_meta: dict) -> list:
         """Parse + chunk one file into LangChain Documents (no embedding / no
@@ -314,17 +311,7 @@ class CorpusIngester:
         file_path = Path(record["local_path"])
         if not file_path.exists():
             return []
-        base_meta = {
-            "market": self.market,
-            "source_url": record.get("source_url", ""),
-            "local_path": str(file_path),
-            "company": record.get("company", record.get("ticker", "")),
-            "ticker": record.get("ticker", record.get("nse_symbol", "")),
-            "year": str(record.get("year", "")),
-            "sector": record.get("sector", ""),
-            "filing_type": record.get("filing_type", "annual_report"),
-        }
-        return self._documents_for(file_path, base_meta)
+        return self._documents_for(file_path, self._base_meta(record, file_path))
 
     # ------------------------------------------------------------------ #
     # HTML (US SEC filings) — structure-aware extraction

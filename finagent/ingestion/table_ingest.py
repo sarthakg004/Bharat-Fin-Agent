@@ -1,6 +1,10 @@
 """
 table_ingest.py  ·  finagent/ingestion/table_ingest.py
 
+Offline, run-once CLI (not on the serve path): it built the `tables` Chroma
+collection consumed at runtime by `graph/table_agent.py`. Re-run only to
+rebuild that collection from scratch.
+
 Extract tables from financial filings (PDFs + 10-K HTML), persist each as a
 parquet DataFrame, and write a master `data/tables/index.json` so the next
 stage (`table_embed.py`) can build the `tables` Chroma collection.
@@ -297,10 +301,10 @@ class TableExtractor:
             # at ingestion only (one-off, free tier), so the strong model is
             # cost-neutral on the cloud serve path.
             model = self.title_model or {
-                "groq": "qwen/qwen3.6-27b",
+                "groq": "qwen/qwen3-32b",
                 "gemini": "gemini-2.5-flash",
                 "openai": "gpt-4o",
-                "anthropic": "claude-sonnet-4-6",
+                "anthropic": "claude-sonnet-5",
             }[self.provider]
             self._llm = build_llm(self.provider, model, self.api_key, temperature=0.0)
         return self._llm

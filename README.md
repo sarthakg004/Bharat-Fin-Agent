@@ -104,7 +104,6 @@ finagent/
   ingestion/     corpus builders (PDF parse, chunk, embed)
   evaluation/    FinanceBench + RAGAS harness (incl. parallel multi-key runner)
 frontend/        React + TypeScript + Vite + Tailwind SPA
-notebooks/       experimentation.ipynb (system reference notebook)
 ```
 
 ---
