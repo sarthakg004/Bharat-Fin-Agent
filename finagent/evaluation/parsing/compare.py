@@ -31,18 +31,23 @@ GOLD_PATH = Path("results/financebench_gold.json")
 OUT_JSON = Path("results/parsing_eval.json")
 OUT_MD = Path("results/parsing_eval.md")
 
-_WS = re.compile(r"\s+")
+# Normalization strips ALL punctuation, not just whitespace: parsers disagree
+# on formatting, not content — Docling renders tables as markdown (`|`-separated
+# cells) while the gold passages carry the raw whitespace-joined table text, and
+# a whitespace-only norm scored that formatting difference as missing content
+# (0.0 recall on balance-sheet evidence that was fully present).
+_NON_ALNUM = re.compile(r"[^a-z0-9]+")
 SHINGLE_WORDS = 10
 
 
 def _normalize(text: str) -> str:
-    return _WS.sub(" ", text.lower()).strip()
+    return _NON_ALNUM.sub(" ", text.lower()).strip()
 
 
 def shingle_recall(gold: str, parsed: str, n: int = SHINGLE_WORDS) -> float:
-    """Fraction of `gold`'s n-word shingles present verbatim in `parsed`
-    (whitespace/case-insensitive). 1.0 when gold is shorter than one shingle
-    and fully contained."""
+    """Fraction of `gold`'s n-word shingles present in `parsed`, compared on
+    alphanumeric content only (case/whitespace/punctuation-insensitive). 1.0
+    when gold is shorter than one shingle and fully contained."""
     gold_n, parsed_n = _normalize(gold), _normalize(parsed)
     words = gold_n.split()
     if len(words) < n:

@@ -1,0 +1,99 @@
+{
+  "sample_docs": 3,
+  "shingle_words": 10,
+  "summary": {
+    "pypdf": {
+      "docs": 3,
+      "evidence_recall": 1.0,
+      "chars_per_page": 3506.3333,
+      "page_coverage": 0.9982,
+      "parse_s": 14.0433,
+      "n_chunks": 1031,
+      "mean_chars": 736.4333
+    },
+    "docling": {
+      "docs": 3,
+      "evidence_recall": 0.9244,
+      "chars_per_page": 4732.4333,
+      "page_coverage": 0.9982,
+      "parse_s": 88.84,
+      "n_chunks": 1344.6667,
+      "mean_chars": 716.0,
+      "tables_per_doc": 119.3
+    }
+  },
+  "per_doc": [
+    {
+      "doc": "3M_2022_10K",
+      "gold_passages": 5,
+      "pypdf": {
+        "evidence_recall": 1.0,
+        "chars_per_page": 3709.4,
+        "page_coverage": 1.0,
+        "tables": null,
+        "parse_s": 24.96,
+        "n_chunks": 1193,
+        "mean_chars": 938.1,
+        "p50_chars": 951
+      },
+      "docling": {
+        "evidence_recall": 0.9023,
+        "chars_per_page": 4889.5,
+        "page_coverage": 1.0,
+        "tables": 112,
+        "parse_s": 100.57,
+        "n_chunks": 1816,
+        "mean_chars": 696.7,
+        "p50_chars": 765.0
+      }
+    },
+    {
+      "doc": "MGMRESORTS_2018_10K",
+      "gold_passages": 1,
+      "pypdf": {
+        "evidence_recall": 1.0,
+        "chars_per_page": 3678.6,
+        "page_coverage": 0.9947,
+        "tables": null,
+        "parse_s": 10.46,
+        "n_chunks": 1121,
+        "mean_chars": 659.8,
+        "p50_chars": 767
+      },
+      "docling": {
+        "evidence_recall": 0.8929,
+        "chars_per_page": 4744.6,
+        "page_coverage": 0.9947,
+        "tables": 112,
+        "parse_s": 88.15,
+        "n_chunks": 1293,
+        "mean_chars": 722.3,
+        "p50_chars": 814
+      }
+    },
+    {
+      "doc": "GENERALMILLS_2019_10K",
+      "gold_passages": 2,
+      "pypdf": {
+        "evidence_recall": 1.0,
+        "chars_per_page": 3131.0,
+        "page_coverage": 1.0,
+        "tables": null,
+        "parse_s": 6.71,
+        "n_chunks": 779,
+        "mean_chars": 611.4,
+        "p50_chars": 740
+      },
+      "docling": {
+        "evidence_recall": 0.978,
+        "chars_per_page": 4563.2,
+        "page_coverage": 1.0,
+        "tables": 134,
+        "parse_s": 77.8,
+        "n_chunks": 925,
+        "mean_chars": 729.0,
+        "p50_chars": 813
+      }
+    }
+  ]
+}

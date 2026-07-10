@@ -102,7 +102,9 @@ def _worker_env(keys: list[str], worker_idx: int) -> dict:
     env["PERSIST_DYNAMIC_FETCH"] = "false"
     env["TOKENIZERS_PARALLELISM"] = "false"
     # Workers stay quiet: the orchestrator draws the single progress bar.
+    # (The HF flag also silences transformers' "Loading weights" bars.)
     env["FINAGENT_EVAL_QUIET"] = "1"
+    env["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
     return env
 
 
