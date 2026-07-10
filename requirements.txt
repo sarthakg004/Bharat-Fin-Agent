@@ -13,6 +13,7 @@
 # ── HTTP API ─────────────────────────────────────────────────────────────────
 fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9         # FastAPI UploadFile (POST /api/upload)
 
 # ── Core ─────────────────────────────────────────────────────────────────────
 pydantic>=2.0.0
@@ -40,6 +41,10 @@ rank-bm25                       # BM25 lexical half of hybrid retrieval
 
 # ── Embeddings + rerank ──────────────────────────────────────────────────────
 sentence-transformers>=3.0.0    # bge-small embeddings + bge-reranker
+
+# ── Document upload parsing ──────────────────────────────────────────────────
+docling>=2.0                    # user uploads: PDF/DOCX → text + tables (no OCR)
+langchain-text-splitters>=0.3   # chunking for uploads (was transitive-only)
 
 # ── Tools (live data, web, bilingual) ────────────────────────────────────────
 yfinance>=0.2.40                # market data + charts

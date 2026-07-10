@@ -25,6 +25,10 @@ live agent progress and the source chunks shown alongside.
 - **Self-expanding corpus** — a company missing from the index gets its 10-K
   fetched from EDGAR on the fly (in-memory on Cloud Run, ingested locally),
   walking back enough filings to cover the fiscal year asked about.
+- **Bring your own documents** — attach a PDF/DOCX in the chat; it's parsed
+  with **Docling** (layout-aware, tables preserved as markdown, no OCR — so
+  scanned/image-only files won't work), ranked against your question alongside
+  the corpus, and kept in memory for ~1 hour only (never indexed server-side).
 - **Cross-document search** — "which companies disclosed X" runs EDGAR
   full-text search across all filers.
 - **Live market data + charts** — price / return / market-cap questions hit
@@ -180,6 +184,21 @@ exhausted the run stops with a clear `LIMIT EXHAUSTED` message — re-running
 the same command resumes where it stopped (the RAGAS scorer is also
 resumable: already-scored rows are skipped on the next run). The UI surfaces
 the same condition as "Limit exhausted" within seconds instead of hanging.
+
+### Parsing evaluation (upload pipeline)
+
+The document-upload parser (Docling) is benchmarked against the production
+pypdf baseline on FinanceBench PDFs, using the human-annotated gold evidence
+passages as free ground truth:
+
+```bash
+python -m finagent.evaluation.parsing.compare --sample 10
+```
+
+→ `results/parsing_eval.{json,md}`: **evidence recall** (fraction of each gold
+passage's 10-word shingles found verbatim in the parsed text — judge-free
+fidelity), extraction yield (chars/page), page coverage, chunk-size stats under
+the production splitter, tables detected, and parse time per document.
 
 ### Why not a "true" multi-agent system?
 

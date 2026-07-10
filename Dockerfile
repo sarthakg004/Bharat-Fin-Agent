@@ -54,6 +54,13 @@ RUN python -c "from sentence_transformers import SentenceTransformer, CrossEncod
 SentenceTransformer('BAAI/bge-small-en-v1.5'); \
 CrossEncoder('BAAI/bge-reranker-base')"
 
+# Bake the Docling models (layout + TableFormer only, ~500 MB — no OCR, no
+# code/picture classifiers) so the upload parser loads offline at runtime.
+RUN python -c "from pathlib import Path; \
+from docling.utils.model_downloader import download_models; \
+download_models(output_dir=Path('/app/.docling'), with_code_formula=False, \
+with_picture_classifier=False, with_rapidocr=False)"
+
 
 # -----------------------------------------------------------------------------
 # Stage 3 — slim runtime (no compilers, no pip caches)
@@ -75,7 +82,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     # Hub network call (faster + robust if HF is down/rate-limits).
     HF_HUB_OFFLINE=1 \
     TRANSFORMERS_OFFLINE=1 \
-    HF_HUB_DISABLE_TELEMETRY=1
+    HF_HUB_DISABLE_TELEMETRY=1 \
+    # Docling loads the baked layout/table models from here (no network).
+    DOCLING_ARTIFACTS_PATH=/app/.docling
 
 # Runtime-only system libs (no build-essential): libgomp1 for torch/onnx,
 # ca-certificates for outbound HTTPS (Groq/Tavily), curl for debugging.
@@ -85,9 +94,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# The finished Python environment + model cache from the builder.
-COPY --from=builder /opt/venv /opt/venv
-COPY --from=builder /app/.hf  /app/.hf
+# The finished Python environment + model caches from the builder.
+COPY --from=builder /opt/venv     /opt/venv
+COPY --from=builder /app/.hf      /app/.hf
+COPY --from=builder /app/.docling /app/.docling
 
 # App code + built SPA + the prebuilt Chroma store (read at $CHROMA_DIR).
 COPY finagent/      ./finagent/

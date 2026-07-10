@@ -95,6 +95,9 @@ jobs:
       # keys + ALLOWED_ORIGINS already configured on the service.
       - name: Deploy backend to Cloud Run
         run: |
+          # --max-instances 1: uploaded documents live in one instance's memory
+          # (see /api/upload); a second instance would randomly miss them. Also
+          # caps the worst-case bill. Scale-to-zero still applies.
           gcloud run deploy "${SERVICE}" \
             --source . \
             --project "${PROJECT_ID}" \
@@ -102,6 +105,7 @@ jobs:
             --memory 8Gi \
             --cpu 2 \
             --cpu-boost \
+            --max-instances 1 \
             --quiet
 
       - name: Set up Node
