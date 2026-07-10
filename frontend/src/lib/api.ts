@@ -16,7 +16,9 @@ export interface Chunk {
   source_url?: string;
   citation: string;
   sub_query?: string;
-  kind?: "text" | "web" | "table" | "market" | "xbrl" | "calc" | "edgar";
+  kind?: "text" | "web" | "table" | "market" | "xbrl" | "calc" | "edgar" | "uploaded";
+  /** Set when kind === "uploaded" — the originating file. */
+  filename?: string;
 }
 
 export interface QueryMetadata {
@@ -106,6 +108,23 @@ export interface QueryRequest {
   upload_ids?: string[];
 }
 
+// --------------------------------------------------------------------------- //
+// Deep Research
+// --------------------------------------------------------------------------- //
+
+export interface ResearchRequest {
+  question: string;
+  provider_config?: ProviderConfig;
+  chat_history?: ChatTurn[];
+  max_agents?: number;
+}
+
+/** One planned research task (a specialist agent, or the final thesis step). */
+export interface ResearchPlanTask {
+  id: string;
+  label: string;
+}
+
 export interface UploadResponse {
   upload_id: string;
   filename: string;
@@ -123,6 +142,9 @@ export type SSEEvent =
   | { type: "chat"; chat_id: number }
   | { type: "status"; stage: string; label: string; index?: number; total?: number }
   | { type: "step_done"; stage: string; detail?: string | null }
+  | { type: "research_plan"; company?: string; ticker?: string; objective?: string; tasks: ResearchPlanTask[] }
+  | { type: "agent_start"; id: string }
+  | { type: "agent_done"; id: string; status: "done" | "failed"; detail?: string; summary?: string; confidence?: number | null }
   | { type: "sources"; chunks: Chunk[]; metadata: QueryMetadata }
   | { type: "chart"; chart: ChartSpec }
   | { type: "chunk"; content: string }
@@ -168,8 +190,17 @@ export async function uploadFile(file: File): Promise<UploadResponse> {
  * Stream a POST /api/query response as Server-Sent Events.
  * We do the parsing manually because `EventSource` is GET-only.
  */
-export async function streamQuery(req: QueryRequest, handlers: StreamHandlers): Promise<void> {
-  const res = await fetch(`${BASE}/api/query`, {
+export function streamQuery(req: QueryRequest, handlers: StreamHandlers): Promise<void> {
+  return streamSSE("/api/query", req, handlers);
+}
+
+/** Stream a Deep Research run (POST /api/research) — same SSE framing. */
+export function streamResearch(req: ResearchRequest, handlers: StreamHandlers): Promise<void> {
+  return streamSSE("/api/research", req, handlers);
+}
+
+async function streamSSE(path: string, req: unknown, handlers: StreamHandlers): Promise<void> {
+  const res = await fetch(`${BASE}${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
     body: JSON.stringify(req),

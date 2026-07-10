@@ -6,6 +6,7 @@ import type { QueryMetadata } from "@/lib/api";
 import type { ChatMessage } from "@/store/chatStore";
 import { MarkdownAnswer } from "@/lib/markdown";
 import { ChartView } from "@/components/ChartView";
+import { ExportReportButton, ResearchTimeline } from "@/components/ResearchTimeline";
 
 interface BubbleProps {
   msg: ChatMessage;
@@ -44,15 +45,16 @@ function AssistantBubble({ msg, onRetry }: BubbleProps) {
       className="flex flex-col gap-2"
     >
       <ThinkingTrace msg={msg} />
+      <ResearchTimeline msg={msg} />
 
       {msg.error ? (
         <div className="border border-err bg-err-dim px-4 py-3 font-mono text-[12px] text-err">
           {msg.error}
         </div>
       ) : showStatus && !msg.content ? (
-        // Skeleton only until the first agent step arrives — after that the
-        // one-line ThinkingTrace is the sole loading signal.
-        !msg.steps?.length ? <AnswerSkeleton /> : null
+        // Skeleton only until the first agent step / research plan arrives —
+        // after that the trace or research timeline is the loading signal.
+        !msg.steps?.length && !msg.research ? <AnswerSkeleton /> : null
       ) : (
         // The MarkdownAnswer handles headings / bullets / tables / inline
         // citation chips (`[N]` and `[N, M]`) end-to-end. The streaming
@@ -74,6 +76,8 @@ function AssistantBubble({ msg, onRetry }: BubbleProps) {
       ))}
 
       {!msg.streaming && msg.metadata && <MetadataFooter msg={msg} />}
+
+      <ExportReportButton msg={msg} />
 
       {/* Retry — re-runs the last question (shown on the latest answer). */}
       {!msg.streaming && onRetry && (

@@ -4,7 +4,7 @@ import toast from "react-hot-toast";
 import type { ChatTurn, SSEEvent } from "@/lib/api";
 import { useChatStore } from "@/store/chatStore";
 import { useThreadStore } from "@/store/threadStore";
-import { currentProviderConfig } from "@/store/settingsStore";
+import { currentProviderConfig, useSettingsStore } from "@/store/settingsStore";
 import { useSSE } from "./useSSE";
 
 const MEMORY_TURNS = 6;   // how many prior turns to send as conversation memory
@@ -22,6 +22,7 @@ export function useRAGQuery() {
   const {
     appendMessage, patchMessage, appendChunkToMessage,
     appendStepToMessage, markStepDone, appendChartToMessage, setStreaming,
+    setResearchPlan, patchResearchTask,
   } = useChatStore();
 
   // Build chat_history from the messages BEFORE index `upto`.
@@ -34,18 +35,37 @@ export function useRAGQuery() {
   }, []);
 
   const runStream = useCallback(
-    async (question: string, assistantId: string, history: ChatTurn[]) => {
+    async (question: string, assistantId: string, history: ChatTurn[],
+           mode: "chat" | "research" = "chat") => {
       setStreaming(assistantId);
       const startedAt = Date.now();
       let firstChunk = true;
       const uploadIds = useChatStore.getState().uploads.map((u) => u.id);
+      const request = mode === "research"
+        ? { question, chat_history: history, provider_config: currentProviderConfig() }
+        : { question, top_k: 5, chat_history: history,
+            provider_config: currentProviderConfig(),
+            upload_ids: uploadIds.length ? uploadIds : undefined };
       try {
         await send(
-          { question, top_k: 5, chat_history: history,
-            provider_config: currentProviderConfig(),
-            upload_ids: uploadIds.length ? uploadIds : undefined },
+          request,
           (e: SSEEvent) => {
             switch (e.type) {
+              case "research_plan":
+                setResearchPlan(assistantId, {
+                  company: e.company, objective: e.objective,
+                  tasks: e.tasks.map((t) => ({ ...t, status: "pending" as const })),
+                });
+                break;
+              case "agent_start":
+                patchResearchTask(assistantId, e.id, { status: "running" });
+                break;
+              case "agent_done":
+                patchResearchTask(assistantId, e.id, {
+                  status: e.status, detail: e.detail,
+                  summary: e.summary, confidence: e.confidence,
+                });
+                break;
               case "status":
                 appendStepToMessage(assistantId, {
                   stage: e.stage, label: e.label, index: e.index, total: e.total,
@@ -81,6 +101,12 @@ export function useRAGQuery() {
                 });
                 break;
               case "error":
+                if (e.code === "upload_expired") {
+                  // Server-side uploads expired (TTL/restart) — drop the stale
+                  // chips so the user can re-attach cleanly.
+                  useChatStore.setState({ uploads: [] });
+                  useThreadStore.getState().saveActive();
+                }
                 if (e.code === "rate_limit") {
                   // Daily limit hit on all keys — show it as a calm message in
                   // the thread, not a red error.
@@ -101,6 +127,7 @@ export function useRAGQuery() {
                 break;
             }
           },
+          mode,
         );
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -109,7 +136,8 @@ export function useRAGQuery() {
         toast.error(msg);
       }
     },
-    [send, patchMessage, appendChunkToMessage, appendStepToMessage, markStepDone, appendChartToMessage, setStreaming],
+    [send, patchMessage, appendChunkToMessage, appendStepToMessage, markStepDone,
+     appendChartToMessage, setStreaming, setResearchPlan, patchResearchTask],
   );
 
   const ask = useCallback(
@@ -120,12 +148,15 @@ export function useRAGQuery() {
       const threads = useThreadStore.getState();
       if (!threads.activeId) threads.createChat("New chat");
 
+      // The mode toggle (Chat / Deep Research) decides which pipeline runs.
+      const mode = useSettingsStore.getState().mode;
+
       const history = historyBefore(useChatStore.getState().messages.length);
       appendMessage({ role: "user", content: question });
       const assistantId = appendMessage({ role: "assistant", content: "", streaming: true, startedAt: Date.now() });
       useThreadStore.getState().saveActive();   // capture the user turn immediately
 
-      await runStream(question, assistantId, history);
+      await runStream(question, assistantId, history, mode);
     },
     [appendMessage, historyBefore, runStream],
   );
@@ -142,7 +173,7 @@ export function useRAGQuery() {
       useChatStore.getState().dropLastAssistant(); // remove the stale answer
       const assistantId = appendMessage({ role: "assistant", content: "", streaming: true, startedAt: Date.now() });
 
-      await runStream(question, assistantId, history);
+      await runStream(question, assistantId, history, useSettingsStore.getState().mode);
     },
     [appendMessage, historyBefore, runStream],
   );

@@ -24,11 +24,32 @@ export interface ChatMessage {
   thoughtMs?: number;
   chunks?: Chunk[];
   charts?: ChartSpec[];
+  /** Present on Deep Research messages — drives the research timeline. */
+  research?: ResearchState;
   metadata?: QueryMetadata;
   ragas?: RagasScores;
   error?: string;
   streaming?: boolean;
   createdAt: number;
+}
+
+/** One research task's live status in the Deep Research timeline. */
+export interface ResearchTask {
+  id: string;
+  label: string;
+  status: "pending" | "running" | "done" | "failed";
+  detail?: string;
+  /** First few hundred chars of the specialist's finding — the expandable
+   * reasoning summary in the timeline. */
+  summary?: string;
+  confidence?: number | null;
+}
+
+/** Deep Research state attached to an assistant message. */
+export interface ResearchState {
+  company?: string;
+  objective?: string;
+  tasks: ResearchTask[];
 }
 
 export interface RagasScores {
@@ -70,13 +91,18 @@ interface ChatState {
   /** Mark the latest unfinished occurrence of a stage as done (+ outcome). */
   markStepDone: (id: string, stage: string, detail?: string | null) => void;
   appendChartToMessage: (id: string, chart: ChartSpec) => void;
+  /** Attach the research plan (Deep Research mode). */
+  setResearchPlan: (id: string, research: ResearchState) => void;
+  /** Update one research task's status/detail as agent events stream in. */
+  patchResearchTask: (id: string, taskId: string, patch: Partial<ResearchTask>) => void;
   clear: () => void;
   setHighlight: (id: number | null) => void;
   setStreaming: (id: string | null) => void;
   startNewChat: () => void;
   setActiveChatId: (id: string | null) => void;
-  /** Replace the active conversation with a thread's stored messages. */
-  loadMessages: (chatId: string, messages: ChatMessage[]) => void;
+  /** Replace the active conversation with a thread's stored messages (+ its
+   * attached documents, so uploads survive thread switches and reloads). */
+  loadMessages: (chatId: string, messages: ChatMessage[], uploads?: UploadedDoc[]) => void;
   /** Drop the trailing assistant message (used by Retry). */
   dropLastAssistant: () => void;
 }
@@ -151,6 +177,24 @@ export const useChatStore = create<ChatState>((set) => ({
         msg.id === id ? { ...msg, charts: [...(msg.charts || []), chart] } : msg,
       ),
     })),
+  setResearchPlan: (id, research) =>
+    set((s) => ({
+      messages: s.messages.map((msg) => (msg.id === id ? { ...msg, research } : msg)),
+    })),
+  patchResearchTask: (id, taskId, patch) =>
+    set((s) => ({
+      messages: s.messages.map((msg) => {
+        if (msg.id !== id || !msg.research) return msg;
+        return {
+          ...msg,
+          research: {
+            ...msg.research,
+            tasks: msg.research.tasks.map((t) =>
+              t.id === taskId ? { ...t, ...patch } : t),
+          },
+        };
+      }),
+    })),
   clear: () => set({
     messages: [], highlightedChunkId: null, streamingId: null, activeChatId: null,
     uploads: [],
@@ -163,12 +207,12 @@ export const useChatStore = create<ChatState>((set) => ({
   }),
   setActiveChatId: (id) => set({ activeChatId: id }),
 
-  loadMessages: (chatId, messages) => set({
+  loadMessages: (chatId, messages, uploads) => set({
     messages: [...messages],
     highlightedChunkId: null,
     streamingId: null,
     activeChatId: chatId,
-    uploads: [],
+    uploads: uploads ? [...uploads] : [],
   }),
 
   dropLastAssistant: () => set((s) => {

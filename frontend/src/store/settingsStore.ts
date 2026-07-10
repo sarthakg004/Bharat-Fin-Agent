@@ -14,17 +14,21 @@ export type Provider = "groq" | "gemini" | "openai" | "anthropic";
 /** Models per provider that we surface in the UI. Override list is editable
  *  in this single place so adding a new option is one entry.                */
 export const PROVIDER_MODELS: Record<Provider, string[]> = {
+  // Verified against GET /openai/v1/models (Groq) and ListModels (Gemini).
   groq: [
     "openai/gpt-oss-120b",
     "openai/gpt-oss-20b",
-    "llama-3.3-70b-versatile",
-    "llama-3.1-8b-instant",
-    "moonshotai/kimi-k2-instruct",
+    "qwen/qwen3.6-27b",
     "qwen/qwen3-32b",
+    "llama-3.3-70b-versatile",
+    "meta-llama/llama-4-scout-17b-16e-instruct",
+    "llama-3.1-8b-instant",
   ],
   gemini: [
+    "gemini-3.5-flash",
+    "gemini-3-flash-preview",
+    "gemini-3.1-flash-lite",
     "gemini-2.5-flash",
-    "gemini-2.0-flash",
     "gemini-flash-latest",
   ],
   openai: [
@@ -48,7 +52,11 @@ export const PROVIDER_LABELS: Record<Provider, string> = {
   anthropic: "Anthropic",
 };
 
+export type QueryMode = "chat" | "research";
+
 interface SettingsState {
+  /** Execution mode: normal chat, or Deep Research (multi-agent report). */
+  mode: QueryMode;
   /** Which provider every query is routed through (server default is "groq"). */
   provider: Provider;
   /** Which synth model to use under that provider. */
@@ -60,6 +68,7 @@ interface SettingsState {
    */
   keys: Record<Provider, string>;
 
+  setMode: (m: QueryMode) => void;
   setProvider: (p: Provider) => void;
   setModel: (p: Provider, model: string) => void;
   setKey: (p: Provider, key: string) => void;
@@ -76,10 +85,12 @@ const DEFAULT_MODELS: Record<Provider, string> = {
 export const useSettingsStore = create<SettingsState>()(
   persist(
     (set) => ({
+      mode: "chat",
       provider: "groq",
       modelByProvider: { ...DEFAULT_MODELS },
       keys: { groq: "", gemini: "", openai: "", anthropic: "" },
 
+      setMode: (mode) => set({ mode }),
       setProvider: (provider) => set({ provider }),
       setModel: (p, model) =>
         set((s) => ({ modelByProvider: { ...s.modelByProvider, [p]: model } })),
@@ -88,7 +99,20 @@ export const useSettingsStore = create<SettingsState>()(
       clearKey: (p) =>
         set((s) => ({ keys: { ...s.keys, [p]: "" } })),
     }),
-    { name: "finagent.settings" },
+    {
+      name: "finagent.settings",
+      // A model removed from PROVIDER_MODELS (e.g. Groq retiring kimi-k2)
+      // can linger in localStorage and 404 every query — clamp any persisted
+      // choice that's no longer offered back to the provider default.
+      merge: (persisted, current) => {
+        const s = { ...current, ...(persisted as Partial<SettingsState>) };
+        const clamped = { ...s.modelByProvider };
+        for (const p of Object.keys(PROVIDER_MODELS) as Provider[]) {
+          if (!PROVIDER_MODELS[p].includes(clamped[p])) clamped[p] = DEFAULT_MODELS[p];
+        }
+        return { ...s, modelByProvider: clamped };
+      },
+    },
   ),
 );
 

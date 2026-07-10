@@ -1,6 +1,6 @@
 import { useCallback, useRef } from "react";
-import { streamQuery } from "@/lib/api";
-import type { QueryRequest, SSEEvent } from "@/lib/api";
+import { streamQuery, streamResearch } from "@/lib/api";
+import type { QueryRequest, ResearchRequest, SSEEvent } from "@/lib/api";
 
 /**
  * Tiny wrapper that abstracts the POST-and-stream pattern away from the components.
@@ -10,12 +10,17 @@ import type { QueryRequest, SSEEvent } from "@/lib/api";
 export function useSSE() {
   const controllerRef = useRef<AbortController | null>(null);
 
-  const send = useCallback(async (req: QueryRequest, onEvent: (e: SSEEvent) => void) => {
+  const send = useCallback(async (
+    req: QueryRequest | ResearchRequest,
+    onEvent: (e: SSEEvent) => void,
+    mode: "chat" | "research" = "chat",
+  ) => {
     controllerRef.current?.abort();
     const ctrl = new AbortController();
     controllerRef.current = ctrl;
+    const stream = mode === "research" ? streamResearch : streamQuery;
     try {
-      await streamQuery(req, { onEvent, signal: ctrl.signal });
+      await stream(req as QueryRequest & ResearchRequest, { onEvent, signal: ctrl.signal });
     } catch (err: unknown) {
       if ((err as Error).name === "AbortError") return;
       throw err;

@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { motion } from "framer-motion";
-import { ArrowUp, X, Loader2, ChevronDown, Cpu, FileText, Paperclip } from "lucide-react";
+import { ArrowUp, X, Loader2, ChevronDown, Cpu, FileText, FlaskConical, MessageSquare, Paperclip } from "lucide-react";
 import toast from "react-hot-toast";
 
 import { uploadFile } from "@/lib/api";
@@ -23,6 +23,7 @@ const LINE_HEIGHT = 22;
 
 export function InputBar({ onSend, onClear, streaming, disabled }: Props) {
   const [value, setValue] = useState("");
+  const mode = useSettingsStore((s) => s.mode);
   const ref = useRef<HTMLTextAreaElement | null>(null);
 
   function send() {
@@ -73,7 +74,11 @@ export function InputBar({ onSend, onClear, streaming, disabled }: Props) {
             autoSize();
           }}
           onKeyDown={onKey}
-          placeholder={`Ask a financial question...   ${modKey()}↵ to send`}
+          placeholder={
+            mode === "research"
+              ? `Name a company to research — e.g. "Should I invest in Nvidia?"   ${modKey()}↵ to send`
+              : `Ask a financial question...   ${modKey()}↵ to send`
+          }
           className="flex-1 resize-none bg-transparent font-ui text-[14px] leading-[22px] text-text-primary placeholder:text-text-muted focus:outline-none"
           disabled={disabled}
         />
@@ -110,11 +115,55 @@ export function InputBar({ onSend, onClear, streaming, disabled }: Props) {
         </div>
       </div>
 
-      {/* Model row — pick the model right here (provider is implied by the model). */}
-      <div className="flex items-center gap-2 border-t border-border-subtle px-3 py-1.5">
+      {/* Mode + model row — pick the pipeline and the model right here. */}
+      <div className="flex flex-wrap items-center gap-2 border-t border-border-subtle px-3 py-1.5">
+        <ModeToggle disabled={disabled || streaming} />
+        <span className="h-4 w-px bg-border-subtle" />
         <Cpu size={12} className="shrink-0 text-text-muted" />
         <ModelSelect />
       </div>
+    </div>
+  );
+}
+
+/** Chat ↔ Deep Research. Chat answers one question; Deep Research runs the
+ *  specialist-agent workflow and produces a full cited investment report. */
+function ModeToggle({ disabled }: { disabled?: boolean }) {
+  const mode = useSettingsStore((s) => s.mode);
+  const setMode = useSettingsStore((s) => s.setMode);
+
+  const base =
+    "inline-flex items-center gap-1.5 px-2 py-1 font-mono text-[10px] uppercase tracking-wider transition-colors";
+  return (
+    <div className="flex items-center border border-border-subtle" role="radiogroup" aria-label="Mode">
+      <button
+        type="button"
+        role="radio"
+        aria-checked={mode === "chat"}
+        disabled={disabled}
+        onClick={() => setMode("chat")}
+        className={cls(base, mode === "chat"
+          ? "bg-bg-elevated text-text-primary"
+          : "text-text-muted hover:text-text-secondary")}
+        title="Answer one question over the filings + tools"
+      >
+        <MessageSquare size={11} />
+        Chat
+      </button>
+      <button
+        type="button"
+        role="radio"
+        aria-checked={mode === "research"}
+        disabled={disabled}
+        onClick={() => setMode("research")}
+        className={cls(base, mode === "research"
+          ? "bg-accent/10 text-accent"
+          : "text-text-muted hover:text-text-secondary")}
+        title="Multi-agent research: specialist agents + a full cited investment report (takes a few minutes)"
+      >
+        <FlaskConical size={11} />
+        Deep Research
+      </button>
     </div>
   );
 }
