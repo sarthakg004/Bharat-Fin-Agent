@@ -17,8 +17,11 @@ Endpoints
     DELETE /api/chats                # delete all chats
     POST   /api/upload               # parse a PDF/DOCX into ephemeral chunks
     POST   /api/query                # SSE stream — appends to a chat
+    POST   /api/research             # SSE stream — Deep Research Mode
 
 Streaming events on /api/query: status, sources, chart, chunk, metrics, done.
+/api/research streams research_plan, agent_start, agent_done, then the same
+sources/chunk/metrics/done frames.
 """
 
 from __future__ import annotations
@@ -78,6 +81,7 @@ from finagent.api.models import (
     HealthResponse,
     QueryRequest,
     RenameChatRequest,
+    ResearchRequest,
     UploadResponse,
 )
 
@@ -228,6 +232,30 @@ def _build_history_for_agent(chat_id: int) -> list[dict]:
     ]
 
 
+def _resolve_memory(request: QueryRequest) -> tuple[int, list[dict]]:
+    """(chat_id, agent_history) for this query.
+
+    The client's `chat_history` always wins when supplied — the SPA owns the
+    thread (sessionStorage) and never sends `chat_id`, so deriving memory from
+    the SQLite store built it from a brand-new chat every time (i.e. none).
+    The SQLite store remains the persistence log + fallback for callers that
+    do pass a `chat_id`.
+    """
+    client = [
+        {"role": t.role, "content": (t.content or "")[:1200]}
+        for t in (request.chat_history or [])
+    ][-6:]
+    if STATELESS:
+        return request.chat_id or 0, client
+    chat_id = request.chat_id
+    if chat_id is None or not history.get_chat(chat_id):
+        chat_id = history.create_chat(title="New chat")["id"]
+    # Persist the user message first so any failure mid-stream still keeps it.
+    history.add_message(chat_id, role="user", content=request.question)
+    history.auto_title_if_default(chat_id, request.question)
+    return chat_id, client or _build_history_for_agent(chat_id)
+
+
 # Friendly, market-neutral labels for each graph node, surfaced live as the
 # agent "thinks". Repeated nodes (retrieve/grade across rewrite loops) reuse the
 # same label; the UI de-dupes consecutive repeats.
@@ -336,6 +364,55 @@ def _resolve_uploads(upload_ids: list[str]) -> tuple[list[dict], list[str]]:
     return chunks, missing
 
 
+def _classify_provider_error(e: Exception, pc) -> dict:
+    """Classify a provider failure into a user-facing SSE error event
+    (shared by /api/query and /api/research)."""
+    from finagent.llm import is_daily_quota_error, is_rate_limit_error
+
+    # Log the error type for debugging, but NOT the full exception value —
+    # provider auth errors can echo the API key into logs.
+    print(f"[query error] {type(e).__name__}", flush=True)
+
+    rate_limited = is_rate_limit_error(e)
+    provider = (pc.provider if pc else "groq")
+    user_key = bool(pc and pc.api_key)
+    prov_label = {"groq": "Groq", "gemini": "Gemini",
+                  "openai": "OpenAI", "anthropic": "Anthropic"}.get(provider, provider)
+    if rate_limited:
+        code = "rate_limit"
+        if user_key:
+            # The user supplied THEIR OWN key — don't blame the shared keys.
+            # Free tiers are tiny (Gemini = 5 req/min) and this agent makes
+            # many model calls per question, so a single query can exhaust
+            # them. Tell them what actually happened and how to recover.
+            daily = is_daily_quota_error(e)
+            window = "daily quota" if daily else "per-minute rate limit"
+            message = (
+                f"Your {prov_label} API key hit its {window}. This agent makes "
+                f"several model calls per question, and free tiers are very low "
+                f"(Gemini allows just 5 requests/min). "
+                + ("Try again tomorrow, " if daily else "Wait a minute and retry, ")
+                + f"or use a higher-tier {prov_label} key."
+            )
+        elif is_daily_quota_error(e):
+            message = ("We've hit today's usage limit on the shared API keys. "
+                       "Please try again tomorrow — or add your own API key "
+                       "from the model picker to keep going now.")
+        else:
+            message = ("Limit exhausted: all shared API keys have hit their "
+                       "rate limit. Please wait a minute and try again — or "
+                       "add your own API key from the model picker to keep "
+                       "going now.")
+    else:
+        code = "error"
+        # Surface a clean provider error (the value may include a key, so the
+        # llm layer already avoids logging it; here we keep the type + a short
+        # hint without echoing the full provider payload).
+        msg = str(e)
+        message = f"{prov_label} error: {msg[:240]}" if user_key else f"{type(e).__name__}: {msg[:240]}"
+    return {"type": "error", "code": code, "message": message}
+
+
 async def _run_rag(request: QueryRequest, hist: list[dict],
                    extra_chunks: list[dict] | None = None,
                    on_step=None, on_step_done=None) -> dict:
@@ -360,20 +437,8 @@ async def _run_rag(request: QueryRequest, hist: list[dict],
 async def _stream_answer(request: QueryRequest) -> AsyncGenerator[str, None]:
     t0 = time.time()
 
-    # Resolve the conversation + memory. In stateless mode the client owns the
-    # history (per-session, cleared on exit) and nothing is persisted; otherwise
-    # we use the SQLite chat store.
-    if STATELESS:
-        chat_id = request.chat_id or 0
-        agent_history = [t.model_dump() for t in (request.chat_history or [])][-6:]
-    else:
-        chat_id = request.chat_id
-        if chat_id is None or not history.get_chat(chat_id):
-            chat_id = history.create_chat(title="New chat")["id"]
-        # Persist the user message first so any failure mid-stream still keeps it.
-        history.add_message(chat_id, role="user", content=request.question)
-        history.auto_title_if_default(chat_id, request.question)
-        agent_history = _build_history_for_agent(chat_id)
+    # Resolve the conversation + memory (client history wins in both modes).
+    chat_id, agent_history = _resolve_memory(request)
     yield _sse({"type": "chat", "chat_id": chat_id})
 
     # Resolve uploaded-document chunks up front so an expired upload fails the
@@ -439,50 +504,8 @@ async def _stream_answer(request: QueryRequest) -> AsyncGenerator[str, None]:
             yield _sse(evt)
         result = rag_task.result()
     except Exception as e:
-        from finagent.llm import is_daily_quota_error, is_rate_limit_error
-
-        # Log the error type for debugging, but NOT the full exception value —
-        # provider auth errors can echo the API key into logs.
-        print(f"[query error] {type(e).__name__}", flush=True)
-
-        rate_limited = is_rate_limit_error(e)
-        pc = request.provider_config
-        provider = (pc.provider if pc else "groq")
-        user_key = bool(pc and pc.api_key)
-        prov_label = {"groq": "Groq", "gemini": "Gemini",
-                      "openai": "OpenAI", "anthropic": "Anthropic"}.get(provider, provider)
-        if rate_limited:
-            code = "rate_limit"
-            if user_key:
-                # The user supplied THEIR OWN key — don't blame the shared keys.
-                # Free tiers are tiny (Gemini = 5 req/min) and this agent makes
-                # many model calls per question, so a single query can exhaust
-                # them. Tell them what actually happened and how to recover.
-                daily = is_daily_quota_error(e)
-                window = "daily quota" if daily else "per-minute rate limit"
-                message = (
-                    f"Your {prov_label} API key hit its {window}. This agent makes "
-                    f"several model calls per question, and free tiers are very low "
-                    f"(Gemini allows just 5 requests/min). "
-                    + ("Try again tomorrow, " if daily else "Wait a minute and retry, ")
-                    + f"or use a higher-tier {prov_label} key."
-                )
-            elif is_daily_quota_error(e):
-                message = ("We've hit today's usage limit on the shared API keys. "
-                           "Please try again tomorrow — or add your own API key "
-                           "from the model picker to keep going now.")
-            else:
-                message = ("Limit exhausted: all shared API keys have hit their "
-                           "rate limit. Please wait a minute and try again — or "
-                           "add your own API key from the model picker to keep "
-                           "going now.")
-        else:
-            code = "error"
-            # Surface a clean provider error (the value may include a key, so the
-            # llm layer already avoids logging it; here we keep the type + a short
-            # hint without echoing the full provider payload).
-            msg = str(e)
-            message = f"{prov_label} error: {msg[:240]}" if user_key else f"{type(e).__name__}: {msg[:240]}"
+        err = _classify_provider_error(e, request.provider_config)
+        code, message = err["code"], err["message"]
         if not STATELESS:
             history.add_message(
                 chat_id, role="assistant", content="",
@@ -553,6 +576,108 @@ async def query(request: QueryRequest):
         raise HTTPException(status_code=400, detail="Empty question.")
     return StreamingResponse(
         _stream_answer(request),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Deep Research — Server-Sent Events
+#
+# An independent execution path next to /api/query: the orchestrator scopes
+# the request, runs specialist research tasks through the SAME production
+# agent (rag_service.run_agentic, injected), and writes a cited investment
+# report. Streams research_plan / agent_start / agent_done progress events,
+# then the standard sources / chunk / metrics / done frames — so the
+# citations panel and answer streaming reuse the chat pipeline unchanged.
+# --------------------------------------------------------------------------- #
+
+async def _stream_research(request: ResearchRequest) -> AsyncGenerator[str, None]:
+    t0 = time.time()
+
+    # ResearchRequest carries the same question/chat_id/chat_history fields
+    # _resolve_memory reads, so memory + persistence behave exactly like chat.
+    chat_id, agent_history = _resolve_memory(request)
+    yield _sse({"type": "chat", "chat_id": chat_id})
+
+    loop = asyncio.get_event_loop()
+    events: asyncio.Queue = asyncio.Queue()
+
+    def _on_event(evt: dict) -> None:
+        loop.call_soon_threadsafe(events.put_nowait, evt)
+
+    pc = request.provider_config
+    provider = (pc.provider if pc else "groq")
+    synth_model = (pc.synth_model if pc else None)
+    api_key = (pc.api_key if pc else None)
+
+    from finagent.research import DeepResearch
+
+    def _run() -> dict:
+        research = DeepResearch(
+            # Every specialist task runs through the production agent; the
+            # orchestrator itself never talks to retrieval or tools directly.
+            run_fn=lambda q: rag_service.run_agentic(
+                q, provider=provider, synth_model=synth_model, api_key=api_key,
+                session_id=str(chat_id) if chat_id else None),
+            provider=provider, model=synth_model, api_key=api_key,
+            max_agents=request.max_agents,
+        )
+        return research.run(request.question, chat_history=agent_history,
+                            on_event=_on_event)
+
+    task = asyncio.ensure_future(loop.run_in_executor(_executor, _run))
+    try:
+        while not (task.done() and events.empty()):
+            try:
+                evt = await asyncio.wait_for(events.get(), timeout=0.1)
+            except asyncio.TimeoutError:
+                continue
+            yield _sse(evt)
+        result = task.result()
+    except Exception as e:
+        err = _classify_provider_error(e, request.provider_config)
+        if not STATELESS:
+            history.add_message(chat_id, role="assistant", content="",
+                                metadata={"error": err["message"]})
+        yield _sse(err)
+        yield _sse({"type": "done"})
+        return
+
+    report = result.get("report") or ""
+    chunks = result.get("chunks") or []
+    meta = result.get("metadata") or {}
+
+    yield _sse({"type": "sources", "chunks": chunks, "metadata": meta})
+
+    for piece in _piecewise(report, words_per_chunk=8):
+        yield _sse({"type": "chunk", "content": piece})
+        await asyncio.sleep(0.008)
+
+    latency = round(time.time() - t0, 3)
+    meta["latency"] = latency
+    yield _sse({"type": "metrics", "latency": latency,
+                "model": meta.get("model"),
+                "input_tokens": meta.get("input_tokens"),
+                "output_tokens": meta.get("output_tokens"),
+                "agentic": meta})
+
+    if not STATELESS:
+        try:
+            history.add_message(chat_id, role="assistant", content=report,
+                                chunks=chunks, metadata=meta, latency=latency)
+        except Exception:
+            pass
+
+    yield _sse({"type": "done"})
+
+
+@app.post("/api/research")
+async def research(request: ResearchRequest):
+    if not request.question.strip():
+        raise HTTPException(status_code=400, detail="Empty question.")
+    return StreamingResponse(
+        _stream_research(request),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

@@ -63,6 +63,13 @@ class Settings(BaseModel):
     # the cloud.
     persist_dynamic_fetch: bool = Field(default=True, description="PERSIST_DYNAMIC_FETCH")
 
+    # --- Deep Research mode ---------------------------------------------------
+    # Max specialist agents per research run (bounds latency + LLM quota) and
+    # how many run concurrently. Parallel stays 1 by default: the serve path
+    # pins graph runs to one worker (Chroma/hnswlib + reranker thread-safety).
+    research_max_agents: int = Field(default=8, description="RESEARCH_MAX_AGENTS")
+    research_parallel_agents: int = Field(default=1, description="RESEARCH_PARALLEL_AGENTS")
+
     # --- Models --------------------------------------------------------------
     reranker_model: str = Field(default="BAAI/bge-reranker-base", description="RERANKER_MODEL")
     embedding_model: str = Field(default="BAAI/bge-small-en-v1.5", description="embedding model")
@@ -86,6 +93,8 @@ class Settings(BaseModel):
             allowed_origins=_as_list(os.getenv("ALLOWED_ORIGINS")),
             force_ipv4=_as_bool(os.getenv("FORCE_IPV4")),
             persist_dynamic_fetch=_as_bool(os.getenv("PERSIST_DYNAMIC_FETCH"), default=True),
+            research_max_agents=int(os.getenv("RESEARCH_MAX_AGENTS", "8")),
+            research_parallel_agents=int(os.getenv("RESEARCH_PARALLEL_AGENTS", "1")),
             reranker_model=os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-base"),
             chroma_dir=os.getenv("CHROMA_DIR", "data/chroma"),
             static_dir=os.getenv("STATIC_DIR", "static"),

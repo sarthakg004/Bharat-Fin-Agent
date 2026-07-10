@@ -56,6 +56,26 @@ class QueryRequest(BaseModel):
     )
 
 
+class ResearchRequest(BaseModel):
+    """Deep Research Mode — a multi-specialist research run (POST /api/research).
+
+    Same provider/memory contract as QueryRequest; `upload_ids` is not
+    supported (research runs over filings + live sources, not attached files).
+    """
+    question: str = Field(min_length=1, max_length=2000)
+    chat_id: Optional[int] = Field(default=None)
+    provider_config: Optional[ProviderConfig] = None
+    chat_history: Optional[list[ChatTurn]] = Field(
+        default=None,
+        description="Recent turns, so follow-ups like 'now research it deeply' "
+                    "resolve the company under discussion.",
+    )
+    max_agents: Optional[int] = Field(
+        default=None, ge=3, le=14,
+        description="Cap on specialist agents this run. None → server default.",
+    )
+
+
 class UploadResponse(BaseModel):
     upload_id: str
     filename: str
