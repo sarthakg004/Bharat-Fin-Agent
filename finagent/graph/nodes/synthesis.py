@@ -85,6 +85,10 @@ Each web/news item has a publication date in its header. For "today's",
 "current", "premarket", "this week" questions: use the MOST RECENT item, state
 the as-of date ("As of <date>, ..."), and don't blend older datapoints in as if
 current.
+When the question names NO fiscal period ("latest", "year-over-year", or
+nothing at all), answer from the MOST RECENT fiscal period in the evidence and
+name that period explicitly — never centre the answer on an older year when a
+newer one is available in the evidence.
 
 Thin or partial evidence
 ------------------------
@@ -614,7 +618,8 @@ single item is irrelevant."""
             SystemMessage(content=synth_system),
             HumanMessage(content=prompt),
         ])
-        answer = response.content
+        from finagent.llm import text_of
+        answer = text_of(response)
         # Citation extraction: only `[N]` / `[N, M]` markers, no verbose tags.
         citations = sorted(set(re.findall(r"\[\d+(?:\s*,\s*\d+)*\]", answer)))
         low_conf = (

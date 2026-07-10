@@ -121,6 +121,26 @@ _DAILY_QUOTA_HINTS = (
 )
 
 
+def text_of(response) -> str:
+    """Plain text of a chat response's `.content`.
+
+    Most models return a str, but Gemini 3.x returns a LIST of typed content
+    blocks (text blocks carry thought signatures in `extras`); any consumer
+    that regexes or strips the answer must flatten through this instead of
+    using `.content` raw.
+    """
+    c = getattr(response, "content", response)
+    if isinstance(c, str):
+        return c
+    if isinstance(c, list):
+        return "".join(
+            (b.get("text") or "") if isinstance(b, dict) else str(b)
+            for b in c
+            if not (isinstance(b, dict) and b.get("type") in ("thinking", "reasoning"))
+        )
+    return str(c or "")
+
+
 def is_rate_limit_error(exc: BaseException) -> bool:
     """True if `exc` looks like a provider rate-limit / quota error.
 

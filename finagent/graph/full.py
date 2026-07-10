@@ -133,6 +133,13 @@ Decomposition rules
 - Use precise analyst terms: name the exact line item or metric ("operating
   margin", "R&D as % of revenue", "diluted EPS") and the exact fiscal period
   ("FY2022"), so each can be answered from a single XBRL concept or calculation.
+- TIME: you are given today's date. Name an absolute fiscal year ONLY when the
+  question names one. When it doesn't — or says "latest", "current", "most
+  recent", "year-over-year" — it means the newest data available NOW; write
+  "latest fiscal year" / "prior fiscal year" in the sub-query ("ServiceNow
+  operating margin, latest fiscal year vs prior fiscal year"). Resolve relative
+  periods ("last year") against today's date. NEVER fill in a year from your
+  training data — your memory of "recent" years is stale.
 - Do NOT invent a metric the question didn't ask for. A qualitative question
   ("was the company able to retain customers?", "what drove the margin change?")
   must stay qualitative — do NOT rewrite it into a made-up ratio ("retention
@@ -185,6 +192,8 @@ Examples:
 """
 
 PLAN_ROUTE_PROMPT = """\
+Today's date: {today}
+
 Question: {question}
 
 Return the routed sub-queries (1-8, each with its lane).
@@ -411,12 +420,15 @@ class AgenticRAGv3(AgenticRAGv2):
                 "Recent conversation (most recent last):\n" + "\n".join(lines) + "\n\n"
             )
 
+        from datetime import date
+
         llm = self._get_router_llm().with_structured_output(QueryPlan)
         try:
             out: QueryPlan = llm.invoke([
                 SystemMessage(content=PLAN_ROUTE_SYSTEM),
                 HumanMessage(content=history_block
-                             + PLAN_ROUTE_PROMPT.format(question=question)),
+                             + PLAN_ROUTE_PROMPT.format(
+                                 question=question, today=date.today().isoformat())),
             ])
             pairs = [(q.query.strip(), q.route)
                      for q in (out.queries or []) if (q.query or "").strip()][:8]
@@ -532,7 +544,8 @@ class AgenticRAGv3(AgenticRAGv2):
             SystemMessage(content=SYNTH_V3_SYSTEM),
             HumanMessage(content=prompt),
         ])
-        answer = response.content
+        from finagent.llm import text_of
+        answer = text_of(response)
 
         # Citation extraction: text tags [ … ] AND table tags (Table: … ).
         citations = sorted(set(

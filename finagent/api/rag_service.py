@@ -522,12 +522,15 @@ def run_agentic(question: str, top_k: int = 5,
         })
         next_id += 1
 
-    # 1. Text excerpts (filtered by company if requested).
+    # 1. Text excerpts (filtered by company if requested). User-uploaded
+    # documents ride the same lane but keep their own kind + filename so the
+    # UI can show them as a separate "your documents" source section.
     for c in state.get("retrieved_chunks", []) or []:
         if company_filter:
             co = c.get("company") or c.get("ticker", "")
             if co not in company_filter:
                 continue
+        uploaded = c.get("filing_type") == "uploaded"
         chunks.append({
             "id": next_id,
             "text": c.get("text", ""),
@@ -538,7 +541,8 @@ def run_agentic(question: str, top_k: int = 5,
             "source_url": "",
             "citation": c.get("source", ""),
             "sub_query": c.get("sub_query", ""),
-            "kind": "text",
+            "kind": "uploaded" if uploaded else "text",
+            "filename": c.get("filename", "") if uploaded else "",
         })
         next_id += 1
 

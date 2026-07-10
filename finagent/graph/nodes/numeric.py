@@ -144,7 +144,8 @@ class NumericNodes:
                 SystemMessage(content=XBRL_TAG_SYSTEM),
                 HumanMessage(content=f"Concept: {concept}\n\nAvailable tags:\n{listing}"),
             ])
-            choice = (resp.content or "").strip().strip("`").split()[0]
+            from finagent.llm import text_of
+            choice = (text_of(resp).strip().strip("`").split() or [""])[0]
             return None if choice.upper() == "NONE" else choice
         except Exception:
             return None

@@ -177,9 +177,14 @@ class FetchNodes:
             # useful and the company looks "covered" — the dominant failure mode
             # for historical numeric questions on the cloud (ephemeral) path,
             # which is exactly where this used to be skipped.
-            if gate["decision"] == "already_indexed" and yrs:
+            # When the question names NO year it means "latest" — target the most
+            # recent completed fiscal year, so a stale index (company present but
+            # only with old filings) triggers a fetch of the newest 10-K instead
+            # of silently answering years out of date.
+            if gate["decision"] == "already_indexed":
+                from datetime import date
                 covered = self._indexed_years(gate.get("ticker") or company)
-                target = min(yrs)
+                target = min(yrs) if yrs else date.today().year - 1
                 digit_years = {int(y) for y in covered if y.isdigit()}
                 # When we can't read indexed years (corpus keyed by name, not
                 # ticker), still deepen — better a redundant fetch than a miss.

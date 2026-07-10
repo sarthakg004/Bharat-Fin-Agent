@@ -236,7 +236,8 @@ class TableAgent:
                 resp = llm.invoke(
                     [SystemMessage(content=CODE_SYSTEM), HumanMessage(content=prompt)]
                 )
-                code = self._strip_code_fences(resp.content)
+                from finagent.llm import text_of
+                code = self._strip_code_fences(text_of(resp))
                 return code, "", f"structured-output fallback ({type(e).__name__})"
             except Exception as e2:
                 return "", "", f"{type(e).__name__}: {e}; fallback: {type(e2).__name__}: {e2}"

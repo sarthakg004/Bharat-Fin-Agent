@@ -92,11 +92,18 @@ Rules:
   (e.g. "operating margin", "R&D as % of revenue", "diluted EPS") and the exact
   fiscal period ("FY2022"), so each can be answered from a single XBRL concept
   or a single derived calculation.
+- TIME: name an absolute fiscal year ONLY when the question names one. When it
+  doesn't — or says "latest", "current", "most recent", "year-over-year" — it
+  means the newest data available as of today's date (given below); write
+  "latest fiscal year" / "prior fiscal year" instead. NEVER fill in a year from
+  your training data — your memory of "recent" years is stale.
 - FOLLOW-UPS: if the question relies on the conversation above (e.g. "show me the
   chart", "what about last year", "how is it doing"), rewrite it into a
   self-contained sub-query that names the company/ticker discussed just before.
   Example — prior turn about DPRO, then "show me the chart" → "DPRO stock price
   chart".
+
+Today's date: {today}
 
 Question: {question}
 """
@@ -357,10 +364,13 @@ class AgenticRAG:
                 + "\n".join(lines) + "\n\n"
             )
 
+        from datetime import date
+
         llm = self._get_llm("planner").with_structured_output(SubQueries)
         try:
             out: SubQueries = llm.invoke(
-                history_block + PLANNER_PROMPT.format(question=question)
+                history_block + PLANNER_PROMPT.format(
+                    question=question, today=date.today().isoformat())
             )
             queries = [q.strip() for q in out.queries if q.strip()][:8]
         except Exception as e:
@@ -414,7 +424,8 @@ class AgenticRAG:
         response = llm.invoke(
             [SystemMessage(content=SYNTHESIZER_SYSTEM), HumanMessage(content=prompt)]
         )
-        answer = response.content
+        from finagent.llm import text_of
+        answer = text_of(response)
         citations = sorted(set(re.findall(r"\[[^\]]+\]", answer)))
         return {
             "draft_answer": answer,

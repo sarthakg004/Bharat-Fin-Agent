@@ -5,6 +5,7 @@ import toast from "react-hot-toast";
 
 import { uploadFile } from "@/lib/api";
 import { useChatStore } from "@/store/chatStore";
+import { useThreadStore } from "@/store/threadStore";
 import {
   PROVIDER_LABELS, PROVIDER_MODELS, type Provider, useSettingsStore,
 } from "@/store/settingsStore";
@@ -118,28 +119,34 @@ export function InputBar({ onSend, onClear, streaming, disabled }: Props) {
   );
 }
 
-/** Attach a PDF/DOCX. The file is parsed server-side into ephemeral chunks and
- *  every question in this chat is answered over it (+ the corpus). */
+/** Attach PDF/DOCX files. Each is parsed server-side into ephemeral chunks and
+ *  every question in this chat is answered over them (+ the corpus). */
 function UploadButton({ disabled }: { disabled?: boolean }) {
   const addUpload = useChatStore((s) => s.addUpload);
   const [busy, setBusy] = useState(false);
   const fileRef = useRef<HTMLInputElement | null>(null);
 
   async function onPick(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
+    const files = Array.from(e.target.files ?? []);
     e.target.value = "";                    // allow re-picking the same file
-    if (!file) return;
+    if (!files.length) return;
+    // A thread must exist to own the uploads (they persist per-thread).
+    const threads = useThreadStore.getState();
+    if (!threads.activeId) threads.createChat("New chat");
     setBusy(true);
-    try {
-      const res = await uploadFile(file);
-      addUpload({ id: res.upload_id, name: res.filename,
-                  pages: res.pages, chunks: res.chunks });
-      toast.success(`${res.filename} attached (${res.pages} pages)`);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Upload failed");
-    } finally {
-      setBusy(false);
+    // Sequential — the server parses on a single worker anyway.
+    for (const file of files) {
+      try {
+        const res = await uploadFile(file);
+        addUpload({ id: res.upload_id, name: res.filename,
+                    pages: res.pages, chunks: res.chunks });
+        toast.success(`${res.filename} attached (${res.pages} pages)`);
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : `${file.name}: upload failed`);
+      }
     }
+    useThreadStore.getState().saveActive();  // uploads survive reload/switch
+    setBusy(false);
   }
 
   return (
@@ -148,6 +155,7 @@ function UploadButton({ disabled }: { disabled?: boolean }) {
         ref={fileRef}
         type="file"
         accept=".pdf,.docx"
+        multiple
         className="hidden"
         onChange={onPick}
       />
@@ -156,8 +164,8 @@ function UploadButton({ disabled }: { disabled?: boolean }) {
         onClick={() => fileRef.current?.click()}
         disabled={disabled || busy}
         className="flex h-[34px] w-[34px] items-center justify-center border border-border-subtle text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary disabled:opacity-50"
-        title="Attach a PDF or DOCX (analysed for this chat only)"
-        aria-label="Attach a document"
+        title="Attach PDF or DOCX files (analysed for this chat only)"
+        aria-label="Attach documents"
       >
         {busy ? <Loader2 size={14} className="animate-spin" /> : <Paperclip size={14} />}
       </button>
@@ -171,6 +179,11 @@ function UploadChips() {
   const removeUpload = useChatStore((s) => s.removeUpload);
   if (!uploads.length) return null;
 
+  function remove(id: string) {
+    removeUpload(id);
+    useThreadStore.getState().saveActive();
+  }
+
   return (
     <div className="flex flex-wrap items-center gap-1.5 border-b border-border-subtle px-3 py-1.5">
       {uploads.map((u) => (
@@ -183,7 +196,7 @@ function UploadChips() {
           <span className="max-w-[220px] truncate">{u.name}</span>
           <span className="text-text-muted">· {u.pages}p</span>
           <button
-            onClick={() => removeUpload(u.id)}
+            onClick={() => remove(u.id)}
             className="text-text-muted transition-colors hover:text-err"
             aria-label={`Remove ${u.name}`}
           >

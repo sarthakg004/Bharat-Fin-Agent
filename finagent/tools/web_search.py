@@ -55,6 +55,16 @@ TRUSTED_FINANCIAL_DOMAINS: tuple[str, ...] = (
     "simplywall.st",
     "morningstar.com",
     "zacks.com",
+    "marketbeat.com",
+    "gurufocus.com",
+    "robinhood.com",
+    "cnn.com",
+    # Indian coverage — without these an NSE/BSE stock gets no trusted hits
+    # and the general pass fills the answer with low-quality sites.
+    "economictimes.indiatimes.com",
+    "moneycontrol.com",
+    "indmoney.com",
+    "livemint.com",
 )
 
 
@@ -215,7 +225,7 @@ class WebSearcher:
                     hits.append(norm)
 
         def _search(max_results, time_range, **extra):
-            kw = dict(query=query, max_results=max_results, search_depth="basic", **extra)
+            kw = dict(query=query, max_results=max_results, search_depth="advanced", **extra)
             if time_range is not None:
                 kw["time_range"] = time_range
             return client.search(**kw)
