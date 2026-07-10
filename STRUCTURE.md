@@ -29,8 +29,10 @@ retrieval/       ← config, llm
 tools/           ← config, llm, retrieval (some tools)
 prompts/         ← re-exports prompt strings from graph/ (see note)
 graph/           ← config, llm, retrieval, tools
-api/             ← config, graph, ingestion (upload parsing only)
-evaluation/      ← config, retrieval, graph
+research/        ← config, llm, graph (Deep Research orchestrator; the agent
+                   runner is INJECTED by api/, so research/ never imports api/)
+api/             ← config, graph, research, ingestion (upload parsing only)
+evaluation/      ← config, retrieval, graph, api (run_agentic as the eval subject)
 ```
 
 ## Top-level modules
@@ -88,8 +90,19 @@ MRO, so overrides win):
 `graph/agent.py` itself keeps only the constructor, lane resources, routing
 functions, and `_build_graph` — read it first, then the mixin a node lives in.
 
+**`research/`** — Deep Research Mode (see `docs/deep-research.md`).
+`specialists.py` is a declarative registry (a specialist = id + label +
+report section + focus-question template); `orchestrator.py` scopes the
+request, runs each selected specialist as a focused question through the
+production agent (injected as `run_fn` — one execution engine, no duplicated
+agent logic), merges evidence onto a global citation numbering, cross-checks
+findings, and writes the investment report. Knobs: `RESEARCH_MAX_AGENTS`,
+`RESEARCH_PARALLEL_AGENTS` (default 1 — graph runs are serialized, see the
+executor note in `api/main.py`).
+
 **`api/`** — FastAPI layer. `main.py` holds the `app` (Cloud Run entry point),
-the `/api/query` SSE stream, chat endpoints, and static SPA hosting.
+the `/api/query` SSE stream, the `/api/research` Deep Research stream,
+chat endpoints, and static SPA hosting.
 `rag_service.py` builds/caches the agent and normalises its output;
 `history.py` / `models.py` are the chat store and Pydantic schemas.
 

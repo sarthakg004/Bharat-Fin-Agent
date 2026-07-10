@@ -16,6 +16,12 @@ live agent progress and the source chunks shown alongside.
 - **Grounded answers over filings** — hybrid retrieval (BM25 + dense `bge-small` +
   cross-encoder rerank) with company/year metadata filtering and inline `[N]`
   citations linking to the source chunk.
+- **Deep Research Mode** — a second, user-selectable execution path that
+  produces a full cited investment report (overview, financials, valuation,
+  risks, sentiment, bull/bear/base thesis) by running specialist research
+  tasks through the same production agent and merging the findings, with a
+  live agent timeline in the UI and markdown export. See
+  [`docs/deep-research.md`](docs/deep-research.md).
 - **Exact numbers, not paraphrases** — numeric questions hit SEC **XBRL
   company-facts** first (the figure as filed), then a deterministic
   **calculator** for derived metrics (margins, ratios, growth, CAGR, working-
