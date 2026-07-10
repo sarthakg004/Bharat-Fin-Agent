@@ -146,7 +146,7 @@ def test_failed_specialist_is_isolated():
     """One specialist failing (after its retry) must not sink the run — it is
     reported as failed and the report still gets written."""
     def flaky(question: str) -> dict:
-        if "income statement" in question:      # the financials template
+        if "financial statements" in question:  # the financials template
             raise TimeoutError("lane down")
         return _fake_run_fn(question)
 
@@ -224,6 +224,46 @@ def test_report_writer_failure_falls_back_to_sections(monkeypatch):
     assert "report writer was unavailable" in out["report"]
 
 
+def test_web_pool_is_capped_across_sub_queries():
+    """Regression (found by the live Deep Research smoke run): a many-sub-query
+    question escalating every sub-query to web piled 40+ hits into the synth
+    prompt and 413'd Groq's TPM cap. web_search_node must bound the total to
+    web_top_k, round-robin so every sub-query keeps its best (trusted) hits."""
+    from finagent.graph import AgenticRAGv4
+
+    agent = AgenticRAGv4(collection_name="us_filings", provider="groq",
+                         reranker_model="BAAI/bge-reranker-base", web_top_k=6)
+    agent._log = lambda s, m: None
+
+    class FakeWeb:
+        def search(self, q):
+            return [{"title": f"{q}-{i}", "content": "x",
+                     "tier": "trusted" if i < 2 else "web"} for i in range(10)]
+
+    agent._web = FakeWeb()
+    subs = [f"query {i}" for i in range(4)]
+    out = agent.web_search_node({
+        "question": "q", "sub_queries": subs, "query_routes": ["external"] * 4,
+    })
+    hits = out["web_results"]
+    assert len(hits) == 6                                 # bounded to web_top_k
+    assert {h["sub_query"] for h in hits} == set(subs)    # no sub-query starved
+    assert all(h["tier"] == "trusted" for h in hits)      # best hits kept
+
+    # The common case — one search within budget (WebSearcher returns at most
+    # web_top_k per search) — passes through completely unchanged, order intact.
+    class SmallWeb:
+        def search(self, q):
+            return [{"title": f"{q}-{i}", "content": "x", "tier": "web"}
+                    for i in range(4)]
+
+    agent._web = SmallWeb()
+    out1 = agent.web_search_node({
+        "question": "q", "sub_queries": ["only"], "query_routes": ["external"],
+    })
+    assert [h["title"] for h in out1["web_results"]] == [f"only-{i}" for i in range(4)]
+
+
 # --------------------------------------------------------------------------- #
 # Evaluation harness
 # --------------------------------------------------------------------------- #
@@ -268,6 +308,54 @@ def test_research_route_registered():
     routes = {r.path: getattr(r, "methods", set()) for r in app.routes}
     assert "POST" in routes.get("/api/research", set())
     assert "POST" in routes.get("/api/query", set())     # chat path untouched
+
+
+def test_research_endpoint_streams_events(monkeypatch):
+    """POST /api/research end-to-end over the ASGI app with the orchestrator
+    stubbed: the SSE stream must carry plan → agent events → sources → report
+    chunks → metrics → done, in order."""
+    import json
+
+    from starlette.testclient import TestClient
+
+    import finagent.research as research_pkg
+    from finagent.api.main import app
+
+    class FakeResearch:
+        def __init__(self, **kwargs):
+            assert callable(kwargs["run_fn"])
+
+        def run(self, question, chat_history=None, on_event=None):
+            on_event({"type": "research_plan", "company": "Apple",
+                      "objective": "assess", "tasks": [{"id": "company",
+                                                        "label": "Company Research"}]})
+            on_event({"type": "agent_start", "id": "company"})
+            on_event({"type": "agent_done", "id": "company", "status": "done",
+                      "detail": "1 evidence items"})
+            return {"report": "# Report\n\nApple is fine [1].",
+                    "chunks": [{"id": 0, "text": "e", "kind": "text"}],
+                    "metadata": {"mode": "research", "confidence": 0.9}}
+
+    monkeypatch.setattr(research_pkg, "DeepResearch", FakeResearch)
+
+    with TestClient(app) as client:
+        resp = client.post("/api/research",
+                           json={"question": "Should I invest in Apple?"})
+        assert resp.status_code == 200
+        events = [json.loads(line[len("data: "):])
+                  for line in resp.text.splitlines() if line.startswith("data: ")]
+
+    types = [e["type"] for e in events]
+    for expected in ("chat", "research_plan", "agent_start", "agent_done",
+                     "sources", "chunk", "metrics", "done"):
+        assert expected in types, f"missing {expected} in {types}"
+    # Ordering: plan before agent events, sources before report chunks.
+    assert types.index("research_plan") < types.index("agent_start") < \
+        types.index("agent_done") < types.index("sources") < types.index("chunk")
+    report = "".join(e["content"] for e in events if e["type"] == "chunk")
+    assert report == "# Report\n\nApple is fine [1]."
+    metrics = next(e for e in events if e["type"] == "metrics")
+    assert metrics["agentic"]["mode"] == "research"
 
 
 def test_research_request_validation():

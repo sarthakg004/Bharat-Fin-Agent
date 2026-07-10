@@ -343,6 +343,28 @@ class ExternalNodes:
                 hits.extend({"sub_query": sub_q, **h} for h in self.web.search(sub_q))
             except Exception as e:
                 self._log(state, f"web_search failed for {sub_q!r}: {e}")
+
+        # Global cap — the web analogue of retrieval's `_cap_pool`. Each
+        # escalated sub-query adds up to web_top_k hits, so a many-sub-query
+        # question can pile 40+ hits into every downstream prompt and blow the
+        # provider's per-minute token cap (observed: 41 hits → a 15k-token
+        # synthesis request vs Groq's 8k TPM limit → hard 413 on every key).
+        # Keep ONE search's budget in total, round-robin across sub-queries
+        # (trusted-tier hits first within each) so no sub-query is starved.
+        # The common single-search case (≤ web_top_k hits) is unchanged.
+        if len(hits) > self.web_top_k:
+            by_sub: dict[str, list[dict]] = {}
+            for h in hits:
+                by_sub.setdefault(h.get("sub_query", ""), []).append(h)
+            for lst in by_sub.values():
+                lst.sort(key=lambda h: h.get("tier") != "trusted")   # stable
+            capped: list[dict] = []
+            while len(capped) < self.web_top_k and any(by_sub.values()):
+                for lst in by_sub.values():
+                    if lst and len(capped) < self.web_top_k:
+                        capped.append(lst.pop(0))
+            self._log(state, f"web pool capped {len(hits)} → {len(capped)}")
+            hits = capped
         return {"web_results": hits}
 
     def edgar_search_node(self, state: AgentState) -> dict:

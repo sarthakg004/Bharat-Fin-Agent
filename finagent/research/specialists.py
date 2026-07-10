@@ -49,20 +49,21 @@ SPECIALISTS: dict[str, Specialist] = {s.id: s for s in [
         "discussion highlights, stated risk factors, legal proceedings, segment "
         "reporting, and notable changes from the prior filing.",
     ),
+    # Metric lists are deliberately SHORT (≤5 named items): the planner fully
+    # enumerates one sub-query per metric, and a wide enumeration inflates the
+    # synthesis prompt past free-tier per-minute token caps (observed: an
+    # 11-metric template → a 16k-token synth request vs Groq's 8k TPM limit).
     Specialist(
         "financials", "Financial Statements", "Financial Statement Analysis",
-        "Analyze {company}'s latest income statement, balance sheet and cash "
-        "flow statement: revenue, gross margin, operating margin, net margin, "
-        "EPS growth, free cash flow, current ratio, quick ratio, debt-to-equity, "
-        "interest coverage, return on equity and return on assets — interpret "
-        "each figure, do not just state it.",
+        "Analyze {company}'s latest annual financial statements: revenue "
+        "growth, operating margin, free cash flow, debt-to-equity and return "
+        "on equity — interpret each figure, do not just state it.",
     ),
     Specialist(
         "xbrl", "XBRL Facts & Ratios", "Key Ratios",
-        "Report {company}'s exact filed figures for the latest two fiscal "
-        "years: revenue, net income, total assets, total equity, operating "
-        "cash flow and capital expenditure; plus asset turnover, inventory "
-        "turnover and year-over-year revenue growth.",
+        "Report {company}'s exact filed figures for the latest fiscal year — "
+        "revenue, net income and operating cash flow — plus year-over-year "
+        "revenue growth versus the prior fiscal year.",
     ),
     Specialist(
         "earnings", "Earnings Analysis", "Recent Quarter",
