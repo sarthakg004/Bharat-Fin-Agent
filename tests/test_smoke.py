@@ -578,6 +578,21 @@ def test_explicit_abstention_detection():
     assert not _is_refusal("Revenue was $394.3 billion [1].")
 
 
+def test_shingle_recall():
+    """Evidence recall: whitespace/case-insensitive n-gram containment."""
+    from finagent.evaluation.parsing.compare import shingle_recall
+
+    gold = "net sales increased four percent to three billion dollars in fiscal 2023"
+    assert shingle_recall(gold, "Prefix text. " + gold.upper() + " suffix.") == 1.0
+    assert shingle_recall(gold, "completely unrelated text " * 20) == 0.0
+    # Short gold (< n words) falls back to substring containment.
+    assert shingle_recall("net sales", "total net  sales rose") == 1.0
+    assert shingle_recall("net sales", "gross margin fell") == 0.0
+    # Partial overlap lands strictly between.
+    half = "net sales increased four percent to three billion dollars in"
+    assert 0.0 < shingle_recall(gold, "x " + half + " y") < 1.0
+
+
 def test_count_rows_tolerates_partial_shards(tmp_path):
     """The orchestrator's progress poll counts rows across shard files and
     skips one that is mid-rewrite (unparseable) or missing."""
