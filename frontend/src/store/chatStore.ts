@@ -38,12 +38,26 @@ export interface RagasScores {
   context_recall?: number;
 }
 
+/** A document attached to the conversation via POST /api/upload. Ephemeral:
+ * the server keeps it ~1 hour; it clears with the chat. */
+export interface UploadedDoc {
+  id: string;
+  name: string;
+  pages: number;
+  chunks: number;
+}
+
 interface ChatState {
   messages: ChatMessage[];
   highlightedChunkId: number | null;
   streamingId: string | null;
   /** Client thread id the current `messages` belong to (null = fresh chat). */
   activeChatId: string | null;
+  /** Documents attached to the active conversation. */
+  uploads: UploadedDoc[];
+
+  addUpload: (doc: UploadedDoc) => void;
+  removeUpload: (id: string) => void;
 
   appendMessage: (m: Omit<ChatMessage, "id" | "createdAt">) => string;
   patchMessage: (id: string, patch: Partial<ChatMessage>) => void;
@@ -76,6 +90,11 @@ export const useChatStore = create<ChatState>((set) => ({
   highlightedChunkId: null,
   streamingId: null,
   activeChatId: null,
+  uploads: [],
+
+  addUpload: (doc) => set((s) => ({ uploads: [...s.uploads, doc] })),
+  removeUpload: (id) =>
+    set((s) => ({ uploads: s.uploads.filter((u) => u.id !== id) })),
 
   appendMessage: (m) => {
     const id = uid();
@@ -134,11 +153,13 @@ export const useChatStore = create<ChatState>((set) => ({
     })),
   clear: () => set({
     messages: [], highlightedChunkId: null, streamingId: null, activeChatId: null,
+    uploads: [],
   }),
   setHighlight: (id) => set({ highlightedChunkId: id }),
   setStreaming: (id) => set({ streamingId: id }),
   startNewChat: () => set({
     messages: [], highlightedChunkId: null, streamingId: null, activeChatId: null,
+    uploads: [],
   }),
   setActiveChatId: (id) => set({ activeChatId: id }),
 
@@ -147,6 +168,7 @@ export const useChatStore = create<ChatState>((set) => ({
     highlightedChunkId: null,
     streamingId: null,
     activeChatId: chatId,
+    uploads: [],
   }),
 
   dropLastAssistant: () => set((s) => {

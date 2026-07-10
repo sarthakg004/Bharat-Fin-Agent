@@ -16,7 +16,7 @@ export interface Chunk {
   source_url?: string;
   citation: string;
   sub_query?: string;
-  kind?: "text" | "web" | "table" | "market";
+  kind?: "text" | "web" | "table" | "market" | "xbrl" | "calc" | "edgar";
 }
 
 export interface QueryMetadata {
@@ -102,6 +102,16 @@ export interface QueryRequest {
   provider_config?: ProviderConfig;
   /** Per-session conversation memory (the server is stateless). */
   chat_history?: ChatTurn[];
+  /** Ids from POST /api/upload — the documents to answer over. */
+  upload_ids?: string[];
+}
+
+export interface UploadResponse {
+  upload_id: string;
+  filename: string;
+  pages: number;
+  tables: number;
+  chunks: number;
 }
 
 export interface HealthResponse {
@@ -140,6 +150,19 @@ export const api = {
   // Chat threads live entirely client-side (see threadStore).
   health: () => getJson<HealthResponse>("/api/health"),
 };
+
+/** Upload a document; the returned id is passed as `upload_ids` on queries.
+ * Uploads are ephemeral server-side (kept ~1 hour). */
+export async function uploadFile(file: File): Promise<UploadResponse> {
+  const form = new FormData();
+  form.append("file", file);
+  const res = await fetch(`${BASE}/api/upload`, { method: "POST", body: form });
+  if (!res.ok) {
+    const detail = await res.json().then((j) => j.detail).catch(() => null);
+    throw new Error(detail || `Upload failed: ${res.status} ${res.statusText}`);
+  }
+  return res.json() as Promise<UploadResponse>;
+}
 
 /**
  * Stream a POST /api/query response as Server-Sent Events.

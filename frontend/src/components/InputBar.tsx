@@ -1,7 +1,10 @@
 import { useRef, useState } from "react";
 import { motion } from "framer-motion";
-import { ArrowUp, X, Loader2, ChevronDown, Cpu } from "lucide-react";
+import { ArrowUp, X, Loader2, ChevronDown, Cpu, FileText, Paperclip } from "lucide-react";
+import toast from "react-hot-toast";
 
+import { uploadFile } from "@/lib/api";
+import { useChatStore } from "@/store/chatStore";
 import {
   PROVIDER_LABELS, PROVIDER_MODELS, type Provider, useSettingsStore,
 } from "@/store/settingsStore";
@@ -56,6 +59,8 @@ export function InputBar({ onSend, onClear, streaming, disabled }: Props) {
         disabled && "opacity-60",
       )}
     >
+      <UploadChips />
+
       {/* Question row */}
       <div className="flex items-end gap-2 px-3 py-2">
         <textarea
@@ -72,6 +77,7 @@ export function InputBar({ onSend, onClear, streaming, disabled }: Props) {
           disabled={disabled}
         />
         <div className="flex shrink-0 items-end gap-1">
+          <UploadButton disabled={disabled || streaming} />
           <button
             type="button"
             onClick={onClear}
@@ -108,6 +114,83 @@ export function InputBar({ onSend, onClear, streaming, disabled }: Props) {
         <Cpu size={12} className="shrink-0 text-text-muted" />
         <ModelSelect />
       </div>
+    </div>
+  );
+}
+
+/** Attach a PDF/DOCX. The file is parsed server-side into ephemeral chunks and
+ *  every question in this chat is answered over it (+ the corpus). */
+function UploadButton({ disabled }: { disabled?: boolean }) {
+  const addUpload = useChatStore((s) => s.addUpload);
+  const [busy, setBusy] = useState(false);
+  const fileRef = useRef<HTMLInputElement | null>(null);
+
+  async function onPick(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";                    // allow re-picking the same file
+    if (!file) return;
+    setBusy(true);
+    try {
+      const res = await uploadFile(file);
+      addUpload({ id: res.upload_id, name: res.filename,
+                  pages: res.pages, chunks: res.chunks });
+      toast.success(`${res.filename} attached (${res.pages} pages)`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Upload failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <input
+        ref={fileRef}
+        type="file"
+        accept=".pdf,.docx"
+        className="hidden"
+        onChange={onPick}
+      />
+      <button
+        type="button"
+        onClick={() => fileRef.current?.click()}
+        disabled={disabled || busy}
+        className="flex h-[34px] w-[34px] items-center justify-center border border-border-subtle text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary disabled:opacity-50"
+        title="Attach a PDF or DOCX (analysed for this chat only)"
+        aria-label="Attach a document"
+      >
+        {busy ? <Loader2 size={14} className="animate-spin" /> : <Paperclip size={14} />}
+      </button>
+    </>
+  );
+}
+
+/** Chips for the documents attached to this chat. */
+function UploadChips() {
+  const uploads = useChatStore((s) => s.uploads);
+  const removeUpload = useChatStore((s) => s.removeUpload);
+  if (!uploads.length) return null;
+
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 border-b border-border-subtle px-3 py-1.5">
+      {uploads.map((u) => (
+        <span
+          key={u.id}
+          className="inline-flex items-center gap-1.5 border border-border-subtle bg-bg-elevated px-2 py-1 font-mono text-[10px] text-text-secondary"
+          title={`${u.chunks} chunks · answered alongside the corpus`}
+        >
+          <FileText size={11} className="shrink-0 text-accent" />
+          <span className="max-w-[220px] truncate">{u.name}</span>
+          <span className="text-text-muted">· {u.pages}p</span>
+          <button
+            onClick={() => removeUpload(u.id)}
+            className="text-text-muted transition-colors hover:text-err"
+            aria-label={`Remove ${u.name}`}
+          >
+            <X size={11} />
+          </button>
+        </span>
+      ))}
     </div>
   );
 }

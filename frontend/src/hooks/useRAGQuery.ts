@@ -38,10 +38,12 @@ export function useRAGQuery() {
       setStreaming(assistantId);
       const startedAt = Date.now();
       let firstChunk = true;
+      const uploadIds = useChatStore.getState().uploads.map((u) => u.id);
       try {
         await send(
           { question, top_k: 5, chat_history: history,
-            provider_config: currentProviderConfig() },
+            provider_config: currentProviderConfig(),
+            upload_ids: uploadIds.length ? uploadIds : undefined },
           (e: SSEEvent) => {
             switch (e.type) {
               case "status":

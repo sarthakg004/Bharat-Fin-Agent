@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { Check, ChevronRight, ExternalLink, Gauge, RotateCcw } from "lucide-react";
+import { Check, ChevronRight, Gauge, RotateCcw } from "lucide-react";
 
 import type { QueryMetadata } from "@/lib/api";
 import type { ChatMessage } from "@/store/chatStore";
@@ -50,7 +50,9 @@ function AssistantBubble({ msg, onRetry }: BubbleProps) {
           {msg.error}
         </div>
       ) : showStatus && !msg.content ? (
-        <AnswerSkeleton />
+        // Skeleton only until the first agent step arrives — after that the
+        // one-line ThinkingTrace is the sole loading signal.
+        !msg.steps?.length ? <AnswerSkeleton /> : null
       ) : (
         // The MarkdownAnswer handles headings / bullets / tables / inline
         // citation chips (`[N]` and `[N, M]`) end-to-end. The streaming
@@ -128,10 +130,11 @@ function ThinkingTrace({ msg }: { msg: ChatMessage }) {
 
   if (steps.length === 0 && !msg.status) return null;
 
-  // Live view — the agent is still working, no answer text yet. A vertical
-  // activity feed: every step the agent has run, in order, with a spinner on
-  // the in-flight ones (parallel lanes spin together) and a check + a short
-  // outcome ("12 passages", "2 exact figures") on the finished ones.
+  // Live view — the agent is still working, no answer text yet. ONE line:
+  // a spinner + the current step (cross-faded as it changes) + the previous
+  // step's outcome, over a thin progress bar. The full step-by-step trace is
+  // available afterwards via the "Thought for Ns" expander — while working,
+  // a growing activity feed was just noise pushing the answer down.
   if (thinking) {
     const startedAt = msg.startedAt ?? msg.createdAt;
     const elapsedS = Math.max(0, (now - startedAt) / 1000);
@@ -143,16 +146,29 @@ function ThinkingTrace({ msg }: { msg: ChatMessage }) {
     const reached = (msg.progressIndex ?? 0) + 1;
     const progress = total > 0 ? Math.min(0.99, reached / total) : 0;
 
-    const anyRunning = steps.some((s) => !s.done);
+    const current = steps[steps.length - 1];
+    const lastDone = [...steps].reverse().find((s) => s.done && s.detail);
 
     return (
       <div className="flex w-full max-w-[80%] flex-col gap-2">
-        {/* Header: overall state + live elapsed timer */}
-        <div className="flex items-center justify-between gap-3">
-          <span className="font-mono text-[11px] uppercase tracking-wider text-text-secondary">
-            {anyRunning || steps.length === 0 ? "Working…" : "Finalising…"}
-          </span>
-          <span className="shrink-0 font-mono text-[10px] uppercase tracking-wider text-text-muted">
+        <div className="flex items-center gap-2 font-mono text-[11px]">
+          <span className="inline-block h-[9px] w-[9px] shrink-0 animate-spin rounded-full border border-text-muted border-t-accent" />
+          <AnimatePresence mode="wait" initial={false}>
+            <motion.span
+              key={current?.label ?? "start"}
+              initial={{ opacity: 0, y: 4 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -4 }}
+              transition={{ duration: 0.15 }}
+              className="truncate text-text-primary"
+            >
+              {(current?.label ?? "Working…").replace(/…$/, "")}
+              {lastDone?.detail && (
+                <span className="text-text-muted"> · {lastDone.detail}</span>
+              )}
+            </motion.span>
+          </AnimatePresence>
+          <span className="ml-auto shrink-0 font-mono text-[10px] uppercase tracking-wider text-text-muted">
             {elapsedS.toFixed(0)}s
           </span>
         </div>
@@ -168,32 +184,6 @@ function ThinkingTrace({ msg }: { msg: ChatMessage }) {
             />
           </div>
         )}
-
-        {/* Activity feed — newest last; in-flight steps spin, done steps show
-            their outcome. */}
-        <div className="flex flex-col gap-1 border-l border-border-subtle pl-3">
-          {steps.map((s, i) => (
-            <motion.div
-              key={`${s.stage}-${i}`}
-              initial={{ opacity: 0, x: -4 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ duration: 0.15 }}
-              className="flex items-baseline gap-2 font-mono text-[11px]"
-            >
-              {s.done ? (
-                <Check size={10} className="shrink-0 translate-y-[1px] text-accent/70" />
-              ) : (
-                <span className="inline-block h-[9px] w-[9px] shrink-0 translate-y-[1px] animate-spin rounded-full border border-text-muted border-t-accent" />
-              )}
-              <span className={s.done ? "text-text-muted" : "text-text-primary"}>
-                {s.label.replace(/…$/, "")}
-              </span>
-              {s.detail && (
-                <span className="text-[10px] text-text-secondary">· {s.detail}</span>
-              )}
-            </motion.div>
-          ))}
-        </div>
       </div>
     );
   }
@@ -278,9 +268,6 @@ function ConfidenceBadge({ m }: { m: QueryMetadata }) {
 function MetadataFooter({ msg }: { msg: ChatMessage }) {
   const m = agenticMeta(msg);
   const chunks = msg.chunks?.length ?? 0;
-  const traceUrl =
-    "https://smith.langchain.com/o/_/projects/" +
-    encodeURIComponent(import.meta.env.VITE_LANGCHAIN_PROJECT || "finagent");
 
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[10px] uppercase tracking-wider text-text-muted">
@@ -296,14 +283,6 @@ function MetadataFooter({ msg }: { msg: ChatMessage }) {
           <ConfidenceBadge m={m} />
         </>
       )}
-      <a
-        href={traceUrl}
-        target="_blank"
-        rel="noreferrer"
-        className="inline-flex items-center gap-1 text-text-muted hover:text-accent"
-      >
-        <ExternalLink size={9} /> LangSmith trace
-      </a>
     </div>
   );
 }
