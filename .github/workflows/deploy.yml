@@ -41,7 +41,7 @@ jobs:
 
       - name: Install dependencies (CPU torch)
         run: |
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
           pip install -r requirements.txt pytest
 
       - name: Run tests

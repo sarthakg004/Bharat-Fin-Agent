@@ -43,8 +43,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN python -m venv /opt/venv
 
 # CPU-only torch first (Cloud Run has no GPU) so sentence-transformers reuses it
-# instead of pulling the multi-GB CUDA build.
-RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+# instead of pulling the multi-GB CUDA build. torchvision comes from the same
+# index so the pair matches — docling pulls it transitively, and a PyPI
+# torchvision against a CPU-index torch breaks (torchvision::nms missing).
+RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu
 
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
