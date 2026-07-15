@@ -213,6 +213,42 @@ def test_exhausted_keys_abort_the_run():
         dr.run("Should I invest in Apple? (exhausted)")
 
 
+def test_report_step_waits_out_exhausted_pool(monkeypatch):
+    """Regression (live smoke run): specialists drained the whole key pool,
+    then the report call raised AllKeysExhaustedError and the run threw away
+    every finding. The report step must wait the per-minute window out and
+    retry once — salvaging the run — instead of failing it."""
+    from finagent.llm import AllKeysExhaustedError
+    import finagent.research.orchestrator as orch
+
+    slept: list[float] = []
+    monkeypatch.setattr(orch.time, "sleep", slept.append)
+
+    class FlakyLLM:
+        calls = 0
+        fail_first = 1                               # raise on the first N calls
+        def invoke(self, msgs):
+            FlakyLLM.calls += 1
+            if FlakyLLM.calls <= FlakyLLM.fail_first:
+                raise AllKeysExhaustedError("groq keys hit their rate limit")
+            class R:  # minimal LLM response
+                content = "# Report\n\nRecovered [1]."
+                usage_metadata = {"input_tokens": 5, "output_tokens": 5}
+            return R()
+
+    dr = _stubbed()
+    monkeypatch.setattr(DeepResearch, "_llm", lambda self: FlakyLLM())
+    dr._write_report = DeepResearch._write_report.__get__(dr)  # type: ignore[method-assign]
+    out = dr.run("Should I invest in Apple? (report retry)")
+    assert "Recovered" in out["report"]                  # retry salvaged the run
+    assert slept and slept[0] >= 60                      # waited the rate window
+
+    # Pool still dry on the retry → deterministic fallback, never an exception.
+    FlakyLLM.fail_first = 10**9
+    out2 = dr.run("Should I invest in Apple? (report retry 2)")
+    assert "report writer was unavailable" in out2["report"]
+
+
 def test_report_writer_failure_falls_back_to_sections(monkeypatch):
     dr = _stubbed()
     monkeypatch.setattr(DeepResearch, "_llm",

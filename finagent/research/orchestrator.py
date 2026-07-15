@@ -400,9 +400,11 @@ class DeepResearch:
                 HumanMessage(content=CROSS_CHECK_PROMPT.format(digest=digest[:24000])),
             ])
             return [c.strip() for c in (out.contradictions or []) if c.strip()][:8]
-        except Exception as e:
-            self._raise_if_exhausted(e)
-            return []                # consistency check is best-effort
+        except Exception:
+            # Best-effort — even an exhausted key pool must not fail the run
+            # here: the specialists' evidence is already gathered, and the
+            # report step below waits out the per-minute window itself.
+            return []
 
     def _write_report(self, question: str, scope: ResearchScope,
                       findings: list[dict], contradictions: list[str],
@@ -417,23 +419,36 @@ class DeepResearch:
         failed_block = ("\nSpecialists that FAILED (state these data gaps):\n"
                         + "\n".join(f"- {t.label}" for t in failed) + "\n"
                         if failed else "")
-        try:
-            resp = self._llm().invoke([
-                SystemMessage(content=REPORT_SYSTEM),
-                HumanMessage(content=REPORT_PROMPT.format(
-                    objective=scope.objective or question,
-                    company=scope.company or "(as stated in the request)",
-                    question=question, digest=digest,
-                    cross_check_block=cross_block, failed_block=failed_block)),
-            ])
-            tin, tout = self._usage_of(resp)
-            report = text_of(resp)
-            if report.strip():
-                return report, tin, tout
-        except Exception as e:
-            self._raise_if_exhausted(e)
-            print(f"[research] report writer failed ({type(e).__name__}); "
-                  f"assembling sections directly", flush=True)
+        from finagent.llm import AllKeysExhaustedError
+        for attempt in range(2):
+            try:
+                resp = self._llm().invoke([
+                    SystemMessage(content=REPORT_SYSTEM),
+                    HumanMessage(content=REPORT_PROMPT.format(
+                        objective=scope.objective or question,
+                        company=scope.company or "(as stated in the request)",
+                        question=question, digest=digest,
+                        cross_check_block=cross_block, failed_block=failed_block)),
+                ])
+                tin, tout = self._usage_of(resp)
+                report = text_of(resp)
+                if report.strip():
+                    return report, tin, tout
+                break
+            except AllKeysExhaustedError:
+                # The specialists often exhaust the whole pool right before
+                # this call — the ONE call that turns their minutes of work
+                # into the report. Groq limits are per-minute: wait the window
+                # out once instead of throwing the entire run away.
+                if attempt:
+                    break                            # still dry → fallback below
+                print("[research] key pool exhausted at report step; "
+                      "waiting 65s for the rate window", flush=True)
+                time.sleep(65)
+            except Exception as e:
+                print(f"[research] report writer failed ({type(e).__name__}); "
+                      f"assembling sections directly", flush=True)
+                break
         # Deterministic fallback: the findings ARE the report, minus the thesis.
         parts = [f"# Research: {scope.company or question}",
                  "*The report writer was unavailable — below are the "
