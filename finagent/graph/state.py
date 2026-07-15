@@ -358,8 +358,17 @@ class CalcQuery(BaseModel):
     )
     periods: list[str] = Field(
         default_factory=list,
-        description="Fiscal periods involved, e.g. ['FY2020','FY2021','FY2022']. "
-                    "Two periods for growth/cagr (earliest first); 2-5 for a trend.",
+        description="ONLY fiscal years the sub-query itself names, e.g. "
+                    "['FY2020','FY2021']. Two periods for growth/cagr (earliest "
+                    "first); 2-5 for a trend. Leave EMPTY when the sub-query "
+                    "names no absolute year ('latest', 'prior fiscal year', "
+                    "'year-over-year') — the tool resolves the newest filed "
+                    "periods itself; NEVER guess a year.",
+    )
+    quarterly: bool = Field(
+        default=False,
+        description="True if the metric is asked for a QUARTER ('last quarter', "
+                    "'Q1', 'most recent 10-Q') rather than a fiscal year.",
     )
 
 

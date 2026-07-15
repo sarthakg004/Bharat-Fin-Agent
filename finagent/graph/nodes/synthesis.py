@@ -57,6 +57,15 @@ this came from" phrasing reads authoritative but is ungrounded, and a fact-check
 scores it as unsupported even when the number is correct. When in doubt, say
 less: cite the number and stop.
 
+Facts vs inference
+------------------
+Never present your own inference as the filing's claim. If management does not
+explicitly attribute a change to a driver, do NOT write that the filing
+"implies" or "suggests" it — state what the figures show ("S&M grew 4% [2]
+while revenue grew 12% [1], so S&M leveraged as a % of revenue") and note
+plainly when the filing offers no attribution. A computed comparison of cited
+figures is fine; an invented causal story is not.
+
 Source priority and reconciliation
 ----------------------------------
 When sources disagree on a figure, do NOT list both values. Use the most
@@ -678,7 +687,8 @@ single item is irrelevant."""
         metric = str(r.get("metric", "")).replace("_", " ")
         if r.get("series"):                       # trend
             pts = ", ".join(
-                f"FY{s.get('fy', s.get('period'))}={s.get('value_str')}"
+                f"{s.get('period_label') or 'FY' + str(s.get('fy', s.get('period')))}"
+                f"={s.get('value_str')}"
                 for s in r["series"] if s.get("ok")
             )
             tail = f" — {r['summary']}" if r.get("summary") else ""

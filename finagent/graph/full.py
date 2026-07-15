@@ -140,6 +140,12 @@ Decomposition rules
   operating margin, latest fiscal year vs prior fiscal year"). Resolve relative
   periods ("last year") against today's date. NEVER fill in a year from your
   training data — your memory of "recent" years is stale.
+- DRIVER / CONTRIBUTION questions ("which expense categories contributed most
+  to the operating-margin change?") → enumerate the components so they can be
+  compared: one `numeric` sub-query per major income-statement line for BOTH
+  periods (revenue, cost of revenue, S&M, R&D, G&A — "latest vs prior
+  period"), plus ONE `narrative` sub-query for the MD&A's own explanation of
+  the change. The synthesiser then shows which lines grew slower than revenue.
 - Do NOT invent a metric the question didn't ask for. A qualitative question
   ("was the company able to retain customers?", "what drove the margin change?")
   must stay qualitative — do NOT rewrite it into a made-up ratio ("retention
@@ -422,11 +428,27 @@ class AgenticRAGv3(AgenticRAGv2):
 
         from datetime import date
 
+        # Uploaded documents ride `fetched_chunks`; without naming them here the
+        # planner can't anchor relative periods ("year-over-year") to the
+        # document the user is actually asking about (e.g. a Q1 10-Q means
+        # this-quarter vs same-quarter-last-year, not fiscal-year YoY).
+        uploads = sorted({c.get("filename") for c in (state.get("fetched_chunks") or [])
+                          if c.get("filing_type") == "uploaded" and c.get("filename")})
+        upload_block = ""
+        if uploads:
+            upload_block = (
+                "The user attached document(s) to this question: "
+                + ", ".join(uploads)
+                + ". Interpret the question — including relative periods like "
+                "'latest' or 'year-over-year' — against these documents; a "
+                "quarterly filing (10-Q) means the comparison is that quarter "
+                "vs the same quarter a year earlier.\n\n")
+
         llm = self._get_router_llm().with_structured_output(QueryPlan)
         try:
             out: QueryPlan = llm.invoke([
                 SystemMessage(content=PLAN_ROUTE_SYSTEM),
-                HumanMessage(content=history_block
+                HumanMessage(content=history_block + upload_block
                              + PLAN_ROUTE_PROMPT.format(
                                  question=question, today=date.today().isoformat())),
             ])

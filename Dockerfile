@@ -90,8 +90,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 # Runtime-only system libs (no build-essential): libgomp1 for torch/onnx,
 # ca-certificates for outbound HTTPS (Groq/Tavily), curl for debugging.
+# libgl1 + libglib2.0-0: opencv (cv2) links libGL/libglib/libX11 — docling's
+# TableFormer imports cv2 mid-parse, so uploads 422 without them (works
+# locally only because desktops ship these).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        curl ca-certificates libgomp1 \
+        curl ca-certificates libgomp1 libgl1 libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

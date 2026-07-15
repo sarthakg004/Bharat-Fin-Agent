@@ -405,13 +405,16 @@ class XBRLClient(BaseTool):
 
     @classmethod
     def _select_fact(cls, unit_facts: list[dict], year: Optional[int],
-                     quarterly: bool = False) -> Optional[dict]:
+                     quarterly: bool = False,
+                     fp: Optional[str] = None) -> Optional[dict]:
         """Choose a fact from a unit's list.
 
         `quarterly` → the latest ~3-month (10-Q) figure (for "last quarter"
-        questions). Otherwise the annual (10-K, full-year) figure. When `year` is
-        None we return the MOST RECENT matching fact — so a question with no year
-        always gets the latest data, never a stale default.
+        questions); `fp` (e.g. 'Q1') pins WHICH quarter, enabling same-quarter
+        year-over-year comparisons. Otherwise the annual (10-K, full-year)
+        figure. When `year` is None we return the MOST RECENT matching fact —
+        so a question with no year always gets the latest data, never a stale
+        default.
         """
         def is_full_year(f: dict) -> bool:
             d = cls._duration_days(f)
@@ -425,6 +428,11 @@ class XBRLClient(BaseTool):
 
         if quarterly:
             qs = [f for f in unit_facts if is_quarter(f)]
+            if fp:
+                # Same-quarter YoY: pin to the requested fiscal quarter.
+                # ponytail: Q4 is usually only derivable (FY − 9M), not filed —
+                # fp='Q4' falls back to any quarter; derive Q4 if it matters.
+                qs = [f for f in qs if f.get("fp") == fp] or qs
             # Instant concepts (balance-sheet items) have no quarter duration —
             # fall back to the latest instant at a quarter-end.
             pool = qs or [f for f in unit_facts if cls._duration_days(f) is None]
@@ -479,11 +487,12 @@ class XBRLClient(BaseTool):
     # --- public API ----------------------------------------------------------
 
     def run(self, ticker: str, concept: str, period: Optional[str] = None,
-            quarterly: bool = False) -> dict:
+            quarterly: bool = False, fp: Optional[str] = None) -> dict:
         """Return the exact reported value for (ticker/name, concept, period).
 
         `quarterly=True` returns the latest quarter (10-Q); otherwise the annual
-        figure. With no `period`, returns the most recent matching fact.
+        figure. `fp` (e.g. 'Q1') pins which quarter within `period`'s year, for
+        same-quarter YoY. With no `period`, returns the most recent matching fact.
         """
         r = self.resolver.resolve(ticker)
         cik = r.get("cik")
@@ -527,7 +536,7 @@ class XBRLClient(BaseTool):
             ukey = self._primary_unit(units)
             if not ukey:
                 continue
-            f = self._select_fact(units[ukey], year, quarterly=quarterly)
+            f = self._select_fact(units[ukey], year, quarterly=quarterly, fp=fp)
             if f is None:
                 continue
             if f.get("val"):                        # truthy → real, non-zero value

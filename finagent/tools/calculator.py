@@ -174,15 +174,18 @@ class FinancialCalculator(BaseTool):
 
     # --- input helper --------------------------------------------------------
 
-    def _input(self, ticker: str, concept: str, period: Optional[str]) -> dict:
+    def _input(self, ticker: str, concept: str, period: Optional[str],
+               quarterly: bool = False, fp: Optional[str] = None) -> dict:
         """Fetch one exact XBRL fact and shape it as an audit-friendly input."""
-        f = self.xbrl.run(ticker=ticker, concept=concept, period=period)
+        f = self.xbrl.run(ticker=ticker, concept=concept, period=period,
+                          quarterly=quarterly, fp=fp)
         if not f.get("ok"):
             return {"ok": False, "concept": concept, "period": period,
                     "error": f.get("error", "lookup failed")}
         return {
             "ok": True, "concept": concept, "value": f["value"],
             "value_str": f["value_str"], "tag": f["tag"], "fy": f["fy"],
+            "fp": f.get("fp"), "period_label": f.get("period_label"),
             "form": f["form"], "source": f["source"], "ticker": f.get("ticker", ""),
         }
 
@@ -254,19 +257,25 @@ class FinancialCalculator(BaseTool):
                        f"(FY{got[spec['add'][0]].get('fy')})"),
         }
 
-    def ratio(self, ticker: str, metric: str, period: Optional[str]) -> dict:
-        """Compute a margin or balance-sheet ratio for a single period."""
+    def ratio(self, ticker: str, metric: str, period: Optional[str],
+              quarterly: bool = False, fp: Optional[str] = None) -> dict:
+        """Compute a margin or balance-sheet ratio for a single period.
+
+        `quarterly=True` computes it over the latest quarter's figures (or the
+        quarter `fp` of `period`'s year, e.g. fp='Q1' — same-quarter YoY)."""
         name = _canonical_metric(metric)
         if name in COMPOSITE_RATIOS:
             return self._composite_ratio(ticker, name, period)
         if name not in RATIOS:
             return self._fail(metric, ticker, [], f"unknown ratio metric '{metric}'")
         num_c, den_c, as_pct = RATIOS[name]
-        num = self._input(ticker, num_c, period)
+        num = self._input(ticker, num_c, period, quarterly=quarterly, fp=fp)
         # Flow÷stock ratios average the balance-sheet denominator over (t-1, t).
-        averaged = name in AVG_DENOMINATOR_RATIOS
+        # ponytail: averaging is an annual convention — quarterly uses the
+        # point-in-time balance; add quarterly averaging only if a metric needs it.
+        averaged = name in AVG_DENOMINATOR_RATIOS and not quarterly
         den = (self._avg_input(ticker, den_c, period) if averaged
-               else self._input(ticker, den_c, period))
+               else self._input(ticker, den_c, period, quarterly=quarterly, fp=fp))
         # Expose the underlying (prior, current) facts for an averaged denominator
         # so the verifier can still ground each one; otherwise just (num, den).
         inputs = [num] + (den.get("_components") or [den])
@@ -276,14 +285,16 @@ class FinancialCalculator(BaseTool):
             return self._fail(name, ticker, inputs, "denominator is zero")
         value = num["value"] / den["value"]
         den_label = f"avg({den_c})" if averaged else den_c
+        plabel = num.get("period_label") or f"FY{num.get('fy')}"
         return {
             "ok": True, "metric": name, "ticker": self._tkr(num),
-            "period": period, "fy": num.get("fy"),
+            "period": period, "fy": num.get("fy"), "fp": num.get("fp"),
+            "period_label": plabel,
             "value": value, "value_str": _fmt(value, as_pct), "is_percent": as_pct,
             "formula": f"{num_c} / {den_label}",
             "inputs": inputs,
             "source": (f"computed from XBRL: {num['value_str']} / {den['value_str']} "
-                       f"({num_c}/{den_label}, FY{num.get('fy')})"),
+                       f"({num_c}/{den_label}, {plabel})"),
         }
 
     # --- dynamic, LLM-planned formulas --------------------------------------
@@ -455,10 +466,24 @@ class FinancialCalculator(BaseTool):
     # --- growth / CAGR -------------------------------------------------------
 
     def growth(self, ticker: str, concept: str,
-               period_from: str, period_to: str) -> dict:
-        """Period-over-period % change of `concept` (e.g. revenue YoY)."""
-        a = self._input(ticker, concept, period_from)
-        b = self._input(ticker, concept, period_to)
+               period_from: Optional[str], period_to: Optional[str],
+               quarterly: bool = False) -> dict:
+        """Period-over-period % change of `concept` (e.g. revenue YoY).
+
+        With NO periods given, resolves the latest filed period and compares it
+        to the year before (same quarter when `quarterly`) — previously both
+        lookups hit the same latest fact and returned a silent 0% growth."""
+        fp = None
+        if not period_from and not period_to:
+            probe = self.xbrl.run(ticker=ticker, concept=concept, period=None,
+                                  quarterly=quarterly)
+            if not probe.get("ok") or not probe.get("fy"):
+                return self._fail("growth", ticker, [probe],
+                                  "could not resolve the latest period")
+            fp = probe.get("fp") if quarterly else None
+            period_from, period_to = f"FY{probe['fy'] - 1}", f"FY{probe['fy']}"
+        a = self._input(ticker, concept, period_from, quarterly=quarterly, fp=fp)
+        b = self._input(ticker, concept, period_to, quarterly=quarterly, fp=fp)
         inputs = [a, b]
         if not (a["ok"] and b["ok"]):
             return self._fail("growth", ticker, inputs, "missing XBRL input(s)")
@@ -504,12 +529,15 @@ class FinancialCalculator(BaseTool):
 
     # --- multi-period trend --------------------------------------------------
 
-    def trend(self, ticker: str, metric: str, periods: list[str]) -> dict:
+    def trend(self, ticker: str, metric: str, periods: list[str],
+              quarterly: bool = False, fp: Optional[str] = None) -> dict:
         """Compute `metric` (a ratio/margin, or a raw concept) across `periods`.
 
         Returns a per-period series plus the first→last change and, for a
         consistent multi-year span, the CAGR of the series. This backs questions
-        like "operating margin trend over the last 3 years".
+        like "operating margin trend over the last 3 years". With `quarterly`
+        and `fp` (e.g. 'Q1'), each period is that quarter of the named year —
+        so ['FY2025','FY2026'] compares Q1 2025 with Q1 2026.
         """
         name = _canonical_metric(metric)
         is_ratio = name in RATIOS or name in COMPOSITE_RATIOS
@@ -520,14 +548,16 @@ class FinancialCalculator(BaseTool):
         series: list[dict] = []
         for p in periods:
             if is_ratio:
-                r = self.ratio(ticker, name, p)
+                r = self.ratio(ticker, name, p, quarterly=quarterly, fp=fp)
             else:                                  # raw concept (revenue, net income…)
-                f = self._input(ticker, name, p)
+                f = self._input(ticker, name, p, quarterly=quarterly, fp=fp)
                 r = ({"ok": True, "period": p, "value": f["value"],
-                      "value_str": f["value_str"], "fy": f.get("fy"), "inputs": [f]}
+                      "value_str": f["value_str"], "fy": f.get("fy"),
+                      "period_label": f.get("period_label"), "inputs": [f]}
                      if f["ok"] else {"ok": False, "period": p, "error": f["error"]})
             series.append({"period": p, **({"value": r["value"],
-                            "value_str": r["value_str"], "fy": r.get("fy")}
+                            "value_str": r["value_str"], "fy": r.get("fy"),
+                            "period_label": r.get("period_label")}
                            if r.get("ok") else {"value": None, "error": r.get("error")}),
                            "ok": r.get("ok", False)})
 
@@ -550,9 +580,12 @@ class FinancialCalculator(BaseTool):
                 out["change_str"] = f"{direction} {abs(delta) * 100:.1f} pts"
             else:
                 out["change_str"] = f"{direction} {abs(delta):,.2f}"
+
+            def lab(s: dict) -> str:
+                return s.get("period_label") or f"FY{s.get('fy')}"
             out["summary"] = (
                 f"{name.replace('_', ' ')} {direction} from {first['value_str']} "
-                f"(FY{first.get('fy')}) to {last['value_str']} (FY{last.get('fy')})"
+                f"({lab(first)}) to {last['value_str']} ({lab(last)})"
             )
         return out
 
@@ -562,7 +595,7 @@ class FinancialCalculator(BaseTool):
             concept: str = "", periods: Optional[list[str]] = None,
             period_from: Optional[str] = None, period_to: Optional[str] = None,
             start_period: Optional[str] = None, end_period: Optional[str] = None,
-            **_: object) -> dict:
+            quarterly: bool = False, **_: object) -> dict:
         """Single entry point. Routes on `metric` and the periods provided.
 
         - metric == "growth"  -> growth(concept, period_from, period_to)
@@ -581,13 +614,15 @@ class FinancialCalculator(BaseTool):
                 or period_to or end_period)
         if m == "growth":
             return self.growth(ticker, concept or "revenue",
-                               period_from or start_period, period_to or end_period)
+                               period_from or start_period, period_to or end_period,
+                               quarterly=quarterly)
         if m == "cagr":
             return self.cagr(ticker, concept or "revenue",
                             start_period or period_from, end_period or period_to)
         if periods and len(periods) > 1:
-            return self.trend(ticker, m, periods)
-        return self.ratio(ticker, m, period or (periods[0] if periods else None))
+            return self.trend(ticker, m, periods, quarterly=quarterly)
+        return self.ratio(ticker, m, period or (periods[0] if periods else None),
+                          quarterly=quarterly)
 
     # --- helpers -------------------------------------------------------------
 

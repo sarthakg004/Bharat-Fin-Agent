@@ -69,6 +69,15 @@ growth/cagr only — the underlying concept. List EVERY fiscal year the sub-quer
 names: "FY2021 inventory turnover using average inventory between FY2020 and
 FY2021" → periods ['FY2020','FY2021'] (the LAST period is the target year; the
 earlier one only feeds the averaged input — never return just the earlier year).
+
+Period rules (important):
+- List ONLY fiscal years the sub-query itself names. If it names NONE — or says
+  'latest', 'most recent', 'prior fiscal year', 'year-over-year' — leave periods
+  EMPTY; the tool resolves the newest filed periods itself. NEVER fill in a year
+  from your training data; your memory of "recent" years is stale.
+- Set quarterly=true when the metric is asked for a QUARTER ('last quarter',
+  'Q1', 'most recent 10-Q') rather than a full fiscal year.
+
 Set is_derived=false for a single reported figure (revenue,
 net income, total assets, …); those are handled by the XBRL facts tool, not here.
 Use the conversation context to resolve a follow-up's company/periods.
@@ -126,6 +135,29 @@ _DEFINES_RE = re.compile(r"\b(?:defined|calculated|computed|measured)\s+as\b", r
 # Multi-period metrics the hardcoded path owns (growth/cagr/trend); the
 # single-period formula planner doesn't handle these.
 _MULTIPERIOD_RE = re.compile(r"\b(growth|cagr|trend|compound annual)\b", re.I)
+
+# 4-digit years, for the extraction guard below.
+_YEAR_RE = re.compile(r"(?:19|20)\d{2}")
+
+# The sub-query asks for a period-over-period comparison of the metric
+# ("year-over-year", "vs prior year", "improve/decline", "change").
+_COMPARE_RE = re.compile(
+    r"\byoy\b|year[\s-]over[\s-]year|\bvs\.?\b|versus|\bprior\b|previous"
+    r"|improv|declin|change|compared|expand|contract", re.I)
+
+# The sub-query is about a quarter, not a fiscal year.
+_QUARTERLY_RE = re.compile(r"\bq[1-4]\b|quarter|10[\s-]?q\b", re.I)
+
+
+def _named_periods_only(sub_q: str, periods: list[str]) -> list[str]:
+    """Keep only periods whose year the sub-query itself names.
+
+    The extraction LLM must not guess: "latest fiscal year vs prior fiscal
+    year" has NO named year, so every extracted period is a stale-training-data
+    guess and gets dropped (the calculator then resolves the newest filed
+    periods itself)."""
+    named = set(_YEAR_RE.findall(sub_q))
+    return [p for p in (periods or []) if set(_YEAR_RE.findall(p)) & named]
 
 
 class NumericNodes:
@@ -285,6 +317,18 @@ class NumericNodes:
         for sub_q, q in extracted:
             if q is None or not q.is_derived or not (q.ticker and q.metric):
                 continue
+            # Deterministic period guard: drop any extracted year the sub-query
+            # itself doesn't name. Observed failure: "latest fiscal year vs
+            # prior fiscal year" extracted as ['FY2022','FY2023'] from the
+            # LLM's stale training memory — the calculator then computed the
+            # wrong years' figures, which the synthesizer treats as
+            # authoritative and nothing downstream can catch.
+            kept = _named_periods_only(sub_q, q.periods)
+            if kept != list(q.periods or []):
+                self._log(state, f"dropped guessed period(s) "
+                                 f"{[p for p in q.periods if p not in kept]} "
+                                 f"for {sub_q!r}")
+                q.periods = kept
             redefined = bool(_DEFINES_RE.search(sub_q))
             multiperiod = bool(_MULTIPERIOD_RE.search(q.metric)
                                or _MULTIPERIOD_RE.search(sub_q))
@@ -341,15 +385,34 @@ class NumericNodes:
         """The hardcoded deterministic calculator path (margins/ratios/growth/
         cagr/trend/days). Returns None on an exception so the caller can fall
         through to the dynamic planner."""
-        from finagent.tools.calculator import AVG_DENOMINATOR_RATIOS, _canonical_metric
+        from finagent.tools.calculator import (
+            AVG_DENOMINATOR_RATIOS, COMPOSITE_RATIOS, RATIOS, _canonical_metric)
 
+        quarterly = bool(getattr(q, "quarterly", False)
+                         or _QUARTERLY_RE.search(sub_q))
         try:
             metric = _canonical_metric(q.metric)
+            # Relative-period comparison ("operating margin, latest vs prior")
+            # with NO absolute year named: resolve the newest FILED period from
+            # XBRL itself, then compute both periods so the answer states the
+            # change — never a single stale year. For a quarterly question the
+            # comparison is same-quarter prior-year (Q1 2026 vs Q1 2025).
+            if (not q.periods and (metric in RATIOS or metric in COMPOSITE_RATIOS)
+                    and _COMPARE_RE.search(sub_q)):
+                latest = self.calc.ratio(q.ticker, metric, None,
+                                         quarterly=quarterly)
+                fy = latest.get("fy") if latest.get("ok") else None
+                if fy:
+                    return self.calc.trend(
+                        q.ticker, metric, [f"FY{fy - 1}", f"FY{fy}"],
+                        quarterly=quarterly,
+                        fp=latest.get("fp") if quarterly else None)
             target = self._averaging_target_period(sub_q)
             if metric in AVG_DENOMINATOR_RATIOS and target:
                 return self.calc.ratio(q.ticker, metric, target)
             return self.calc.run(
                 metric=q.metric, ticker=q.ticker, concept=q.concept,
+                quarterly=quarterly,
                 periods=q.periods,
                 period=(q.periods[0] if q.periods else None),
                 period_from=(q.periods[0] if len(q.periods) >= 2 else None),

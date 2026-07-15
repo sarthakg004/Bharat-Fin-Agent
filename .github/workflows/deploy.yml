@@ -106,6 +106,7 @@ jobs:
             --cpu 2 \
             --cpu-boost \
             --max-instances 1 \
+            --timeout 3600 \
             --quiet
 
       - name: Set up Node

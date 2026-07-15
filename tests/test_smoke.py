@@ -672,7 +672,7 @@ def test_turnover_ratio_averages_denominator():
         ("ppe_net", "FY2018"): 282.0,                       # avg = 267.5
     }
 
-    def fake_input(ticker, concept, period):
+    def fake_input(ticker, concept, period, quarterly=False, fp=None):
         if (concept, period) in facts:
             v = facts[(concept, period)]
             return {"ok": True, "concept": concept, "value": v,

@@ -36,6 +36,12 @@ COMPANY_ALIASES: dict[str, str] = {
 
 _YEAR_RE = re.compile(r"\b(?:FY\s?)?((?:19|20)\d{2})\b", re.I)
 
+# The question means "newest data" without naming a year (matched against the
+# _norm()-alised question, so "year-over-year" arrives as "year over year").
+_RECENT_RE = re.compile(
+    r"\b(latest|most recent|current|year over year|yoy|prior fiscal year"
+    r"|last quarter|this quarter|past year)\b")
+
 
 def _norm(s: str) -> str:
     """Lowercase; '&'→' and '; punctuation→space; collapse whitespace."""
@@ -164,6 +170,15 @@ def infer_filter(question: str, vocab: dict, years_by_co: dict) -> Optional[dict
             keep = [str(y) for y in (target, target + 1) if str(y) in years_avail]
             if keep:
                 flt["years"] = keep
+        elif years_avail and _RECENT_RE.search(qn):
+            # "latest" / "year-over-year" with no year named: restrict to the
+            # two NEWEST indexed years so stale filings' near-identical language
+            # can't outrank the current one. (The newest filing carries the
+            # prior year's comparatives, so two years covers a YoY question;
+            # search() already relaxes the year clause if this over-narrows.)
+            digit = sorted((y for y in years_avail if str(y).isdigit()), key=int)
+            if digit:
+                flt["years"] = digit[-2:]
     return flt
 
 

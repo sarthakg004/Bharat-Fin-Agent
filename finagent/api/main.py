@@ -300,6 +300,26 @@ _UPLOAD_TTL_S = 3600
 _UPLOAD_MAX_ENTRIES = 20
 _UPLOAD_MAX_BYTES = 15 * 1024 * 1024
 _UPLOAD_SUFFIXES = {".pdf", ".docx"}
+# Docling parse time scales with pages (~seconds/page on Cloud Run CPU); a big
+# filing both bills the instance for minutes and blocks the single-worker
+# executor behind it (observed: a 197-page 10-Q blew the 600s request timeout).
+# Reject early with a cheap pypdfium2 page count — cost control for a
+# portfolio deployment. ponytail: raise when a separate parse worker exists.
+_UPLOAD_MAX_PAGES = 40
+
+
+def _pdf_page_count(data: bytes):
+    """Page count via pypdfium2 (already in the image as a docling dep).
+    None when unreadable — Docling then gets its own try at the file."""
+    try:
+        import pypdfium2 as pdfium
+        doc = pdfium.PdfDocument(data)
+        try:
+            return len(doc)
+        finally:
+            doc.close()
+    except Exception:
+        return None
 
 
 def _uploads_gc() -> None:
@@ -322,6 +342,14 @@ async def upload_document(file: UploadFile = File(...)):
         raise HTTPException(status_code=413, detail="File exceeds the 15 MB limit.")
     if not data:
         raise HTTPException(status_code=400, detail="Empty file.")
+    if suffix == ".pdf":
+        pages = _pdf_page_count(data)
+        if pages and pages > _UPLOAD_MAX_PAGES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"PDF has {pages} pages; the limit is {_UPLOAD_MAX_PAGES}. "
+                       "Please upload the relevant section (e.g. the financial "
+                       "statements and MD&A pages).")
 
     from finagent.ingestion.upload import parse_upload
 
@@ -332,7 +360,9 @@ async def upload_document(file: UploadFile = File(...)):
         parsed = await loop.run_in_executor(
             _executor, lambda: parse_upload(data, file.filename or "upload.pdf"))
     except Exception as e:
-        print(f"[upload error] {type(e).__name__}", flush=True)
+        # Full type + message in the server log (the 422 detail stays generic);
+        # a bare class name made the cloud cv2/libGL failure a blind hunt.
+        print(f"[upload error] {type(e).__name__}: {e}", flush=True)
         raise HTTPException(status_code=422,
                             detail="Could not parse the document.") from e
     if not parsed["ok"]:
