@@ -60,58 +60,7 @@ from finagent.graph.table_agent import TableAgent
 # Prompts
 # --------------------------------------------------------------------------- #
 
-ROUTER_SYSTEM = """\
-You route financial-QA sub-queries to one of FIVE retrievers:
-
-- narrative: text retrieval over filings. Prose-style questions (strategy,
-  risks, segment overviews, MD&A commentary) about ONE named company.
-- numeric:   table-based answer FROM THE FILINGS. Specific figures, ratios,
-  margins, growth %, multi-year financial comparisons that the company has
-  reported in a 10-K or annual report.
-- market:    live market-data tools (yfinance). Anything about a listed
-  company's MARKET BEHAVIOUR — current/premarket/intraday price, OHLC
-  history, 52-week range, charts, ticker-level news headlines. Lean `market`
-  whenever the question is *in the direction of* the stock: "how is X doing",
-  "how has X performed", "is X a good stock", "X stock", "X share price",
-  recent returns/trend. When in doubt between market and narrative for a
-  stock-flavoured question, pick `market` (a price chart is shown).
-- cross_document: EDGAR full-text search across MANY companies' filings. Use
-  when the answer is a SET OF COMPANIES rather than facts about one named
-  company: "which companies disclosed/mentioned X", "list firms that report Y",
-  "how many 10-Ks discuss Z". The defining signal is no single subject company.
-- external:  general web search. Macro news, corporate events, post-cutoff
-  developments that aren't specifically about market data.
-
-Numeric markers: "what was", "how much", "ratio", "margin", "growth %",
-specific fiscal years (FY23, FY2024), currency amounts ($), "billion".
-
-Market markers: "current price", "premarket", "intraday", "today's move",
-"stock chart", "52-week", "OHLC", "candlestick", "compare X and Y stock".
-
-Cross-document markers: "which companies", "what companies", "list companies/firms",
-"how many filings/companies", "across filings" — when no single company is the subject.
-
-Examples:
-  - "What is JPMorgan's net interest margin in FY23?"            → numeric
-  - "How much did Amazon earn from AWS in FY23?"                 → numeric
-  - "Describe Microsoft's AI strategy"                           → narrative
-  - "What were the principal risks listed in Apple's 10-K?"      → narrative
-  - "EBITDA margin growth from FY21 to FY23?"                    → numeric
-  - "What is Nvidia's current share price?"                     → market
-  - "Show me Apple's 1-year stock chart"                         → market
-  - "How is Tesla doing as a stock?"                             → market
-  - "Which companies disclosed a material weakness in FY2023?"   → cross_document
-  - "List firms that mention quantum computing in their 10-K"    → cross_document
-  - "Latest macro headlines today"                               → external
-"""
-
-ROUTER_PROMPT = """\
-Classify each sub-query below. Return one verdict per sub-query in the SAME
-order. Copy the sub-query text verbatim into the `sub_query` field.
-
-Sub-queries:
-{sub_queries}
-"""
+from finagent.prompts.planner import ROUTER_PROMPT, ROUTER_SYSTEM  # noqa: F401
 
 # Fused planner+router: ONE structured call both decomposes the question into
 # sub-queries AND routes each to its lane. This replaces two sequential LLM
@@ -709,8 +658,8 @@ def _build_cli() -> argparse.ArgumentParser:
     p.add_argument("--code-model", default=None)
     p.add_argument("--embedding-model", default="BAAI/bge-small-en-v1.5")
     p.add_argument("--reranker-model", default=HybridRetriever.DEFAULT_RERANKER)
-    p.add_argument("--bm25-top-k", type=int, default=10)
-    p.add_argument("--dense-top-k", type=int, default=10)
+    p.add_argument("--bm25-top-k", type=int, default=24)
+    p.add_argument("--dense-top-k", type=int, default=24)
     p.add_argument("--final-top-k", type=int, default=5)
     p.add_argument("--table-top-k", type=int, default=3)
     p.add_argument("--grade-threshold", type=float, default=3.0)

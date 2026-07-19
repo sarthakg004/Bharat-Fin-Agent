@@ -39,12 +39,15 @@ class HybridRetriever:
         self,
         chroma_store,
         reranker_model: str = DEFAULT_RERANKER,
-        bm25_top_k: int = 10,
-        dense_top_k: int = 10,
+        # 24 per retriever (pool ≈ 48 after dedupe): the reranker can only
+        # reorder what the pool contains, and 10+10 measurably capped recall.
+        bm25_top_k: int = 24,
+        dense_top_k: int = 24,
         final_top_k: int = 5,
         fetch_batch_size: int = 1000,
         use_mmr: bool = True,
         auto_filter: bool = True,
+        parent_doc: bool = True,
     ):
         self.store = chroma_store
         self.reranker_model = reranker_model
@@ -60,6 +63,11 @@ class HybridRetriever:
         # Without it, one company's question competes against every other
         # filing's near-identical accounting language.
         self.auto_filter = auto_filter
+        # Parent-document retrieval: chunks are embedded as small children; after
+        # matching, collapse each child back to its parent (bigger context) and
+        # rerank the parents. Degrades gracefully — a chunk with no `parent_text`
+        # (a collection ingested before parent-doc) is kept as-is.
+        self.parent_doc = parent_doc
 
         self._bm25 = None
         self._bm25_empty = False          # True once we've seen an empty collection
@@ -76,14 +84,17 @@ class HybridRetriever:
         """Return up to `final_top_k` (text, metadata) pairs for the query."""
         flt = self.infer_filter(query) if self.auto_filter else None
         union = self._bm25_then_dense(query, flt)
-        if not union and flt and flt.get("years"):
-            # The YEAR can over-narrow (fiscal-calendar labelling) — relax it.
-            # The COMPANY clause is never relaxed: chunks from a different
-            # company are noise that misleads the synthesizer, and an empty
-            # result correctly hands off to the fetch/web fallbacks.
+        if not union and flt and (flt.get("years") or flt.get("items")):
+            # The YEAR (fiscal-calendar labelling) or the ITEM clause (collection
+            # ingested before section tagging existed) can over-narrow — relax
+            # both back to company-only. The COMPANY clause is never relaxed:
+            # chunks from a different company are noise that misleads the
+            # synthesizer, and an empty result correctly hands off to the
+            # fetch/web fallbacks.
             union = self._bm25_then_dense(query, {"companies": flt["companies"]})
         if not union:
             return []
+        union = self._collapse_to_parents(union)
         return self._rerank(query, union)[: self.final_top_k]
 
     def infer_filter(self, query: str) -> Optional[dict]:
@@ -147,6 +158,7 @@ class HybridRetriever:
         union = self._bm25_then_dense(query)
         if not union:
             return []
+        union = self._collapse_to_parents(union)
         return self._rerank(query, union)[:k]
 
     # ------------------------------------------------------------------ #
@@ -207,6 +219,34 @@ class HybridRetriever:
             except Exception:
                 pass
         return self.store.similarity_search(query, k=self.dense_top_k, filter=where)
+
+    def _collapse_to_parents(
+        self, hits: list[tuple[str, dict]]
+    ) -> list[tuple[str, dict]]:
+        """Parent-document retrieval: replace each matched child with its parent
+        text (bigger context), deduped by (local_path, parent_id) so several
+        children of one parent collapse to a single candidate. Order is
+        preserved (best-ranked child first) — the reranker re-sorts anyway.
+        Chunks without parent metadata (pre-parent-doc collection) pass through.
+        """
+        if not self.parent_doc:
+            return hits
+        seen, out = set(), []
+        for text, meta in hits:
+            pid = meta.get("parent_id")
+            ptext = meta.get("parent_text")
+            if pid is None or not ptext:
+                key = ("__child__", meta.get("local_path", ""),
+                       meta.get("element_index", ""), text[:80])
+                parent_text = text
+            else:
+                key = ("__parent__", meta.get("local_path", ""), pid)
+                parent_text = ptext
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append((parent_text, meta))
+        return out
 
     def _rerank(self, query: str, candidates: list[tuple[str, dict]]):
         reranker = self._ensure_reranker()

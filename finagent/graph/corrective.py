@@ -151,8 +151,8 @@ class AgenticRAGv2(AgenticRAG):
         self,
         *args,
         reranker_model: str = HybridRetriever.DEFAULT_RERANKER,
-        bm25_top_k: int = 10,
-        dense_top_k: int = 10,
+        bm25_top_k: int = 24,
+        dense_top_k: int = 24,
         final_top_k: int = 5,
         # After merging every sub-query's hits into one pool, a final
         # cross-encoder rerank against the ORIGINAL question keeps only the
@@ -551,8 +551,8 @@ def _build_cli() -> argparse.ArgumentParser:
     p.add_argument("--grader-model", default=None)
     p.add_argument("--embedding-model", default="BAAI/bge-small-en-v1.5")
     p.add_argument("--reranker-model", default=HybridRetriever.DEFAULT_RERANKER)
-    p.add_argument("--bm25-top-k", type=int, default=10)
-    p.add_argument("--dense-top-k", type=int, default=10)
+    p.add_argument("--bm25-top-k", type=int, default=24)
+    p.add_argument("--dense-top-k", type=int, default=24)
     p.add_argument("--final-top-k", type=int, default=5)
     p.add_argument("--grade-threshold", type=float, default=3.0)
     p.add_argument("--max-rewrites", type=int, default=3)

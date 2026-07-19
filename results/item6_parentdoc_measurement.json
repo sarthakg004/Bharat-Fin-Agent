@@ -1,0 +1,26 @@
+{
+  "n_questions": 150,
+  "item_filter_on": {
+    "pool_recall@20": 0.2733,
+    "pool_recall@50": 0.5,
+    "pool_recall@100": 0.6533,
+    "hit@1": 0.102,
+    "hit@3": 0.1327,
+    "hit@5": 0.2347,
+    "mrr": 0.1837,
+    "n_questions": 150,
+    "n_in_pool": 98
+  },
+  "item_filter_off": {
+    "pool_recall@20": 0.2733,
+    "pool_recall@50": 0.5,
+    "pool_recall@100": 0.6533,
+    "hit@1": 0.102,
+    "hit@3": 0.1327,
+    "hit@5": 0.2347,
+    "mrr": 0.1837,
+    "n_questions": 150,
+    "n_in_pool": 98
+  },
+  "parent_doc": true
+}

@@ -69,6 +69,28 @@ from tqdm import tqdm
 # Lazy imports for heavy ML deps happen inside methods so help-printing /
 # argument-validation stays fast and doesn't require everything installed.
 
+# 10-K section heading at line start: "Item 1A. Risk Factors", "ITEM 7 —".
+# ponytail: line-start heuristic — a mid-sentence "see Item 8" on its own line
+# would mislabel; upgrade to a TOC-anchored parser if tagging noise shows up.
+import re as _re
+
+_ITEM_RE = _re.compile(r"(?im)^\s*item\s+(\d{1,2}[ab]?)\s*[.:—–-]")
+
+
+def _tag_items(texts: list[str], start: str = "") -> list[str]:
+    """For an in-order list of chunk/page texts, return the 10-K item each one
+    belongs to ("1A", "7", …; "" = before any heading). A text containing a
+    heading is tagged with that (last) heading; the state carries forward."""
+    out, current = [], start
+    for t in texts:
+        found = _ITEM_RE.findall(t or "")
+        if found:
+            current = found[-1].upper()
+            out.append(found[0].upper())
+        else:
+            out.append(current)
+    return out
+
 
 @dataclass
 class IngestionStats:
@@ -103,6 +125,16 @@ class CorpusIngester:
     DEFAULT_CHUNK_SIZE = 1000
     DEFAULT_CHUNK_OVERLAP = 200
 
+    # Parent-document retrieval: embed SMALL children (precise lexical/dense
+    # match, fit the bge-small ~2048-char window), return the LARGER parent for
+    # context. The chunk ablation showed a single 1000-char chunk captures only
+    # ~47% of gold evidence vs ~74% at 1500 — but 1500 dilutes match precision,
+    # so we match on children and hand the parent to synthesis.
+    PARENT_CHUNK_SIZE = 1500
+    PARENT_CHUNK_OVERLAP = 200
+    CHILD_CHUNK_SIZE = 600
+    CHILD_CHUNK_OVERLAP = 100
+
     # Files smaller than this are likely junk (download failures, empty stubs).
     MIN_VALID_FILE_BYTES = 10_000
 
@@ -121,6 +153,7 @@ class CorpusIngester:
         html_new_after: int = 1200,
         html_combine_under: int = 400,
         html_overlap: int = 200,
+        parent_doc: bool = True,
     ):
         """
         Args:
@@ -153,12 +186,17 @@ class CorpusIngester:
         self.html_new_after = html_new_after
         self.html_combine_under = html_combine_under
         self.html_overlap = html_overlap
+        # Parent-document retrieval for the INDEXED path (ephemeral fetch keeps
+        # flat parent-sized chunks — it ranks in memory with no parent swap).
+        self.parent_doc = parent_doc
 
         self.chroma_dir.mkdir(parents=True, exist_ok=True)
 
         # Resources initialized lazily on first use.
         self._embeddings = None
         self._splitter = None
+        self._parent_splitter = None
+        self._child_splitter = None
         self._vector_store = None
 
     # ------------------------------------------------------------------ #
@@ -256,7 +294,8 @@ class CorpusIngester:
         Returns:
             Number of chunks added to Chroma.
         """
-        docs = self._documents_for(file_path, self._base_meta(record, file_path))
+        docs = self._documents_for(file_path, self._base_meta(record, file_path),
+                                   parent_doc=self.parent_doc)
         if not docs:
             return 0
 
@@ -280,44 +319,91 @@ class CorpusIngester:
             "filing_type": record.get("filing_type", "annual_report"),
         }
 
-    def _documents_for(self, file_path: Path, base_meta: dict) -> list:
+    def _documents_for(self, file_path: Path, base_meta: dict,
+                       parent_doc: bool = False) -> list:
         """Parse + chunk one file into LangChain Documents (no embedding / no
         Chroma write). Shared by `ingest_file` and by the ephemeral dynamic-fetch
         path that ranks a freshly-fetched filing in memory without indexing it.
 
         Branch by format. HTML (US SEC filings) uses structure-aware chunking
         that keeps tables intact; PDFs use per-page pypdf text + char chunking.
+
+        `parent_doc` (indexed path): split each parent-sized unit into SMALL
+        children and stash the parent on each child (`parent_id`/`parent_text`)
+        for parent-document retrieval. The ephemeral path passes False and keeps
+        flat parent-sized chunks (it ranks in memory with no parent swap).
         """
         from langchain_core.documents import Document
 
         suffix = file_path.suffix.lower()
         if suffix in (".htm", ".html"):
-            return self._html_documents(file_path, base_meta)
+            return self._html_documents(file_path, base_meta, parent_doc)
 
         page_texts = self._extract_pages(file_path)
         if not page_texts:
             return []
-        splitter = self._get_splitter()
+
+        if not parent_doc:
+            splitter = self._get_splitter()
+            pairs: list[tuple[int, str]] = []
+            for page_num in sorted(page_texts):
+                for chunk in splitter.split_text(page_texts[page_num]):
+                    pairs.append((page_num, chunk))
+            items = _tag_items([c for _, c in pairs])
+            return [
+                Document(page_content=chunk,
+                         metadata={**base_meta, "page": page_num, "item": item})
+                for (page_num, chunk), item in zip(pairs, items)
+            ]
+
+        # Parent-document: page text -> parent chunks -> small children.
+        parent_split = self._get_parent_splitter()
+        parents: list[tuple[str, dict]] = []
+        for page_num in sorted(page_texts):
+            for parent in parent_split.split_text(page_texts[page_num]):
+                parents.append((parent, {"page": page_num}))
+        return self._children_from_parents(parents, base_meta)
+
+    def _children_from_parents(self, parents: list[tuple[str, dict]],
+                               base_meta: dict) -> list:
+        """Turn an in-order list of (parent_text, extra_meta) into child
+        Documents: each parent is item-tagged (heading state carried across
+        parents), split into small children, and every child carries its
+        `parent_id` + `parent_text` so retrieval can return the parent."""
+        from langchain_core.documents import Document
+
+        items = _tag_items([p for p, _ in parents])
+        child_split = self._get_child_splitter()
         docs: list = []
-        for page_num, text in page_texts.items():
-            for chunk in splitter.split_text(text):
-                docs.append(Document(page_content=chunk,
-                                     metadata={**base_meta, "page": page_num}))
+        for pid, ((ptext, extra), item) in enumerate(zip(parents, items)):
+            stored_parent = ptext[:4000]
+            children = [c.strip() for c in child_split.split_text(ptext) if c.strip()]
+            for child in children or [ptext.strip()]:
+                if not child:
+                    continue
+                docs.append(Document(
+                    page_content=child[:1900],
+                    metadata={**base_meta, **extra, "item": item,
+                              "parent_id": pid, "parent_text": stored_parent},
+                ))
         return docs
 
     def documents_from_record(self, record: dict) -> list:
         """Public: parse + chunk a single manifest record into Documents,
-        without touching Chroma. Used by the ephemeral fetch path."""
+        without touching Chroma. Used by the ephemeral fetch path (flat chunks,
+        no parent-document metadata — it ranks in memory)."""
         file_path = Path(record["local_path"])
         if not file_path.exists():
             return []
-        return self._documents_for(file_path, self._base_meta(record, file_path))
+        return self._documents_for(file_path, self._base_meta(record, file_path),
+                                   parent_doc=False)
 
     # ------------------------------------------------------------------ #
     # HTML (US SEC filings) — structure-aware extraction
     # ------------------------------------------------------------------ #
 
-    def _html_documents(self, file_path: Path, base_meta: dict) -> list:
+    def _html_documents(self, file_path: Path, base_meta: dict,
+                        parent_doc: bool = False) -> list:
         """Build section-aware Documents for one HTML filing.
 
         Uses unstructured's ``chunk_by_title`` so chunks respect section
@@ -328,6 +414,11 @@ class CorpusIngester:
 
         Page numbers are meaningless for a single HTML document, so each chunk
         carries ``element_index`` + ``element_type`` instead of a fake page.
+
+        `parent_doc`: each section chunk becomes a PARENT; text sections are
+        split into small children (tables are kept whole so rows survive) and
+        every child carries `parent_id`/`parent_text` for parent-document
+        retrieval.
         """
         from langchain_core.documents import Document
         from unstructured.chunking.title import chunk_by_title
@@ -342,7 +433,7 @@ class CorpusIngester:
             overlap=self.html_overlap,
         )
 
-        docs: list = []
+        prepared: list[tuple[str, dict, bool]] = []
         for idx, ch in enumerate(chunks):
             is_table = type(ch).__name__ in ("Table", "TableChunk")
             table_html = getattr(getattr(ch, "metadata", None), "text_as_html", None)
@@ -363,7 +454,27 @@ class CorpusIngester:
             meta = {**base_meta, "element_type": element_type, "element_index": idx}
             if is_table and table_html:
                 meta["text_as_html"] = table_html[:6000]
-            docs.append(Document(page_content=content, metadata=meta))
+            prepared.append((content, meta, is_table))
+
+        items = _tag_items([c for c, _, _ in prepared])
+        if not parent_doc:
+            return [Document(page_content=c, metadata={**m, "item": item})
+                    for (c, m, _), item in zip(prepared, items)]
+
+        # Parent-document: the section chunk is the parent; split text sections
+        # into children, keep tables intact (one child == the parent).
+        child_split = self._get_child_splitter()
+        docs: list = []
+        for pid, ((content, meta, is_table), item) in enumerate(zip(prepared, items)):
+            pmeta = {**meta, "item": item, "parent_id": pid,
+                     "parent_text": content[:4000]}
+            if is_table:
+                children = [content]
+            else:
+                children = [c.strip() for c in child_split.split_text(content)
+                            if c.strip()] or [content]
+            for child in children:
+                docs.append(Document(page_content=child[:1900], metadata=dict(pmeta)))
         return docs
 
     @staticmethod
@@ -490,16 +601,37 @@ class CorpusIngester:
             pages.setdefault(int(page), []).append(text)
         return {p: "\n\n".join(parts) for p, parts in pages.items()}
 
+    _SEPARATORS = ["\n\n", "\n", ". ", " ", ""]  # paragraphs → sentences → words
+
     def _get_splitter(self):
         if self._splitter is None:
             from langchain_text_splitters import RecursiveCharacterTextSplitter
             self._splitter = RecursiveCharacterTextSplitter(
                 chunk_size=self.chunk_size,
                 chunk_overlap=self.chunk_overlap,
-                # Separator priority: paragraphs first, then sentences, then words.
-                separators=["\n\n", "\n", ". ", " ", ""],
+                separators=self._SEPARATORS,
             )
         return self._splitter
+
+    def _get_parent_splitter(self):
+        if self._parent_splitter is None:
+            from langchain_text_splitters import RecursiveCharacterTextSplitter
+            self._parent_splitter = RecursiveCharacterTextSplitter(
+                chunk_size=self.PARENT_CHUNK_SIZE,
+                chunk_overlap=self.PARENT_CHUNK_OVERLAP,
+                separators=self._SEPARATORS,
+            )
+        return self._parent_splitter
+
+    def _get_child_splitter(self):
+        if self._child_splitter is None:
+            from langchain_text_splitters import RecursiveCharacterTextSplitter
+            self._child_splitter = RecursiveCharacterTextSplitter(
+                chunk_size=self.CHILD_CHUNK_SIZE,
+                chunk_overlap=self.CHILD_CHUNK_OVERLAP,
+                separators=self._SEPARATORS,
+            )
+        return self._child_splitter
 
     def _get_embeddings(self):
         if self._embeddings is None:

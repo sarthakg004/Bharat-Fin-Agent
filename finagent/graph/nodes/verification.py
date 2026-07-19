@@ -11,30 +11,10 @@ from typing import Optional
 
 from finagent.graph.state import AgentState, NumericVerification
 
-NUM_VERIFY_SYSTEM = """\
-You verify numeric claims in a draft financial answer. Given the draft answer
-and the source evidence (text excerpts, table-derived computations, optional
-web results), extract each distinct numeric claim and decide whether the
-SAME figure appears in the evidence. Accept reasonable paraphrases ($1.5 bn
-vs $1,500 million) but reject silent invention.
-"""
-
-NUM_VERIFY_PROMPT = """\
-Draft answer:
-\"\"\"{answer}\"\"\"
-
-Evidence:
-{evidence}
-
----
-Extract every numeric claim from the answer (revenue figures, percentages,
-ratios, counts) and report whether each is supported by the evidence.
-"""
-
-REFUSAL_TEMPLATE = (
-    "I don't have enough information to answer this from the available "
-    "filings{web_clause}. The retrieval and numeric verification steps could "
-    "not ground the requested figures{detail}."
+from finagent.prompts.critic import (  # noqa: F401
+    NUM_VERIFY_PROMPT,
+    NUM_VERIFY_SYSTEM,
+    REFUSAL_TEMPLATE,
 )
 
 # Phrases a synthesizer uses when it is *itself* conceding the evidence can't

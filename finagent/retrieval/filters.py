@@ -36,6 +36,23 @@ COMPANY_ALIASES: dict[str, str] = {
 
 _YEAR_RE = re.compile(r"\b(?:FY\s?)?((?:19|20)\d{2})\b", re.I)
 
+# 10-K section intent: phrase (in _norm() form) → `item` metadata value tagged
+# at ingestion. Only unambiguous section names — a generic word must never
+# narrow the pool. Matched against the normalised question, so "MD&A" arrives
+# as "md and a".
+_ITEM_PHRASES: dict[str, str] = {
+    "risk factor": "1A",
+    "unresolved staff comment": "1B",
+    "legal proceeding": "3",
+    "management s discussion": "7",
+    "md and a": "7",
+    "quantitative and qualitative disclosure": "7A",
+    "market risk": "7A",
+    "controls and procedures": "9A",
+    "internal control over financial reporting": "9A",
+    "executive compensation": "11",
+}
+
 # The question means "newest data" without naming a year (matched against the
 # _norm()-alised question, so "year-over-year" arrives as "year over year").
 _RECENT_RE = re.compile(
@@ -162,6 +179,12 @@ def infer_filter(question: str, vocab: dict, years_by_co: dict) -> Optional[dict
         return None
 
     flt: dict = {"companies": matched}
+    items = sorted({item for phrase, item in _ITEM_PHRASES.items()
+                    if f" {phrase}" in qn})
+    if items:
+        # Soft clause: search() relaxes it (with years) when it over-narrows —
+        # e.g. a collection ingested before `item` tagging existed.
+        flt["items"] = items
     if len(matched) == 1:
         years_avail = years_by_co.get(matched[0], set())
         yrs = [int(y) for y in _YEAR_RE.findall(question)]
@@ -195,6 +218,10 @@ def chroma_where(flt: Optional[dict]) -> Optional[dict]:
     yrs = flt.get("years") or []
     if yrs:
         clauses.append({"year": {"$in": yrs}} if len(yrs) > 1 else {"year": yrs[0]})
+    items = flt.get("items") or []
+    if items:
+        clauses.append({"item": {"$in": items}} if len(items) > 1
+                       else {"item": items[0]})
     if not clauses:
         return None
     return clauses[0] if len(clauses) == 1 else {"$and": clauses}
@@ -209,5 +236,8 @@ def metadata_matches(meta: dict, flt: Optional[dict]) -> bool:
         return False
     yrs = flt.get("years") or []
     if yrs and str((meta or {}).get("year") or "") not in yrs:
+        return False
+    items = flt.get("items") or []
+    if items and (meta or {}).get("item") not in items:
         return False
     return True

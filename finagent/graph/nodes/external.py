@@ -31,41 +31,10 @@ _WEB_NEWS_MARKERS = (
     "8-k", "8k",
 )
 
-MARKET_PLANNER_SYSTEM = """\
-You are a market-data planner. Given a question routed to the `market` lane,
-decide which yfinance-backed tools to invoke and with what arguments.
-
-Available tools:
-  - get_quote(symbol)                — latest price, day range, 52-week.
-  - get_history(symbol, period, interval) — OHLCV + a candlestick chart.
-  - get_company_info(symbol)         — sector, industry, summary.
-  - get_news(symbol, limit)          — recent ticker-specific headlines.
-  - compare(symbols)                 — quote snapshot for 2-6 tickers.
-
-ALWAYS fill `company` with the company's name in words (e.g. "Rocket Lab",
-"Apple") — the system resolves the correct ticker from authoritative SEC data,
-which is more reliable than guessing a symbol. You may also fill `symbol` if
-you're confident, but do NOT invent tickers or append exchange suffixes like
-".NASDAQ". Common aliases (AAPL,
-RELIANCE, etc.) are auto-normalised.
-
-Prefer get_history for almost anything stock-related — it returns a candlestick
-CHART plus the latest price, so it answers "how is X doing", "how has X
-performed", "is X a good stock", "show me X", "1-year/5-year/ytd", and bare
-"X stock" alike. Default to a 1-year daily history when no period is given.
-Only use get_quote for a bare "what is X trading at right now" with no interest
-in the trend. Use compare (put tickers in `symbols`) for "X vs Y". get_news for
-"latest news on X". Resolve follow-ups from the conversation: "show me its
-chart" / "the last one" refers to the company discussed just before. Set
-tool='none' only if the question genuinely isn't about a listed company's stock.
-"""
-
-MARKET_PLANNER_PROMPT = """\
-Question: {question}
-
-Resolve the ticker (using the conversation above if the question is a follow-up),
-then return a single MarketIntent (tool + symbol/symbols + period/interval).
-"""
+from finagent.prompts.planner import (  # noqa: F401
+    MARKET_PLANNER_PROMPT,
+    MARKET_PLANNER_SYSTEM,
+)
 
 EDGAR_EXTRACT_SYSTEM = """\
 You turn a cross-document question ("which companies disclosed X") into an EDGAR

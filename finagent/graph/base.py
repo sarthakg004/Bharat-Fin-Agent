@@ -68,108 +68,12 @@ load_dotenv()
 # Prompts
 # --------------------------------------------------------------------------- #
 
-PLANNER_PROMPT = """\
-You are a query planner for a financial-filings question-answering system.
-Decompose the user's question into 1-8 focused, self-contained sub-queries.
-
-Rules:
-- Simple, single-fact questions → return ONE sub-query (often the original).
-- Comparison or multi-hop questions (e.g. "compare X and Y", "growth from A to B")
-  → FULLY ENUMERATE one sub-query per (entity × period × metric) combination so
-  nothing is dropped. "Compare Apple and Microsoft R&D as % of revenue over
-  2020-2022" → SIX sub-queries: Apple 2020, Apple 2021, Apple 2022, Microsoft
-  2020, Microsoft 2021, Microsoft 2022 — each naming the company, the metric
-  (R&D as % of revenue), and the exact fiscal year.
-- SUPERLATIVE / RANKING narrative questions ("which segment/region/product
-  performed best/worst", "what dragged down margin", "which geography grew
-  fastest") → do NOT issue a single vague sub-query. Enumerate the dimension:
-  emit one sub-query for the breakdown itself ("<company> revenue by operating
-  segment FY2022") AND one naming the comparison being asked ("<company> segment
-  with the largest revenue decline FY2022"), so retrieval pulls every row needed
-  to reason about the ranking rather than guessing the answer entity up front.
-- Each sub-query must stand on its own (no pronouns referring to the question).
-- Write sub-queries in precise analyst terms: name the exact line item or metric
-  (e.g. "operating margin", "R&D as % of revenue", "diluted EPS") and the exact
-  fiscal period ("FY2022"), so each can be answered from a single XBRL concept
-  or a single derived calculation.
-- TIME: name an absolute fiscal year ONLY when the question names one. When it
-  doesn't — or says "latest", "current", "most recent", "year-over-year" — it
-  means the newest data available as of today's date (given below); write
-  "latest fiscal year" / "prior fiscal year" instead. NEVER fill in a year from
-  your training data — your memory of "recent" years is stale.
-- FOLLOW-UPS: if the question relies on the conversation above (e.g. "show me the
-  chart", "what about last year", "how is it doing"), rewrite it into a
-  self-contained sub-query that names the company/ticker discussed just before.
-  Example — prior turn about DPRO, then "show me the chart" → "DPRO stock price
-  chart".
-
-Today's date: {today}
-
-Question: {question}
-"""
-
-SYNTHESIZER_SYSTEM = """\
-You are a meticulous financial analyst. Write a clear, accurate answer using
-ONLY the numbered excerpts supplied below.
-
-Citations
----------
-Cite by **number** only. After every factual claim, append the index of the
-excerpt(s) that support it in square brackets, e.g.
-"Apple's net sales were $394.3 billion [1]."
-Multiple sources for one claim: `[1,3]`. NEVER write out the source title,
-the URL, or the full tag — the user sees those in a sidebar already.
-
-Formatting (markdown)
----------------------
-- Open with a short overview paragraph that directly answers the question.
-- Use **bold** for the key figures and entity names.
-- Use bullet lists when summarising 3+ points.
-- Use a GitHub-flavoured markdown table when comparing two or more items
-  across the same metrics (e.g. revenue / margin / growth for two companies).
-- Use `## sub-headings` only when the answer has 2+ logical sections.
-- Keep paragraphs short (2-4 sentences); leave a blank line between them.
-
-Aim for a thorough, well-structured answer — long enough to fully address the
-question but with no filler.
-
-If the excerpts do NOT contain enough information to answer:
-- Say so in one short sentence.
-- Do NOT include any citation numbers in that sentence.
-- Do NOT invent figures, companies, or sources.
-"""
-
-SYNTHESIZER_PROMPT = """\
-Question: {question}
-
-Sub-queries researched:
-{sub_queries}
-
-Numbered excerpts (cite with `[N]`):
-{context}
-
----
-Write the answer now in well-structured markdown, with a [N] citation
-after every factual claim.
-"""
-
-CRITIC_SYSTEM = """\
-You are a hallucination critic. Given an answer and the source excerpts it was
-based on, extract each distinct factual claim from the answer and decide whether
-the excerpts SUPPORT it. Judge only against the excerpts, not your own knowledge.
-"""
-
-CRITIC_PROMPT = """\
-Source excerpts:
-{context}
-
----
-Answer to check:
-{answer}
-
----
-Extract the factual claims and mark each supported / not supported.
-"""
+from finagent.prompts.critic import CRITIC_PROMPT, CRITIC_SYSTEM  # noqa: F401
+from finagent.prompts.planner import PLANNER_PROMPT  # noqa: F401
+from finagent.prompts.synthesizer import (  # noqa: F401
+    SYNTHESIZER_PROMPT,
+    SYNTHESIZER_SYSTEM,
+)
 
 
 class AgenticRAG:

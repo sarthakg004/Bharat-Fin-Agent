@@ -132,17 +132,24 @@ class RetrievalEvaluator:
         flt = infer_filter(query, self._vocab, self._years_by_co)
 
         scores = bm25.get_scores(_tokenize(query))
-        idx_pool = (range(len(scores)) if not flt else
-                    [i for i in range(len(self._all_texts))
-                     if metadata_matches(self._all_metas[i], flt)])
-        bm25_rank = sorted(idx_pool, key=lambda i: -scores[i])[:POOL_DEPTH]
-        bm25_texts = [self._all_texts[i] for i in bm25_rank]
 
-        dense_texts = [
-            d.page_content
-            for d in self.store.similarity_search(query, k=POOL_DEPTH,
-                                                  filter=chroma_where(flt))
-        ]
+        def _pool(f):
+            idx = (range(len(scores)) if not f else
+                   [i for i in range(len(self._all_texts))
+                    if metadata_matches(self._all_metas[i], f)])
+            b = [self._all_texts[i] for i in
+                 sorted(idx, key=lambda i: -scores[i])[:POOL_DEPTH]]
+            d = [x.page_content for x in
+                 self.store.similarity_search(query, k=POOL_DEPTH,
+                                              filter=chroma_where(f))]
+            return b, d
+
+        bm25_texts, dense_texts = _pool(flt)
+        # Mirror production: relax an over-narrow year/item clause (e.g. this
+        # collection predates section tagging) back to company-only.
+        if (not bm25_texts and not dense_texts and flt
+                and (flt.get("years") or flt.get("items"))):
+            bm25_texts, dense_texts = _pool({"companies": flt["companies"]})
 
         # Reciprocal Rank Fusion across the two ranked lists.
         rrf: dict[str, float] = {}

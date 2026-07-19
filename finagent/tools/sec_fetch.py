@@ -212,18 +212,6 @@ class SecFilingFetcher(BaseTool):
         return requests.get(url, headers={"User-Agent": f"{name} {email}"},
                             timeout=self._SEC_TIMEOUT)
 
-    @staticmethod
-    def _html_to_text(html: str) -> str:
-        import html as html_mod
-        import re
-
-        txt = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", html)
-        txt = re.sub(r"(?is)</(?:p|div|tr|li|h[1-6]|table|br)>", "\n", txt)
-        txt = re.sub(r"(?s)<[^>]+>", " ", txt)
-        txt = html_mod.unescape(txt)
-        txt = re.sub(r"[ \t\xa0]+", " ", txt)
-        return re.sub(r"\n\s*\n+", "\n\n", txt).strip()
-
     def fetch_dated_filing(self, company: str, form: str, date,
                            window_days: int = 7, max_chunks: int = 40) -> dict:
         """Fetch the text of the SPECIFIC filing `company` made on (or nearest
@@ -297,24 +285,38 @@ class SecFilingFetcher(BaseTool):
         url = f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/{acc}/{doc}"
         dr = self._sec_get(url)
         dr.raise_for_status()
-        text = self._html_to_text(dr.text)
 
-        # Paragraph-preserving ~1500-char chunks, shaped for `fetched_chunks`.
-        pieces: list[str] = []
-        buf = ""
-        for para in text.split("\n\n"):
-            if len(buf) + len(para) > 1500 and buf:
-                pieces.append(buf.strip())
-                buf = ""
-            buf += para + "\n\n"
-        if buf.strip():
-            pieces.append(buf.strip())
+        # Parse + chunk through the shared ingestion pipeline (unstructured
+        # chunk_by_title, tables rendered from text_as_html) — same fidelity
+        # the 10-K path gets — instead of regex-stripping tables to whitespace.
+        import tempfile
+
+        from finagent.ingestion.ingest import CorpusIngester
+
         company_name = r.get("company") or sub.get("name") or company
-        shaped = [{"text": c, "company": company_name,
+        suffix = Path(doc).suffix or ".htm"
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tf:
+            tf.write(dr.content)
+            tmp = Path(tf.name)
+        try:
+            ingester = CorpusIngester(
+                corpus_dir=self.corpus_dir, chroma_dir=self.chroma_dir,
+                collection_name=self.collection_name, market=self.market,
+                embedding_model=self.embedding_model,
+            )
+            docs = ingester.documents_from_record({
+                "local_path": str(tmp), "source_url": url,
+                "company": company_name, "ticker": r.get("ticker", ""),
+                "year": str(best["date"].year), "filing_type": best["form"],
+            })
+        finally:
+            tmp.unlink(missing_ok=True)
+
+        shaped = [{"text": d.page_content, "company": company_name,
                    "ticker": r.get("ticker", ""), "year": str(best["date"].year),
-                   "page": i + 1, "filing_type": best["form"],
-                   "source_url": url}
-                  for i, c in enumerate(pieces[:max_chunks])]
+                   "page": d.metadata.get("page", i + 1),
+                   "filing_type": best["form"], "source_url": url}
+                  for i, d in enumerate(docs[:max_chunks])]
         return {"ok": True, "form": best["form"],
                 "filing_date": best["date"].isoformat(), "url": url,
                 "chunks": shaped}

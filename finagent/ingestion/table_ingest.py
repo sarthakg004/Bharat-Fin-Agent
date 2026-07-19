@@ -152,24 +152,25 @@ class TableExtractor:
         return all_tables
 
     def extract_from_file(self, file_path: Path, record: dict) -> list[dict]:
-        """Extract every table in `file_path`. Returns the rows we'll index."""
-        elements = self._partition(file_path)
-        table_elements = [el for el in elements if getattr(el, "category", "") == "Table"]
-        if not table_elements:
+        """Extract every table in `file_path`. Returns the rows we'll index.
+
+        PDFs go through Docling (TableFormer) — the same parser the upload lane
+        uses — so PDF table extraction lives on ONE dependency; 10-K HTML stays
+        on unstructured. Each backend yields ``(table_html, page, context)``.
+        """
+        tables = self._extract_tables(file_path)
+        if not tables:
             return []
 
         company = record.get("company") or record.get("ticker", "unknown")
         year = str(record.get("year", "unknown"))
 
         rows: list[dict] = []
-        for i, table_el in enumerate(table_elements):
-            html = self._html_for(table_el)
+        for i, (html, page, context) in enumerate(tables):
             df = self._html_to_df(html) if html else None
             if df is None or df.empty:
                 continue
 
-            page = self._page_for(table_el)
-            context = self._context_above(elements, table_el, n_before=4)
             title = (
                 self._llm_title(context, df) if self.use_llm_titles
                 else self._heuristic_title(df, context)
@@ -210,15 +211,69 @@ class TableExtractor:
     # Internals
     # ------------------------------------------------------------------ #
 
-    def _partition(self, file_path: Path):
-        """Run unstructured with table-structure inference on."""
+    def _extract_tables(self, file_path: Path) -> list[tuple[str, int, str]]:
+        """Return ``(table_html, page, context_above)`` for every table.
+
+        PDF → Docling (TableFormer); HTML → unstructured. One PDF-table
+        dependency (Docling, shared with uploads) instead of unstructured's
+        heavy hi_res+OCR path.
+        """
+        if file_path.suffix.lower() == ".pdf":
+            return self._docling_tables(file_path)
+        return self._unstructured_tables(file_path)
+
+    def _unstructured_tables(self, file_path: Path) -> list[tuple[str, int, str]]:
         from unstructured.partition.auto import partition
 
-        return partition(
-            filename=str(file_path),
-            strategy=self.strategy,
-            infer_table_structure=True,
-        )
+        elements = partition(filename=str(file_path), strategy=self.strategy,
+                             infer_table_structure=True)
+        out: list[tuple[str, int, str]] = []
+        for el in elements:
+            if getattr(el, "category", "") != "Table":
+                continue
+            out.append((self._html_for(el), self._page_for(el),
+                        self._context_above(elements, el, n_before=4)))
+        return out
+
+    def _docling_tables(self, file_path: Path) -> list[tuple[str, int, str]]:
+        """Docling TableFormer extraction. Reuses the process-wide converter the
+        upload lane already loads (no second copy of the layout/table models)."""
+        from finagent.ingestion.upload import _get_converter
+
+        doc = _get_converter().convert(str(file_path)).document
+        out: list[tuple[str, int, str]] = []
+        for tbl in doc.tables:
+            html = self._docling_table_html(tbl, doc)
+            if not html:
+                continue
+            page = tbl.prov[0].page_no if getattr(tbl, "prov", None) else 1
+            out.append((html, int(page), self._docling_context(doc, page)))
+        return out
+
+    @staticmethod
+    def _docling_table_html(tbl, doc) -> str:
+        """Table → HTML, tolerating docling signature changes across versions."""
+        for attempt in (lambda: tbl.export_to_html(doc),
+                        lambda: tbl.export_to_html(),
+                        lambda: tbl.export_to_dataframe(doc).to_html(index=False),
+                        lambda: tbl.export_to_dataframe().to_html(index=False)):
+            try:
+                html = attempt()
+                if html and html.strip():
+                    return html
+            except Exception:
+                continue
+        return ""
+
+    @staticmethod
+    def _docling_context(doc, page: int, max_chars: int = 1500) -> str:
+        """Text on the table's page, as a stand-in for the lines above it."""
+        parts = []
+        for t in getattr(doc, "texts", []):
+            prov = getattr(t, "prov", None)
+            if prov and prov[0].page_no == page and getattr(t, "text", ""):
+                parts.append(t.text)
+        return "\n".join(parts)[:max_chars]
 
     @staticmethod
     def _html_for(el) -> str:

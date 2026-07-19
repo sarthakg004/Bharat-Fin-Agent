@@ -1,0 +1,27 @@
+{
+  "sample_docs": 12,
+  "total_gold_passages": 29,
+  "metric": "fraction of gold passages fully contained in a single chunk",
+  "summary": {
+    "fixed_500": {
+      "containment": 0.0417,
+      "mean_chunks_per_doc": 1595.2
+    },
+    "fixed_1000": {
+      "containment": 0.4653,
+      "mean_chunks_per_doc": 834.2
+    },
+    "fixed_1500": {
+      "containment": 0.741,
+      "mean_chunks_per_doc": 565.1
+    },
+    "semantic": {
+      "containment": 0.2458,
+      "mean_chunks_per_doc": 621.1
+    },
+    "parent_doc": {
+      "containment": 0.8007,
+      "mean_chunks_per_doc": 328.8
+    }
+  }
+}
