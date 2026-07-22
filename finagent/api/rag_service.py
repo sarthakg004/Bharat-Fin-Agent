@@ -24,17 +24,17 @@ from typing import Callable, Optional
 
 from finagent.graph import AgenticRAGv4
 from finagent.config import settings
+from finagent.runtime import RuntimeContext
 
-# Each (provider, synth_model, collection) combo gets its own instance. Most
-# users will hit one of two cache keys (server-default Groq + their picked
-# OpenAI/Anthropic/Gemini override) so the cache stays small.
+# One instance per COLLECTION. The graph topology and every resource on the
+# agent (retriever, reranker, embedder, store) are identical whichever LLM
+# answers the question — provider/model/key are per-request and travel in the
+# RuntimeContext instead, so they no longer fragment this cache.
 _lock = Lock()
-_agentic_cache: dict[tuple, AgenticRAGv4] = {}
+_agentic_cache: dict[str, AgenticRAGv4] = {}
 
 
-def _build_agent(provider: str, synth_model: Optional[str],
-                 api_key: Optional[str],
-                 collection: Optional[str] = None) -> AgenticRAGv4:
+def _build_agent(collection: Optional[str] = None) -> AgenticRAGv4:
     # Production serves `us_filings` (+ live SEC fetch for anything missing). The
     # FinanceBench eval overrides this to `financebench_eval` — the dedicated,
     # pre-ingested collection that actually contains the benchmark's filings at
@@ -47,9 +47,6 @@ def _build_agent(provider: str, synth_model: Optional[str],
         # US-only active retrieval. Non-US / non-corpus questions get
         # empty/weak filing retrieval and escalate to web_search automatically.
         collections=[coll],
-        provider=provider,
-        synth_model=synth_model,                # None → AgenticRAG picks per-provider default
-        api_key=api_key,                        # None → reads env via build_llm()
         # Reranker is env-configurable so we can A/B smaller models without a
         # code change (default kept at bge-reranker-base). The image bakes
         # whatever this resolves to at build time.
@@ -71,30 +68,20 @@ def _build_agent(provider: str, synth_model: Optional[str],
     )
 
 
-def get_agentic(provider: str = "groq",
-                synth_model: Optional[str] = None,
-                api_key: Optional[str] = None,
-                collection: Optional[str] = None) -> AgenticRAGv4:
-    """Return a singleton AgenticRAGv4 for (provider, synth_model, collection).
+def get_agentic(collection: Optional[str] = None) -> AgenticRAGv4:
+    """Return the shared AgenticRAGv4 for a collection.
 
-    User-supplied keys are NOT used as part of the cache key — multiple users
-    with the same provider + model share an instance. The instance's
-    `self.api_key` is overwritten per-request below so the right key reaches
-    the LLM client. `collection` is part of the key so the eval's
-    `financebench_eval` instance never collides with the served `us_filings` one.
+    The instance is immutable after construction and safe to share across
+    concurrent requests: nothing request-specific is stored on it. The lock
+    guards construction only, so two callers racing on a cold cache don't both
+    pay to load a reranker. `collection` is the whole key — the eval's
+    `financebench_eval` agent never collides with the served `us_filings` one.
     """
-    key = (provider, synth_model or "_default_", collection or "us_filings")
+    coll = collection or "us_filings"
     with _lock:
-        if key not in _agentic_cache:
-            _agentic_cache[key] = _build_agent(provider, synth_model, api_key,
-                                               collection=collection)
-        agent = _agentic_cache[key]
-        # If the caller supplied an api_key, propagate it now and clear the
-        # provider's LLM cache so the next call rebuilds with the new key.
-        if api_key and agent.api_key != api_key:
-            agent.api_key = api_key
-            agent._llms.clear()
-        return agent
+        if coll not in _agentic_cache:
+            _agentic_cache[coll] = _build_agent(coll)
+        return _agentic_cache[coll]
 
 
 # --------------------------------------------------------------------------- #
@@ -367,10 +354,10 @@ def run_agentic(question: str, top_k: int = 5,
     each node finishes, with a short outcome line ("12 passages", "2 exact
     figures"). When both are omitted we fall back to a single blocking `invoke`.
     """
-    rag = get_agentic(provider=provider, synth_model=synth_model,
-                      api_key=api_key, collection=collection)
-    if top_k:
-        rag.final_top_k = top_k
+    rag = get_agentic(collection)
+    # Everything request-specific goes here, not onto the shared agent.
+    ctx = RuntimeContext(provider=provider, synth_model=synth_model,
+                         api_key=api_key, top_k=top_k or 5)
 
     # `chat_history` lives directly on AgentState (TypedDict, total=False) so
     # nodes can read it without changing graph signatures.
@@ -398,7 +385,8 @@ def run_agentic(question: str, top_k: int = 5,
     # A hard recursion cap so a pathological retrieve→grade→rewrite or
     # critic→retrieve loop can never spin forever — it terminates with whatever
     # we have instead of hanging the request.
-    config: dict = {"recursion_limit": 50}
+    config: dict = {"recursion_limit": 50,
+                    "configurable": {"runtime_context": ctx}}
     langfuse_cb = _langfuse_handler()
     callbacks = [cb for cb in (usage_cb, langfuse_cb) if cb is not None]
     if callbacks:
@@ -631,7 +619,7 @@ def run_agentic(question: str, top_k: int = 5,
         # the assistant message and renders inline via lightweight-charts.
         "charts": list(state.get("charts", []) or []),
         "metadata": {
-            "model": rag.synth_model,
+            "model": ctx.model_for("synth"),
             "latency": 0.0,                          # filled in by main.py wrapper
             # #11 Observability: real token usage (was always null), per-node
             # latency, and per-lane tool health. LangSmith has the full trace;

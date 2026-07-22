@@ -59,7 +59,8 @@ from dotenv import load_dotenv
 from tqdm import tqdm
 
 from finagent.graph.state import AgentState, CriticReport, SubQueries
-from finagent.llm import build_llm, resolve_api_key
+from finagent.runtime import DEFAULTS as RUNTIME_DEFAULTS
+from finagent.runtime import RuntimeContext, create_llm, current_context
 
 load_dotenv()
 
@@ -87,65 +88,33 @@ class AgenticRAG:
         Persistent Chroma directory (must match ingestion).
     embedding_model : str
         MUST match the model used at ingestion.
-    provider : str
-        "groq" (default), "gemini", "openai", or "anthropic" for all three LLM
-        roles.
-    planner_model / synth_model / critic_model : str
-        Per-role models — mix freely. Synthesis/critic use the strongest model
-        by default; the planner uses a fast one. If None, per-provider defaults
-        apply. Pass any model your key has access to.
     top_k : int
-        Chunks retrieved per sub-query.
-    api_key : str
-        Falls back to the provider's env var (GROQ_API_KEY / GEMINI_API_KEY /
-        OPENAI_API_KEY / ANTHROPIC_API_KEY).
+        Chunks retrieved per sub-query (construction default; a request can
+        override it via `RuntimeContext.top_k`).
+
+    The agent holds RESOURCES only and is immutable after construction, so one
+    instance is safe to share across concurrent requests. Which provider, model
+    and API key to use is per-request: pass a `finagent.runtime.RuntimeContext`
+    to `run()`, or let the API layer put one in the LangGraph config.
     """
 
-    # Groq tier picks:
-    #   planner / grader / router (structured output)  → qwen/qwen3.6-27b
-    #   synth + critic  (long-form writing, reasoning) → openai/gpt-oss-120b
-    # The planner's decomposition drives retrieval and the grader DROPS chunks,
-    # so both sit on the quality path — small (≤8B) models there measurably
-    # mis-decomposed multi-hop questions and mis-graded relevant chunks.
-    # Qwen (replacing the deprecated llama-3.3-70b) keeps these calls on a
-    # different quota bucket from the 120B synth/critic, so the roles don't
-    # hit rate limits in lockstep.
-    DEFAULTS = {
-        "groq": {
-            "planner": "qwen/qwen3.6-27b",
-            "synth":   "openai/gpt-oss-120b",
-            "critic":  "openai/gpt-oss-120b",
-        },
-        "gemini": {
-            "planner": "gemini-2.5-flash",
-            "synth": "gemini-2.5-flash",
-            "critic": "gemini-2.5-flash",
-        },
-        "openai": {
-            "planner": "gpt-4o-mini",
-            "synth": "gpt-4o",
-            "critic": "gpt-4o",
-        },
-        "anthropic": {
-            "planner": "claude-haiku-4-5",
-            "synth": "claude-sonnet-4-6",
-            "critic": "claude-sonnet-4-6",
-        },
-    }
+    # Per-provider model defaults now live in `finagent.runtime` (the agent is
+    # provider-agnostic); re-exported here because callers still read
+    # `AgenticRAG.DEFAULTS`.
+    DEFAULTS = RUNTIME_DEFAULTS
 
     def __init__(
         self,
         collection_name: str = "us_filings",
         chroma_dir: Union[str, Path] = "data/chroma",
         embedding_model: str = "BAAI/bge-small-en-v1.5",
-        provider: str = "groq",
-        planner_model: Optional[str] = None,
-        synth_model: Optional[str] = None,
-        critic_model: Optional[str] = None,
         top_k: int = 5,
-        api_key: Optional[str] = None,
         collections: Optional[list[str]] = None,
     ):
+        # Everything on the agent is a long-lived, shared RESOURCE and is read
+        # -only after construction. Which provider/model/key to use is per
+        # -request and lives in `finagent.runtime.RuntimeContext`, delivered
+        # through the LangGraph config — see `_get_llm`.
         self.collection_name = collection_name
         # Filings collections to retrieve over. Defaults to the single
         # `collection_name`; pass several to let the agent pull from all of
@@ -155,31 +124,21 @@ class AgenticRAG:
         self.embedding_model = embedding_model
         self.top_k = top_k
 
-        self.provider = provider.lower()
-        if self.provider not in self.DEFAULTS:
-            raise ValueError(
-                f"Unknown provider {provider!r}. Choose one of {list(self.DEFAULTS)}."
-            )
-        d = self.DEFAULTS[self.provider]
-        self.planner_model = planner_model or d["planner"]
-        self.synth_model = synth_model or d["synth"]
-        self.critic_model = critic_model or d["critic"]
-        # api_key=None lets build_llm pick up every {ENV}, {ENV}2, ... from
-        # .env and rotate on rate-limit errors. We still validate up front.
-        resolve_api_key(self.provider, api_key)
-        self.api_key = api_key
-
         # Lazy resources.
         self._retriever = None
-        self._llms: dict[str, object] = {}
         self._graph = None
 
     # ------------------------------------------------------------------ #
     # Public API
     # ------------------------------------------------------------------ #
 
-    def run(self, question: str) -> AgentState:
-        """Run the full graph on one question. Returns the final state dict."""
+    def run(self, question: str, ctx: Optional[RuntimeContext] = None) -> AgentState:
+        """Run the full graph on one question. Returns the final state dict.
+
+        `ctx` carries the per-request LLM configuration (provider/model/key).
+        It is injected here rather than held on the agent so one shared agent
+        can serve concurrent requests with different providers. None → defaults.
+        """
         initial: AgentState = {
             "question": question,
             "iteration_count": 0,
@@ -187,7 +146,10 @@ class AgenticRAG:
             "table_results": [],
             "web_results": [],
         }
-        return self.graph.invoke(initial)
+        return self.graph.invoke(
+            initial,
+            config={"configurable": {"runtime_context": ctx or RuntimeContext()}},
+        )
 
     def run_dataset(
         self,
@@ -443,18 +405,23 @@ class AgenticRAG:
             )
         return self._retriever
 
+    def _request_top_k(self) -> int:
+        """Chunks to keep per sub-query for THIS request.
+
+        The API's `top_k` used to reach the nodes by assigning to the shared
+        agent's `final_top_k`; it now rides the request context instead.
+        """
+        return current_context().top_k
+
     def _get_llm(self, role: str):
-        """Build (and cache) the LLM for a role: 'planner' | 'synth' | 'critic'."""
-        if role not in self._llms:
-            model = {
-                "planner": self.planner_model,
-                "synth": self.synth_model,
-                "critic": self.critic_model,
-            }[role]
-            self._llms[role] = build_llm(
-                self.provider, model, self.api_key, temperature=0.0
-            )
-        return self._llms[role]
+        """The LLM for a role, built from the RUNNING REQUEST's context.
+
+        Every LLM in the graph comes through here. Nothing is cached on the
+        agent: the client is cheap next to the network call it wraps, and a
+        cache keyed on a shared agent is what let one request's API key serve
+        the next one's question.
+        """
+        return create_llm(current_context(), role)
 
 
 # --------------------------------------------------------------------------- #
@@ -528,14 +495,15 @@ def _load_dataset(path: str, question_col: str):
 def main():
     args = _build_cli().parse_args()
 
+    # LLM choice is per-run, not a property of the agent — build the context
+    # from the CLI flags and inject it at run().
+    ctx = RuntimeContext(provider=args.provider, synth_model=args.synth_model,
+                         top_k=args.top_k)
+
     agent = AgenticRAG(
         collection_name=args.collection,
         chroma_dir=args.chroma_dir,
         embedding_model=args.embedding_model,
-        provider=args.provider,
-        planner_model=args.planner_model,
-        synth_model=args.synth_model,
-        critic_model=args.critic_model,
         top_k=args.top_k,
     )
 
@@ -549,7 +517,7 @@ def main():
     if not args.question:
         raise SystemExit("Provide --question or --dataset.")
 
-    state = agent.run(args.question)
+    state = agent.run(args.question, ctx)
     print("\n" + "=" * 60)
     print(f"Question:    {state['question']}")
     print(f"Sub-queries: {state.get('sub_queries')}")

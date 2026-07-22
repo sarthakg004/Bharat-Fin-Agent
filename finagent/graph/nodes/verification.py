@@ -97,13 +97,7 @@ class VerificationNodes:
     _MATH_CONSTANTS = (0.0, 1.0, 2.0, 100.0, 365.0, 360.0, 52.0, 12.0, 4.0)
 
     def _get_verifier_llm(self):
-        if "verifier" not in self._llms:
-            from finagent.llm import build_llm
-
-            self._llms["verifier"] = build_llm(
-                self.provider, self.verifier_model, self.api_key, temperature=0.0
-            )
-        return self._llms["verifier"]
+        return self._get_llm("verifier")
 
     def verify_numbers_node(self, state: AgentState) -> dict:
         """Phase 11 fact-checking critic — every figure traces to a source.

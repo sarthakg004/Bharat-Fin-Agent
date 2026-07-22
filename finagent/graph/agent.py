@@ -40,6 +40,7 @@ import argparse
 from typing import Optional
 
 from finagent.graph.full import AgenticRAGv3
+from finagent.runtime import RuntimeContext
 from finagent.graph.state import AgentState
 from finagent.tools.web_search import WebSearcher
 from finagent.tools.calculator import FinancialCalculator
@@ -66,7 +67,6 @@ class AgenticRAGv4(FetchNodes, NumericNodes, ExternalNodes,
         # questions ("performance over the last year"); a single article rarely
         # covers the full ground. Tavily allows up to 20 per call.
         web_top_k: int = 10,
-        verifier_model: Optional[str] = None,
         min_verify_score: float = 0.5,
         dispatch: bool = True,
         analyst_voice: bool = True,
@@ -124,7 +124,6 @@ class AgenticRAGv4(FetchNodes, NumericNodes, ExternalNodes,
         # existing critic_iterations cap. Set False to A/B against the prior
         # "critic always proceeds to verify" behaviour.
         self.active_critic = active_critic
-        self.verifier_model = verifier_model or self.critic_model
         self.min_verify_score = min_verify_score
         self._web: Optional[WebSearcher] = None
         self._xbrl: Optional[XBRLClient] = None
@@ -547,18 +546,15 @@ def _load_dataset(path: str):
 def main():
     args = _build_cli().parse_args()
 
+    # LLM choice is per-run, not a property of the agent — build the context
+    # from the CLI flags and inject it at run().
+    ctx = RuntimeContext(provider=args.provider, synth_model=args.synth_model,
+                         top_k=args.final_top_k)
+
     agent = AgenticRAGv4(
         collection_name=args.collection,
         chroma_dir=args.chroma_dir,
         embedding_model=args.embedding_model,
-        provider=args.provider,
-        planner_model=args.planner_model,
-        synth_model=args.synth_model,
-        critic_model=args.critic_model,
-        grader_model=args.grader_model,
-        router_model=args.router_model,
-        code_model=args.code_model,
-        verifier_model=args.verifier_model,
         reranker_model=args.reranker_model,
         bm25_top_k=args.bm25_top_k,
         dense_top_k=args.dense_top_k,
@@ -585,7 +581,7 @@ def main():
     if not args.question:
         raise SystemExit("Provide --question or --dataset.")
 
-    state = agent.run(args.question)
+    state = agent.run(args.question, ctx)
     print("\n" + "=" * 60)
     print(f"Question:         {state['question']}")
     print(f"Sub-queries:      {state.get('sub_queries')}")

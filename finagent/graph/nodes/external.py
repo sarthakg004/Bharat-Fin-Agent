@@ -61,13 +61,7 @@ class ExternalNodes:
 
     def _get_market_planner_llm(self):
         """Same LLM as the router/planner tier — structured output, fast."""
-        if "market_planner" not in self._llms:
-            from finagent.llm import build_llm
-
-            self._llms["market_planner"] = build_llm(
-                self.provider, self.planner_model, self.api_key, temperature=0.0,
-            )
-        return self._llms["market_planner"]
+        return self._get_llm("market_planner")
 
     def _resolve_market_ticker(self, company: str, symbol: str) -> str:
         """Resolve to the authoritative ticker, generally (not per-stock).

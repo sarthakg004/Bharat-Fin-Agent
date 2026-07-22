@@ -38,9 +38,10 @@ import textwrap
 from pathlib import Path
 from typing import Optional, Union
 
+from finagent.runtime import RuntimeContext, use_context
+
 from dotenv import load_dotenv
 
-from finagent.llm import build_llm, resolve_api_key
 
 load_dotenv()
 
@@ -90,38 +91,25 @@ _SAFE_BUILTINS = {
 class TableAgent:
     """Retrieval-augmented table QA via LLM-generated pandas snippets."""
 
-    DEFAULT_CODE_MODELS = {
-        "groq": "qwen/qwen3.6-27b",
-        "gemini": "gemini-2.5-flash",
-        "openai": "gpt-4o",
-        "anthropic": "claude-sonnet-4-6",
-    }
-
     def __init__(
         self,
         chroma_dir: Union[str, Path] = "data/chroma",
         collection_name: str = "tables",
         embedding_model: str = "BAAI/bge-small-en-v1.5",
-        provider: str = "groq",
-        code_model: Optional[str] = None,
         top_k: int = 3,
-        api_key: Optional[str] = None,
         max_rows_preview: int = 5,
     ):
+        # Resources only. Provider/model/key are per-request and read from the
+        # runtime context in `_get_llm` — this object is built once and shared,
+        # so holding a copy of them meant the first caller's key served every
+        # later table computation.
         self.chroma_dir = str(chroma_dir)
         self.collection_name = collection_name
         self.embedding_model = embedding_model
-        self.provider = provider.lower()
-        self.code_model = code_model or self.DEFAULT_CODE_MODELS[self.provider]
         self.top_k = top_k
         self.max_rows_preview = max_rows_preview
 
-        # Lazy resources; validate the key up front.
-        resolve_api_key(self.provider, api_key)
-        self.api_key = api_key
-
         self._retriever = None
-        self._llm = None
 
     # ------------------------------------------------------------------ #
     # Public
@@ -305,11 +293,10 @@ class TableAgent:
         return self._retriever
 
     def _get_llm(self):
-        if self._llm is None:
-            self._llm = build_llm(
-                self.provider, self.code_model, self.api_key, temperature=0.0
-            )
-        return self._llm
+        """The code-writing LLM for the running request (see finagent.runtime)."""
+        from finagent.runtime import create_llm, current_context
+
+        return create_llm(current_context(), "code")
 
 
 # --------------------------------------------------------------------------- #
@@ -324,7 +311,6 @@ def main():
     p.add_argument("--embedding-model", default="BAAI/bge-small-en-v1.5")
     p.add_argument("--provider", choices=["groq", "gemini", "openai", "anthropic"],
                    default="groq")
-    p.add_argument("--code-model", default=None)
     p.add_argument("--top-k", type=int, default=3)
     args = p.parse_args()
 
@@ -332,11 +318,12 @@ def main():
         chroma_dir=args.chroma_dir,
         collection_name=args.collection,
         embedding_model=args.embedding_model,
-        provider=args.provider,
-        code_model=args.code_model,
         top_k=args.top_k,
     )
-    out = ta.answer(args.question)
+    # Standalone runs have no graph config to carry the provider choice, so
+    # scope it explicitly for the call.
+    with use_context(RuntimeContext(provider=args.provider, top_k=args.top_k)):
+        out = ta.answer(args.question)
     print("=" * 60)
     print(f"Question: {args.question}")
     print(f"\nAnswer:\n{out['answer']}")

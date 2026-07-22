@@ -267,7 +267,7 @@ def test_web_pool_is_capped_across_sub_queries():
     web_top_k, round-robin so every sub-query keeps its best (trusted) hits."""
     from finagent.graph import AgenticRAGv4
 
-    agent = AgenticRAGv4(collection_name="us_filings", provider="groq",
+    agent = AgenticRAGv4(collection_name="us_filings",
                          reranker_model="BAAI/bge-reranker-base", web_top_k=6)
     agent._log = lambda s, m: None
 

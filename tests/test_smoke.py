@@ -41,7 +41,7 @@ def _build_agent():
     from finagent.graph import AgenticRAGv4
 
     return AgenticRAGv4(
-        collection_name="us_filings", provider="groq",
+        collection_name="us_filings",
         reranker_model="BAAI/bge-reranker-base",
         bm25_top_k=8, dense_top_k=8, final_top_k=5,
         max_rewrites=2, max_critic_retries=1,
@@ -364,9 +364,15 @@ def test_quick_ratio_metric_is_supported():
 
 def test_router_uses_strong_tool_tier():
     """Tool selection / structured extraction must default to the strong synth
-    tier, not the fast planner model (mis-routing was sending M&A to filings)."""
-    agent = _build_agent()
-    assert agent.router_model == agent.synth_model
+    tier, not the fast planner model (mis-routing was sending M&A to filings).
+
+    Model choice moved off the agent onto the request context, so the tier
+    relationship is now asserted there."""
+    from finagent.runtime import RuntimeContext
+
+    for provider in ("groq", "gemini", "openai", "anthropic"):
+        ctx = RuntimeContext(provider=provider)
+        assert ctx.model_for("router") == ctx.model_for("synth")
 
 
 def test_web_search_historical_vs_news():

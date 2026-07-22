@@ -90,8 +90,12 @@ app.add_middleware(
 # concurrent read while the dynamic-fetch ingest WRITES the same collection
 # segfaults) and CUDA from worker threads. So run the graph on a SINGLE worker —
 # requests queue rather than racing the native libs. The API stays async for I/O
-# (DB, SSE); only the heavy RAG call is serialized here. Raise RAG_MAX_WORKERS
-# once the ingest write-path is moved off the live collection (Phase 12).
+# (SSE); only the heavy RAG call is serialized here.
+#
+# NOTE: our own request state is now thread-safe — provider/model/key live in a
+# per-request RuntimeContext (finagent.runtime) instead of on the shared agent.
+# The remaining blocker is the native libraries above, so raise RAG_MAX_WORKERS
+# only once the ingest write-path is off the live collection (Phase 12).
 _executor = ThreadPoolExecutor(
     max_workers=int(os.getenv("RAG_MAX_WORKERS", "1")), thread_name_prefix="rag"
 )
@@ -456,10 +460,27 @@ def _piecewise(text: str, words_per_chunk: int = 3) -> list[str]:
     return parts
 
 
+def _validate_provider(request) -> None:
+    """Fail a missing/unknown provider key at the boundary.
+
+    The agent used to validate this in its constructor; now that it is
+    provider-agnostic the check belongs here — and this is the better place
+    anyway, since a bad key returns a clean 400 instead of dying mid-graph.
+    """
+    from finagent.llm import resolve_api_key
+
+    pc = request.provider_config
+    try:
+        resolve_api_key(pc.provider if pc else "groq", pc.api_key if pc else None)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
 @app.post("/api/query")
 async def query(request: QueryRequest):
     if not request.question.strip():
         raise HTTPException(status_code=400, detail="Empty question.")
+    _validate_provider(request)
     return StreamingResponse(
         _stream_answer(request),
         media_type="text/event-stream",
@@ -551,6 +572,7 @@ async def _stream_research(request: ResearchRequest) -> AsyncGenerator[str, None
 async def research(request: ResearchRequest):
     if not request.question.strip():
         raise HTTPException(status_code=400, detail="Empty question.")
+    _validate_provider(request)
     return StreamingResponse(
         _stream_research(request),
         media_type="text/event-stream",

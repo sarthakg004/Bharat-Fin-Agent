@@ -52,6 +52,7 @@ from typing import Optional
 from finagent.graph.base import append_comparison_row  # noqa: F401 (re-export)
 from finagent.graph.corrective import AgenticRAGv2
 from finagent.retrieval import HybridRetriever
+from finagent.runtime import RuntimeContext
 from finagent.graph.state import AgentState, QueryPlan, RouterReport
 from finagent.graph.table_agent import TableAgent
 
@@ -306,21 +307,16 @@ class AgenticRAGv3(AgenticRAGv2):
         *args,
         table_collection: str = "tables",
         table_top_k: int = 3,
-        code_model: Optional[str] = None,
-        router_model: Optional[str] = None,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
         self.table_collection = table_collection
         self.table_top_k = table_top_k
         # Code generation needs the strong tier.
-        self.code_model = code_model or self.synth_model
         # Tool selection + structured extraction (router, XBRL/calc/EDGAR/gate
         # extractors, market planner all share this tier) is accuracy-critical:
         # a weak model mis-routes ("acquisitions" not sent to web) and mis-maps
         # metrics. Default it to the STRONG synth tier, not the fast planner.
-        # Override `router_model` for a cheaper/faster tool tier if desired.
-        self.router_model = router_model or self.synth_model
         self._table_agent: Optional[TableAgent] = None
 
     # ------------------------------------------------------------------ #
@@ -334,21 +330,12 @@ class AgenticRAGv3(AgenticRAGv2):
                 chroma_dir=self.chroma_dir,
                 collection_name=self.table_collection,
                 embedding_model=self.embedding_model,
-                provider=self.provider,
-                code_model=self.code_model,
                 top_k=self.table_top_k,
-                api_key=self.api_key,
             )
         return self._table_agent
 
     def _get_router_llm(self):
-        if "router" not in self._llms:
-            from finagent.llm import build_llm
-
-            self._llms["router"] = build_llm(
-                self.provider, self.router_model, self.api_key, temperature=0.0
-            )
-        return self._llms["router"]
+        return self._get_llm("router")
 
     # ------------------------------------------------------------------ #
     # Nodes
@@ -686,17 +673,15 @@ def _load_dataset(path: str):
 def main():
     args = _build_cli().parse_args()
 
+    # LLM choice is per-run, not a property of the agent — build the context
+    # from the CLI flags and inject it at run().
+    ctx = RuntimeContext(provider=args.provider, synth_model=args.synth_model,
+                         top_k=args.final_top_k)
+
     agent = AgenticRAGv3(
         collection_name=args.collection,
         chroma_dir=args.chroma_dir,
         embedding_model=args.embedding_model,
-        provider=args.provider,
-        planner_model=args.planner_model,
-        synth_model=args.synth_model,
-        critic_model=args.critic_model,
-        grader_model=args.grader_model,
-        router_model=args.router_model,
-        code_model=args.code_model,
         reranker_model=args.reranker_model,
         bm25_top_k=args.bm25_top_k,
         dense_top_k=args.dense_top_k,
@@ -718,7 +703,7 @@ def main():
     if not args.question:
         raise SystemExit("Provide --question or --dataset.")
 
-    state = agent.run(args.question)
+    state = agent.run(args.question, ctx)
     print("\n" + "=" * 60)
     print(f"Question:        {state['question']}")
     print(f"Sub-queries:     {state.get('sub_queries')}")

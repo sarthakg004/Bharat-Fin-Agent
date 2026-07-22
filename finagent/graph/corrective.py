@@ -53,6 +53,7 @@ import re
 from typing import Optional, Union
 
 from finagent.graph.base import AgenticRAG, append_comparison_row
+from finagent.runtime import RuntimeContext
 from finagent.graph.state import (
     AgentState,
     ChunkScore,
@@ -163,7 +164,6 @@ class AgenticRAGv2(AgenticRAG):
         # to over-claim against, more noise). Capping to a tight, globally-best
         # set is the single biggest faithfulness lever in the eval. None = no cap.
         retrieve_cap: Optional[int] = 8,
-        grader_model: Optional[str] = None,
         grade_threshold: float = 3.0,
         min_keep_grade: int = 4,
         very_poor_grade: float = 2.5,
@@ -178,7 +178,6 @@ class AgenticRAGv2(AgenticRAG):
         self.final_top_k = final_top_k
         self.retrieve_cap = retrieve_cap
         # Grader is fast & cheap — default to the planner-tier model.
-        self.grader_model = grader_model or self.planner_model
         self.grade_threshold = grade_threshold
         # Chunks whose per-chunk grade falls below `min_keep_grade` are dropped
         # before synthesis. Default 4 means we keep only "partially answers" (4)
@@ -218,13 +217,7 @@ class AgenticRAGv2(AgenticRAG):
 
     def _get_grader_llm(self):
         """A fourth LLM role — reuses the role cache from the base class."""
-        if "grader" not in self._llms:
-            from finagent.llm import build_llm
-
-            self._llms["grader"] = build_llm(
-                self.provider, self.grader_model, self.api_key, temperature=0.0
-            )
-        return self._llms["grader"]
+        return self._get_llm("grader")
 
     # ------------------------------------------------------------------ #
     # Nodes
@@ -578,15 +571,15 @@ def _load_dataset(path: str):
 def main():
     args = _build_cli().parse_args()
 
+    # LLM choice is per-run, not a property of the agent — build the context
+    # from the CLI flags and inject it at run().
+    ctx = RuntimeContext(provider=args.provider, synth_model=args.synth_model,
+                         top_k=args.final_top_k)
+
     agent = AgenticRAGv2(
         collection_name=args.collection,
         chroma_dir=args.chroma_dir,
         embedding_model=args.embedding_model,
-        provider=args.provider,
-        planner_model=args.planner_model,
-        synth_model=args.synth_model,
-        critic_model=args.critic_model,
-        grader_model=args.grader_model,
         reranker_model=args.reranker_model,
         bm25_top_k=args.bm25_top_k,
         dense_top_k=args.dense_top_k,
@@ -606,7 +599,7 @@ def main():
     if not args.question:
         raise SystemExit("Provide --question or --dataset.")
 
-    state = agent.run(args.question)
+    state = agent.run(args.question, ctx)
     print("\n" + "=" * 60)
     print(f"Question:        {state['question']}")
     print(f"Sub-queries:     {state.get('sub_queries')}")
