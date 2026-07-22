@@ -17,6 +17,9 @@ env:
   PROJECT_ID: fin-agent-498211
   REGION: asia-south1
   SERVICE: finagent
+  # Served Qdrant collection. Must match the embedder/geometry in the code
+  # of the same commit -- see results/RETRIEVAL_EXPERIMENTS.md §7.
+  US_COLLECTION: us_filings
   DATA_BUCKET: gs://fin-agent-498211-data
   # Public Cloud Run URL — baked into the frontend bundle so the SPA calls the API.
   BACKEND_URL: https://finagent-237355589454.asia-south1.run.app
@@ -84,8 +87,15 @@ jobs:
         uses: google-github-actions/setup-gcloud@v2
 
       # Backend → Cloud Run. `--source .` builds the Dockerfile via Cloud Build.
-      # Not passing --set-env-vars / --set-secrets PRESERVES the existing API
-      # keys + ALLOWED_ORIGINS already configured on the service.
+      # --update-env-vars only ADDS/overrides the named key, so the API keys and
+      # ALLOWED_ORIGINS already configured on the service are preserved.
+      #
+      # US_COLLECTION rides the deploy so the served collection and the code that
+      # matches it land in ONE revision. They cannot be changed separately: the
+      # embedder's dimensionality is baked into the collection, so old code with
+      # a new collection (or the reverse) fails every query. Cloud Run switches
+      # revisions atomically, so there is no window where they disagree.
+      # Rollback = revert the code commit; this env var follows it.
       - name: Deploy backend to Cloud Run
         run: |
           # --max-instances 1: uploaded documents live in one instance's memory
@@ -100,6 +110,7 @@ jobs:
             --cpu-boost \
             --max-instances 1 \
             --timeout 3600 \
+            --update-env-vars "US_COLLECTION=${US_COLLECTION}" \
             --quiet
 
       - name: Set up Node
