@@ -12,10 +12,9 @@ module exposes it under the clean `pipeline` name and adds a one-call helper.
 
 from __future__ import annotations
 
-from typing import Optional, Union
+from typing import Union
 from pathlib import Path
 
-from finagent.config import settings
 from finagent.ingestion.ingest import CorpusIngester, IngestionStats
 
 

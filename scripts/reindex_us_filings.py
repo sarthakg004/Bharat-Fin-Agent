@@ -43,6 +43,8 @@ SOURCE = "us_filings"
 EMBED = "BAAI/bge-large-en-v1.5"
 PARENT, PARENT_OVERLAP = 2500, 300
 CHILD, CHILD_OVERLAP = 600, 100
+# Dynamic-fetch downloads live here; they are not part of the corpus.
+EXCLUDE = "sec-edgar-filings"
 
 
 def status() -> None:
@@ -91,11 +93,9 @@ def main() -> None:
           f"· child {CHILD}/{CHILD_OVERLAP}")
     print("production keeps serving", SOURCE, "throughout\n")
 
-    # data/us/pdfs, NOT data/us: the parent directory also contains
-    # data/us/eval/financebench/pdfs (368 benchmark filings). Walking data/us
-    # would ingest the eval corpus into the SERVED index -- 368 extra documents
-    # that blow the free tier and leak benchmark data into production. The live
-    # us_filings holds 84 documents, all from data/us/pdfs; this keeps that scope.
+    # data/us/pdfs, NOT data/us: the parent also holds
+    # data/us/eval/financebench/pdfs (368 benchmark filings), which must never
+    # enter the served index.
     ing = CorpusIngester(
         corpus_dir="data/us/pdfs",
         collection_name=args.collection,
@@ -103,6 +103,19 @@ def main() -> None:
         market="us",
         parent_doc=True,
     )
+    # data/us/pdfs holds TWO layouts and only one of them is the corpus:
+    #   TICKER/YEAR_ACCESSION.htm                     the curated 84 documents
+    #   sec-edgar-filings/TICKER/10-K/.../*.html      dynamic-fetch scratch
+    # The live us_filings contains ONLY the curated set (verified: 71,127/71,127
+    # points, 84 distinct local_paths, zero sec-edgar-filings). Including the
+    # scratch would (a) change the corpus, so a v1-vs-v2 comparison would no
+    # longer isolate the geometry/embedder change, and (b) take the index from
+    # ~407 MB to ~921 MB against a 1 GB free tier. Dynamically fetched filings
+    # are re-fetched on demand at runtime; they are not corpus.
+    _load = ing._load_records
+    ing._load_records = lambda mp: [r for r in _load(mp)
+                                    if EXCLUDE not in str(r.get("local_path", ""))]
+
     t0 = time.time()
     stats = ing.ingest_all(manifest_path=None, skip_if_already_indexed=True)
     print(f"\ndone in {(time.time()-t0)/60:.1f} min: {stats}")

@@ -13,7 +13,6 @@ it drives the compiled graph (`builder.build_graph`) and formats the result.
 
 from __future__ import annotations
 
-from typing import Optional
 
 from finagent.graph.builder import build_agent, build_graph
 

@@ -49,7 +49,6 @@ import argparse
 import re
 from typing import Optional
 
-from finagent.graph.base import append_comparison_row  # noqa: F401 (re-export)
 from finagent.graph.corrective import AgenticRAGv2
 from finagent.retrieval import HybridRetriever
 from finagent.runtime import RuntimeContext

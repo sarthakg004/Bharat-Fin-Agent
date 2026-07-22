@@ -9,7 +9,6 @@ details. This returns the *exact* agent the API serves (`AgenticRAGv4` via
 
 from __future__ import annotations
 
-from typing import Optional
 
 
 def build_agent(provider: str = "groq"):

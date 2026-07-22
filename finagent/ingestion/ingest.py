@@ -36,8 +36,11 @@ Design notes
 ------------
 * The same cluster holds multiple collections — one per corpus. The
   agent can query a specific market by passing the right collection name.
-* Embeddings model: BAAI/bge-small-en-v1.5 by default (runs on CPU in a few
-  minutes for ~40 docs; bge-large is better quality but 4x slower).
+* Embeddings model: BAAI/bge-large-en-v1.5 (1024-dim) by default — see
+  finagent.vectorstore.DEFAULT_EMBED_MODEL, the single source of truth. It is
+  ~4x slower than bge-small on CPU but measurably better (results/
+  RETRIEVAL_EXPERIMENTS.md §6b). A collection is sized to whatever model
+  writes it, so the two must never be mixed in one collection.
   Swap to OpenAI text-embedding-3-small if you have an API key — that's
   cheaper than you'd think (~$0.50 for the whole 40-doc corpus) and faster.
 * Chunk size 1000 with 200 overlap is a sane default for financial prose.
@@ -59,7 +62,7 @@ import json
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, Optional, Union
+from typing import Optional, Union
 
 from finagent.vectorstore import DEFAULT_EMBED_MODEL
 
@@ -715,7 +718,7 @@ def _build_cli() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--embedding-model",
-        default="BAAI/bge-small-en-v1.5",
+        default=DEFAULT_EMBED_MODEL,
         help="HuggingFace ST model or OpenAI model name",
     )
     parser.add_argument(

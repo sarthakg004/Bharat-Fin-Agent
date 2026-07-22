@@ -50,17 +50,14 @@ from __future__ import annotations
 
 import argparse
 import re
-from typing import Optional, Union
+from typing import Optional
 
-from finagent.graph.base import AgenticRAG, append_comparison_row
+from finagent.graph.base import AgenticRAG
 from finagent.runtime import RuntimeContext
 from finagent.graph.state import (
     AgentState,
-    ChunkScore,
-    CriticReport,
     GraderReport,
     RewrittenQuery,
-    SubQueries,
 )
 from finagent.vectorstore import DEFAULT_EMBED_MODEL
 

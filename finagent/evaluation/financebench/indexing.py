@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Optional, Union
+from typing import Union
 
 from finagent.ingestion.ingest import CorpusIngester
 
