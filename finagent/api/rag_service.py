@@ -42,7 +42,7 @@ def _build_agent(collection: Optional[str] = None) -> AgenticRAGv4:
     # the historical years the questions ask about. Without the override the eval
     # searches recent-only us_filings, finds nothing, and falls through to
     # web-search noise (the root cause of ~⅓ of "no information" non-answers).
-    coll = collection or "us_filings"
+    coll = collection or settings.us_collection
     return AgenticRAGv4(
         collection_name=coll,
         # US-only active retrieval. Non-US / non-corpus questions get
@@ -85,7 +85,7 @@ def get_agentic(collection: Optional[str] = None) -> AgenticRAGv4:
     pay to load a reranker. `collection` is the whole key — the eval's
     `financebench_eval` agent never collides with the served `us_filings` one.
     """
-    coll = collection or "us_filings"
+    coll = collection or settings.us_collection
     with _lock:
         if coll not in _agentic_cache:
             _agentic_cache[coll] = _build_agent(coll)
@@ -408,7 +408,7 @@ def run_agentic(question: str,
     if langfuse_cb is not None:
         from langfuse import propagate_attributes
         attrs: dict = {"trace_name": "finagent-query",
-                       "tags": [provider, collection or "us_filings"]}
+                       "tags": [provider, collection or settings.us_collection]}
         if session_id:
             attrs["session_id"] = str(session_id)
         trace_ctx = propagate_attributes(**attrs)
