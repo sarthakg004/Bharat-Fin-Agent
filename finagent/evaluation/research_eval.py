@@ -25,7 +25,7 @@ Per question, for BOTH the research report and the baseline answer:
 Research-only: **agent_success_rate** (specialists done vs planned) and the
 count of cross-check contradictions flagged.
 
-Usage (needs API keys + the Chroma store; each research run makes many LLM
+Usage (needs API keys + the Qdrant cluster; each research run makes many LLM
 calls — start with --sample 2):
 
     python -m finagent.evaluation.research_eval --sample 2

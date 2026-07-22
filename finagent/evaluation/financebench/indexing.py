@@ -1,7 +1,7 @@
 """
 indexing.py  ·  finagent/evaluation/financebench/indexing.py
 
-Index the FinanceBench filings into a dedicated `financebench_eval` Chroma
+Index the FinanceBench filings into a dedicated `financebench_eval` Qdrant
 collection using the *exact* production ingestion pipeline (same chunking, same
 BGE embeddings as `CorpusIngester`). Keeping the pipeline identical is the whole
 point: the eval then measures the retrieval the user actually gets, while the
@@ -49,7 +49,7 @@ def build_manifest(
 ) -> list[dict]:
     """Build (and persist) an ingestion manifest for the referenced filings.
 
-    Each record carries the metadata `CorpusIngester` propagates into Chroma —
+    Each record carries the metadata `CorpusIngester` propagates into the payload —
     crucially `local_path`, whose stem equals the FinanceBench `doc_name`, so the
     gold-chunk mapper can filter chunks to a single filing.
     """
@@ -58,7 +58,7 @@ def build_manifest(
     )
     wanted = _referenced_doc_names(questions)
 
-    # doc_name -> company / sector / period, for richer Chroma metadata.
+    # doc_name -> company / sector / period, for richer point metadata.
     doc_info = {}
     for line in Path(doc_info_path).read_text().splitlines():
         if line.strip():

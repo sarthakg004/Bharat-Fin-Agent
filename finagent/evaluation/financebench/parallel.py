@@ -13,11 +13,12 @@ output-row shape are identical; the orchestrator merges the shards back into
 one outputs file.
 
 Safety on shared resources:
-  * each worker opens its own read-only view of the Chroma store and runs
-    with PERSIST_DYNAMIC_FETCH=false, so no process ever WRITES the store
-    (concurrent Chroma writes are the known segfault class here);
+  * each worker opens its own client against Qdrant and runs with
+    DISABLE_DYNAMIC_FETCH=1, so an eval run never mutates the corpus (the
+    server itself is safe for concurrent writes; we just want a fixed corpus
+    so runs are comparable);
   * each worker is a separate process, so the non-thread-safe native stacks
-    (tokenizers, hnswlib) never share state.
+    (tokenizers, cross-encoder) never share state.
 
 Usage
 -----

@@ -1,9 +1,9 @@
 # ---------------------------------------------------------------------------
 # requirements-app.txt — RUNTIME deps for the deployed (Cloud Run) container.
 #
-# The prebuilt Chroma DB is baked into the image, so the runtime needs the
-# Chroma + BM25 retrieval stack. Ingestion (unstructured, sec/nse/bse) and
-# evaluation (ragas) packages are intentionally excluded.
+# The corpus lives in a remote Qdrant cluster, so the image ships no vector
+# data and no in-process lexical index. Ingestion (unstructured, sec/nse/bse)
+# and evaluation (ragas) packages are intentionally excluded.
 #
 # torch is installed CPU-only in the Dockerfile (Cloud Run has no GPU) BEFORE
 # this file, so sentence-transformers reuses it instead of pulling the ~2 GB

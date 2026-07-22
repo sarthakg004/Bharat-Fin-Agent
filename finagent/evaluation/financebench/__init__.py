@@ -6,7 +6,7 @@ functions inline) to measure the system end-to-end on FinanceBench:
 
     dataset    — load questions, tag by type, carve a stable held-out slice.
     indexing   — index the referenced filings into a dedicated
-                 `financebench_eval` Chroma collection via the production
+                 `financebench_eval` Qdrant collection via the production
                  ingestion pipeline.
     gold       — map each question to the chunk(s) holding its verified evidence.
     retrieval  — the decomposed retrieval eval: pool_recall@{20,50,100} plus

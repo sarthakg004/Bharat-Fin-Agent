@@ -51,7 +51,8 @@ DENSE_VECTOR = "dense"
 SPARSE_VECTOR = "sparse"
 
 # Metadata fields we filter on; indexed so filtering doesn't scan the payload.
-_INDEXED_FIELDS = ("company", "ticker", "year", "item", "table_id", "source_url")
+_INDEXED_FIELDS = ("company", "ticker", "year", "item", "table_id",
+                   "source_url", "local_path")
 
 # Stable namespace for deterministic point ids.
 _ID_NAMESPACE = uuid.UUID("6f9619ff-8b86-d011-b42d-00c04fc964ff")
@@ -132,10 +133,6 @@ def get_client():
     )
 
 
-def collection_exists(collection_name: str) -> bool:
-    return get_client().collection_exists(collection_name)
-
-
 def ensure_collection(collection_name: str, dim: int = DENSE_DIM) -> None:
     """Create the collection with named dense + sparse vectors if it's missing.
 
@@ -202,7 +199,7 @@ def build_store(collection_name: str, embedding_model: str = DEFAULT_EMBED_MODEL
 # Backend-neutral admin helpers
 #
 # These exist so no caller reaches into store internals (the old code used
-# `store._collection`, a chroma-only attribute, in six places).
+# `store._collection`, a backend-specific attribute, in six places).
 # --------------------------------------------------------------------------- #
 
 def scroll_payloads(collection_name: str, qfilter=None,

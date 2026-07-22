@@ -233,19 +233,3 @@ def qdrant_filter(flt: Optional[dict]):
     return models.Filter(must=must) if must else None
 
 
-def metadata_matches(meta: dict, flt: Optional[dict]) -> bool:
-    """Python-side equivalent of `qdrant_filter`, for ranking chunks held in
-    memory (an ephemerally fetched filing, an uploaded document) that never
-    reach the database."""
-    if not flt:
-        return True
-    comps = flt.get("companies") or []
-    if comps and (meta or {}).get("company") not in comps:
-        return False
-    yrs = flt.get("years") or []
-    if yrs and str((meta or {}).get("year") or "") not in yrs:
-        return False
-    items = flt.get("items") or []
-    if items and (meta or {}).get("item") not in items:
-        return False
-    return True

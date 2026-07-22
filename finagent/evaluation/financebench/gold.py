@@ -34,6 +34,17 @@ from .indexing import DEFAULT_PDF_DIR, EVAL_COLLECTION
 DEFAULT_GOLD_PATH = "results/financebench_gold.json"
 
 
+def _one_filing_filter(local_path: str):
+    """Restrict the gold search to the chunks of one filing."""
+    from qdrant_client import models
+
+    from finagent.vectorstore import META_KEY
+
+    return models.Filter(must=[models.FieldCondition(
+        key=f"{META_KEY}.local_path",
+        match=models.MatchValue(value=local_path))])
+
+
 def build_gold_map(
     questions: Optional[pd.DataFrame] = None,
     collection_name: str = EVAL_COLLECTION,
@@ -85,7 +96,7 @@ def build_gold_map(
             hits = store.similarity_search_with_relevance_scores(
                 evidence_text[:2000],
                 k=1,
-                filter={"local_path": local_path},
+                filter=_one_filing_filter(local_path),
             )
             if not hits:
                 continue

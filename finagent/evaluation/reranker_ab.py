@@ -3,7 +3,7 @@ Reranker A/B harness — measure whether a smaller cross-encoder reranks our
 *own* corpus as well as the current default, without any LLM at eval time.
 
 Method (label-grounded, no relevance annotations needed):
-  1. Sample N real chunks from our Chroma collections.
+  1. Sample N real chunks from our Qdrant collections.
   2. For each, generate ONE natural question the chunk answers (Groq, cached to
      disk so reruns are free and deterministic).
   3. Build the BM25 ∪ dense candidate pool once per query (independent of the

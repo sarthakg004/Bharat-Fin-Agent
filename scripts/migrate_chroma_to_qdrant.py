@@ -58,6 +58,7 @@ def migrate(name: str, chroma_dir: str, batch: int = 512,
     sparse = get_sparse_embeddings()
 
     moved, offset, t0 = 0, 0, time.time()
+    seen_ids: set[str] = set()
     while True:
         got = col.get(limit=batch, offset=offset,
                       include=["embeddings", "documents", "metadatas"])
@@ -74,6 +75,7 @@ def migrate(name: str, chroma_dir: str, batch: int = 512,
         for i, (text, meta) in enumerate(zip(docs, metas)):
             meta = meta or {}
             pid = chunk_point_id(meta, text)
+            seen_ids.add(pid)
             sv = sparse_vecs[i]
             points.append(models.PointStruct(
                 id=pid,
@@ -93,11 +95,19 @@ def migrate(name: str, chroma_dir: str, batch: int = 512,
 
     print(f"    {moved:,}/{total:,}  done in {time.time() - t0:.0f}s" + " " * 12)
 
+    # Expect one point per DISTINCT id. Byte-identical chunks of the same parent
+    # share an id and collapse on purpose (PDF parsing emits repeated fragments
+    # like "Services" or "December 31,"); anything beyond that is an id scheme
+    # losing real data, which is what an earlier key did — 71k collapsed to 34k.
     stored = client.count(name, exact=True).count
-    if stored < total:
+    collapsed = total - len(seen_ids)
+    if stored != len(seen_ids):
         raise SystemExit(
-            f"  {name}: FAILED — {total:,} chunks in but only {stored:,} points "
-            f"stored. Point ids are colliding, which loses data.")
+            f"  {name}: FAILED — {len(seen_ids):,} distinct ids but {stored:,} "
+            f"points stored. Point ids are colliding, which loses data.")
+    if collapsed:
+        print(f"    {collapsed} duplicate chunk(s) collapsed (identical text "
+              f"within one parent)")
     return moved
 
 

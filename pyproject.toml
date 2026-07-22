@@ -25,16 +25,16 @@ dependencies = [
     "langgraph",
     "langsmith",
     "langchain-core>=0.3.0",
-    "langchain-chroma>=0.1.4",
     "langchain-huggingface>=0.1.0",
     "langchain-groq>=0.2.0",
     "langchain-google-genai>=2.0.0",
     "langchain-openai>=0.2.0",
     "langchain-anthropic>=0.3.0",
-    # Vector store: on-disk Chroma (baked into the image for deployment).
-    "langchain-chroma>=0.1.4",
-    "chromadb>=0.5.0",
-    "rank-bm25",                       # BM25 half of hybrid retrieval
+    # Vector store: remote Qdrant. Lexical (BM25) retrieval is a sparse-vector
+    # index inside the database, so there is no in-process BM25 any more.
+    "qdrant-client>=1.12",
+    "langchain-qdrant>=0.2",
+    "fastembed>=0.4",                  # BM25 sparse vectors (tokenise + weight)
     "sentence-transformers>=3.0.0",
     "yfinance>=0.2.40",
     "tavily-python>=0.5.0",
