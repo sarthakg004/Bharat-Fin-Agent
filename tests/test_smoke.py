@@ -66,11 +66,15 @@ def test_image_bakes_every_model_loaded_offline():
     """
     from pathlib import Path
 
+    from finagent.retrieval.hybrid import HybridRetriever
     from finagent.vectorstore import DEFAULT_EMBED_MODEL, SPARSE_MODEL
 
     text = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text()
     assert "HF_HUB_OFFLINE=1" in text
-    for model in (DEFAULT_EMBED_MODEL, SPARSE_MODEL):
+    # The reranker is included because it is the model most likely to be swapped
+    # (it is env-configurable and was changed to v2-m3); a default that drifts
+    # from the Dockerfile reproduces the exact failure above.
+    for model in (DEFAULT_EMBED_MODEL, SPARSE_MODEL, HybridRetriever.DEFAULT_RERANKER):
         assert model in text, f"{model} is loaded at runtime but never baked"
 
 
