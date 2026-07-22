@@ -38,6 +38,31 @@ load_dotenv()
 
 DEFAULT_EMBED_MODEL = "BAAI/bge-small-en-v1.5"
 DENSE_DIM = 384                     # bge-small-en-v1.5
+
+# Output dimensionality per embedding model. `ensure_collection` must size the
+# dense vector from the model actually in use — creating a collection at the
+# default 384 and then writing 1024-d vectors into it fails every upsert with
+# "collection is configured for dense vectors with 384 dimensions".
+_MODEL_DIMS = {
+    "BAAI/bge-small-en-v1.5": 384,
+    "BAAI/bge-base-en-v1.5": 768,
+    "BAAI/bge-large-en-v1.5": 1024,
+}
+
+
+def dim_for(model_name: str) -> int:
+    """Dense dimensionality for an embedding model.
+
+    Unknown models are measured once by embedding a probe string rather than
+    guessed — a wrong dimension only surfaces at write time, thousands of chunks
+    into an ingest run.
+    """
+    known = _MODEL_DIMS.get(model_name)
+    if known:
+        return known
+    return len(get_embeddings(model_name).embed_query("dimension probe"))
+
+
 # BM25 as sparse vectors, computed client-side; Qdrant supplies the IDF half
 # server-side (see `ensure_collection`), which is what keeps lexical scoring
 # correct after a write instead of frozen at index-build time.
@@ -147,7 +172,8 @@ def get_client():
     )
 
 
-def ensure_collection(collection_name: str, dim: int = DENSE_DIM) -> None:
+def ensure_collection(collection_name: str, dim: Optional[int] = None,
+                      embedding_model: str = DEFAULT_EMBED_MODEL) -> None:
     """Create the collection with named dense + sparse vectors if it's missing.
 
     `modifier=IDF` is the important flag: Qdrant then computes the inverse
@@ -157,6 +183,8 @@ def ensure_collection(collection_name: str, dim: int = DENSE_DIM) -> None:
     """
     from qdrant_client import models
 
+    if dim is None:
+        dim = dim_for(embedding_model)
     client = get_client()
     if not client.collection_exists(collection_name):
         client.create_collection(
@@ -194,7 +222,7 @@ def build_store(collection_name: str, embedding_model: str = DEFAULT_EMBED_MODEL
     from langchain_qdrant import QdrantVectorStore, RetrievalMode
 
     if create:
-        ensure_collection(collection_name)
+        ensure_collection(collection_name, embedding_model=embedding_model)
 
     return QdrantVectorStore(
         client=get_client(),

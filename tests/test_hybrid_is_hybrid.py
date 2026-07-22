@@ -90,3 +90,29 @@ def inspect_source(fn) -> str:
     import inspect
 
     return inspect.getsource(fn)
+
+
+def test_collection_is_sized_for_the_embedder_in_use():
+    """A collection must be created at the dimensionality of the embedder that
+    will write to it.
+
+    `build_store(..., create=True)` used to call `ensure_collection` with the
+    hardcoded 384 default, so pointing the ingester at bge-large created a
+    384-dim collection and then failed EVERY upsert with "collection is
+    configured for dense vectors with 384 dimensions". Nothing caught it until
+    a reindex was already running.
+    """
+    from finagent.vectorstore import DEFAULT_EMBED_MODEL, DENSE_DIM, dim_for
+
+    assert dim_for(DEFAULT_EMBED_MODEL) == DENSE_DIM
+    assert dim_for("BAAI/bge-large-en-v1.5") == 1024
+    assert dim_for("BAAI/bge-base-en-v1.5") == 768
+
+    import inspect
+
+    from finagent.vectorstore import build_store, ensure_collection
+
+    # ensure_collection must derive the size, not default it.
+    assert "dim_for(embedding_model)" in inspect.getsource(ensure_collection)
+    # and build_store must pass the model through when it creates.
+    assert "embedding_model=embedding_model" in inspect.getsource(build_store)
