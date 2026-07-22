@@ -145,7 +145,8 @@ class CrossCheck(BaseModel):
 
 
 # --------------------------------------------------------------------------- #
-# Task cache — repeated research on the same company reuses specialist runs
+# Task cache — repeated research within ONE conversation reuses specialist runs.
+# Keyed by the client's session id: findings are never shared between users.
 # --------------------------------------------------------------------------- #
 
 _CACHE: "OrderedDict[tuple, tuple[float, dict]]" = OrderedDict()
@@ -231,8 +232,13 @@ class DeepResearch:
     def __init__(self, run_fn: Callable[[str], dict], provider: str = "groq",
                  model: Optional[str] = None, api_key: Optional[str] = None,
                  max_agents: Optional[int] = None,
-                 parallel: Optional[int] = None):
+                 parallel: Optional[int] = None,
+                 session_id: Optional[str] = None):
         self.run_fn = run_fn
+        # Scopes the task cache to one conversation. Without it the cache was
+        # keyed on the question alone, so one user's specialist findings were
+        # served to any other user asking the same thing.
+        self.session_id = session_id
         self.provider = provider.lower()
         defaults = AgenticRAG.DEFAULTS.get(self.provider) or AgenticRAG.DEFAULTS["groq"]
         self.model = model or defaults["synth"]
@@ -327,8 +333,9 @@ class DeepResearch:
             raise e
 
     def _run_task(self, task: Task) -> dict:
-        key = (task.id, task.question.strip().lower(), self.provider, self.model)
-        cached = _cache_get(key)
+        key = (self.session_id, task.id, task.question.strip().lower(),
+               self.provider, self.model) if self.session_id else None
+        cached = _cache_get(key) if key else None
         if cached is not None:
             return {**cached, "cached": True}
 
@@ -347,7 +354,8 @@ class DeepResearch:
                     "input_tokens": meta.get("input_tokens") or 0,
                     "output_tokens": meta.get("output_tokens") or 0,
                 }
-                _cache_put(key, finding)
+                if key:
+                    _cache_put(key, finding)
                 return finding
             except Exception as e:
                 self._raise_if_exhausted(e)

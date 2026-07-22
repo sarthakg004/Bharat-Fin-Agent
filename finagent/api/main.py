@@ -528,6 +528,7 @@ async def _stream_research(request: ResearchRequest) -> AsyncGenerator[str, None
                 session_id=request.session_id or None),
             provider=provider, model=synth_model, api_key=api_key,
             max_agents=request.max_agents,
+            session_id=request.session_id or None,
         )
         return research.run(request.question, chat_history=agent_history,
                             on_event=_on_event)

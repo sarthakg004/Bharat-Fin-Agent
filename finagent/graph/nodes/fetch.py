@@ -8,9 +8,64 @@ from __future__ import annotations
 
 import os
 import re
+import threading
+import time
+from collections import OrderedDict
 from typing import Optional
 
 from finagent.graph.state import AgentState, CorpusGateQuery
+from finagent.runtime import current_context
+
+# --------------------------------------------------------------------------- #
+# Session-scoped fetch cache
+#
+# Downloading and parsing a 10-K costs ~20s. Without this, every follow-up in a
+# conversation re-fetched the same filing, because the chunks live in AgentState
+# and that is rebuilt per question.
+#
+# Keyed on the CLIENT'S conversation id, so a filing is reused across the turns
+# of one chat and is unreachable from any other — session ids are random and
+# never shared. No session id (eval harness, CLIs) → no caching, same behaviour
+# as before. Bounded by TTL and entry count so it cannot grow without limit.
+# ponytail: in-memory, single-instance; the deploy pins --max-instances 1, same
+# constraint the upload store already carries.
+# --------------------------------------------------------------------------- #
+
+_FETCH_CACHE: "OrderedDict[tuple, tuple[float, list[dict]]]" = OrderedDict()
+_FETCH_TTL = 3600.0        # seconds — a filing is immutable; the cap is memory
+_FETCH_MAX = 32            # entries across all sessions
+_fetch_lock = threading.Lock()
+
+
+def _fetch_cache_get(key: Optional[tuple]) -> Optional[list[dict]]:
+    if key is None:
+        return None
+    with _fetch_lock:
+        entry = _FETCH_CACHE.get(key)
+        if entry is None:
+            return None
+        ts, chunks = entry
+        if time.time() - ts > _FETCH_TTL:
+            _FETCH_CACHE.pop(key, None)
+            return None
+        _FETCH_CACHE.move_to_end(key)
+        return list(chunks)          # copy: callers merge into their own state
+
+
+def _fetch_cache_put(key: Optional[tuple], chunks: list[dict]) -> None:
+    if key is None or not chunks:
+        return
+    with _fetch_lock:
+        _FETCH_CACHE[key] = (time.time(), list(chunks))
+        _FETCH_CACHE.move_to_end(key)
+        while len(_FETCH_CACHE) > _FETCH_MAX:
+            _FETCH_CACHE.popitem(last=False)
+
+
+def _fetch_cache_key(ticker: str, form: str) -> Optional[tuple]:
+    """Cache key for this conversation, or None when caching must not happen."""
+    session = current_context().session_id
+    return (session, (ticker or "").upper(), form) if session else None
 
 GATE_EXTRACT_SYSTEM = """\
 You identify the single US public company a question is primarily about, so the
@@ -138,16 +193,24 @@ class FetchNodes:
         dated = self._dated_form_request(question)
         if dated:
             form, dt = dated
-            try:
-                res = self.fetcher.fetch_dated_filing(company, form, dt)
-            except Exception as e:
-                self._log(state, f"dated filing fetch failed ({form} {dt}): {e}")
-                res = {"ok": False}
-            if res.get("ok") and res.get("chunks"):
-                self._log(state, f"fetched {res.get('form')} filed "
-                                 f"{res.get('filing_date')} from EDGAR "
-                                 f"({len(res['chunks'])} chunks)")
-                extra["fetched_chunks"] = prior + res["chunks"]
+            ck = _fetch_cache_key(company, f"{form}@{dt}")
+            cached = _fetch_cache_get(ck)
+            if cached is not None:
+                self._log(state, f"reusing cached {form} {dt} "
+                                 f"({len(cached)} chunks, this conversation)")
+                extra["fetched_chunks"] = prior + cached
+            else:
+                try:
+                    res = self.fetcher.fetch_dated_filing(company, form, dt)
+                except Exception as e:
+                    self._log(state, f"dated filing fetch failed ({form} {dt}): {e}")
+                    res = {"ok": False}
+                if res.get("ok") and res.get("chunks"):
+                    self._log(state, f"fetched {res.get('form')} filed "
+                                     f"{res.get('filing_date')} from EDGAR "
+                                     f"({len(res['chunks'])} chunks)")
+                    extra["fetched_chunks"] = prior + res["chunks"]
+                    _fetch_cache_put(ck, res["chunks"])
 
         try:
             gate = self.fetcher.gate(company)
@@ -229,6 +292,17 @@ class FetchNodes:
         # the persistent index, so the corpus never grows and there's no
         # scale-to-zero persistence problem.
         if not self.persist_fetch:
+            # Reuse this conversation's copy if we already paid to fetch it.
+            ck = _fetch_cache_key(gate["ticker"], f"10-K:{n_filings}")
+            cached = _fetch_cache_get(ck)
+            if cached is not None:
+                self._log(state, f"reusing {len(cached)} cached chunks for "
+                                 f"{gate['ticker']} (this conversation)")
+                return {
+                    "fetched_chunks": extra.get("fetched_chunks", prior) + cached,
+                    "fetch_status": {**gate, "status": "fetched", "ephemeral": True,
+                                     "cached": True, "chunks_fetched": len(cached)},
+                }
             try:
                 res = self.fetcher.fetch_chunks(
                     gate["ticker"], company=gate.get("company") or "", n=n_filings)
@@ -240,6 +314,7 @@ class FetchNodes:
             if chunks:
                 self._log(state, f"fetched {len(chunks)} in-memory chunks for {gate['ticker']} "
                                  f"({res.get('form')})")
+                _fetch_cache_put(ck, chunks)
             return {
                 "fetched_chunks": extra.get("fetched_chunks", prior) + chunks,
                 "fetch_status": {**gate, "status": "fetched" if chunks else "error",

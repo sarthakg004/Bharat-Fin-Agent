@@ -82,6 +82,11 @@ class RuntimeContext:
     api_key: Optional[str] = None
     temperature: float = 0.0
     top_k: int = 5
+    # The client's conversation id. Scopes anything cached BETWEEN turns of one
+    # chat (a fetched filing, a research finding) so it is reused within the
+    # conversation and invisible to every other user. None → no cross-turn
+    # caching at all, which is the safe default for the eval harness and CLIs.
+    session_id: Optional[str] = None
 
     def model_for(self, role: str) -> str:
         """Resolve a role ('planner', 'synth', 'router', …) to a model name."""

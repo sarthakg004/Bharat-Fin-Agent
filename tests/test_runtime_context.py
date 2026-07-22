@@ -82,6 +82,54 @@ def test_concurrent_runs_do_not_share_request_config():
     assert got == [f"key-{i}" for i in range(64)]
 
 
+def test_fetch_cache_is_per_conversation():
+    """A fetched filing is reused across the turns of ONE chat and is
+    unreachable from any other — the key is the client's session id.
+
+    Without a session id (eval harness, CLIs) nothing is cached, which is the
+    behaviour that existed before the cache.
+    """
+    import finagent.graph.nodes.fetch as F
+    from finagent.runtime import RuntimeContext, use_context
+
+    F._FETCH_CACHE.clear()
+    chunks = [{"text": "risk factors", "page": 12}]
+
+    with use_context(RuntimeContext(session_id="chat-A")):
+        key_a = F._fetch_cache_key("PLTR", "10-K:1")
+        assert F._fetch_cache_get(key_a) is None        # cold
+        F._fetch_cache_put(key_a, chunks)
+        assert F._fetch_cache_get(key_a) == chunks      # same chat → reused
+
+    with use_context(RuntimeContext(session_id="chat-B")):
+        key_b = F._fetch_cache_key("PLTR", "10-K:1")
+        assert key_b != key_a
+        assert F._fetch_cache_get(key_b) is None        # other user → isolated
+
+    with use_context(RuntimeContext()):                 # no session id
+        assert F._fetch_cache_key("PLTR", "10-K:1") is None
+        assert F._fetch_cache_get(None) is None
+
+    # The cache hands back copies, so a caller mutating its list cannot corrupt
+    # what the next turn of the conversation sees.
+    with use_context(RuntimeContext(session_id="chat-A")):
+        got = F._fetch_cache_get(key_a)
+        got.append({"text": "injected"})
+        assert len(F._fetch_cache_get(key_a)) == 1
+    F._FETCH_CACHE.clear()
+
+
+def test_fetch_cache_is_bounded():
+    """It must not grow without limit — one entry per (session, filing)."""
+    import finagent.graph.nodes.fetch as F
+
+    F._FETCH_CACHE.clear()
+    for i in range(F._FETCH_MAX + 10):
+        F._fetch_cache_put((f"chat-{i}", "PLTR", "10-K:1"), [{"text": "x"}])
+    assert len(F._FETCH_CACHE) == F._FETCH_MAX
+    F._FETCH_CACHE.clear()
+
+
 def test_agent_holds_no_request_state():
     """The shared agent must expose no provider/model/key attribute at all.
 

@@ -357,7 +357,8 @@ def run_agentic(question: str, top_k: int = 5,
     rag = get_agentic(collection)
     # Everything request-specific goes here, not onto the shared agent.
     ctx = RuntimeContext(provider=provider, synth_model=synth_model,
-                         api_key=api_key, top_k=top_k or 5)
+                         api_key=api_key, top_k=top_k or 5,
+                         session_id=session_id)
 
     # `chat_history` lives directly on AgentState (TypedDict, total=False) so
     # nodes can read it without changing graph signatures.

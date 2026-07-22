@@ -185,14 +185,14 @@ def test_specialist_retry_then_success():
     assert calls["n"] == 2                       # failed once, retried once
 
 
-def test_task_cache_reuses_specialist_runs():
+def test_task_cache_reuses_specialist_runs_within_one_conversation():
     calls = {"n": 0}
 
     def counting(question: str) -> dict:
         calls["n"] += 1
         return _fake_run_fn(question)
 
-    dr = _stubbed(run_fn=counting)
+    dr = _stubbed(run_fn=counting, session_id="chat-1")
     dr.run("Should I invest in Apple? (cache)")
     assert calls["n"] == 2
     out2 = dr.run("Should I invest in Apple? (cache)")
@@ -200,6 +200,33 @@ def test_task_cache_reuses_specialist_runs():
     # Cached runs still produce correctly renumbered fresh chunk copies.
     assert [c["id"] for c in out2["chunks"]] == [0, 1]
     assert "cached" in out2["metadata"]["tasks"][0]["detail"]
+
+
+def test_task_cache_is_never_shared_between_users():
+    """A finding computed for one conversation must never be served to another.
+
+    The key used to be (task, question, provider, model) — no user identity —
+    so any user asking the same question got the previous user's findings.
+    """
+    calls = {"n": 0}
+
+    def counting(question: str) -> dict:
+        calls["n"] += 1
+        return _fake_run_fn(question)
+
+    q = "Should I invest in Apple? (isolation)"
+    _stubbed(run_fn=counting, session_id="chat-A").run(q)
+    assert calls["n"] == 2
+    # Same question, different conversation → must recompute, not reuse.
+    _stubbed(run_fn=counting, session_id="chat-B").run(q)
+    assert calls["n"] == 4
+
+    # No session id (eval harness, CLI) → no cross-turn caching at all.
+    calls["n"] = 0
+    dr = _stubbed(run_fn=counting)
+    dr.run(q)
+    dr.run(q)
+    assert calls["n"] == 4
 
 
 def test_exhausted_keys_abort_the_run():
