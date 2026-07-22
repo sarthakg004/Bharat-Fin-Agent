@@ -31,9 +31,17 @@ class ProviderConfig(BaseModel):
 
 class ChatTurn(BaseModel):
     """One prior turn of conversation. The server keeps no chat store, so the
-    client owns the thread and replays recent turns with each request."""
+    client owns the thread and replays recent turns with each request.
+
+    `content` is bounded only as a DoS guard, NOT to the length the agent
+    actually uses. The client replays whole assistant answers verbatim, and a
+    Deep Research report runs to many thousands of characters — capping this
+    near the agent's own budget would 422 a legitimate conversation. The real
+    trimming happens server-side and twice: `_agent_history` keeps 1200 chars
+    per turn, and the planner prompt cuts again to 400.
+    """
     role: Literal["user", "assistant"]
-    content: str
+    content: str = Field(max_length=32_000)
 
 
 class QueryRequest(BaseModel):
@@ -47,7 +55,9 @@ class QueryRequest(BaseModel):
     provider_config: Optional[ProviderConfig] = None
     chat_history: Optional[list[ChatTurn]] = Field(
         default=None,
-        description="Recent turns for conversation memory; the client owns the thread.",
+        max_length=50,
+        description="Recent turns for conversation memory; the client owns the thread. "
+                    "The server keeps only the last 6 — the cap is a payload guard.",
     )
     upload_ids: Optional[list[str]] = Field(
         default=None,
@@ -67,6 +77,7 @@ class ResearchRequest(BaseModel):
     provider_config: Optional[ProviderConfig] = None
     chat_history: Optional[list[ChatTurn]] = Field(
         default=None,
+        max_length=50,
         description="Recent turns, so follow-ups like 'now research it deeply' "
                     "resolve the company under discussion.",
     )
