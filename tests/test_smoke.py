@@ -23,12 +23,18 @@ def test_api_app_builds():
     assert app.title == "FinAgent API"
 
 
-def test_health_reports_agentic_only():
-    from finagent.api import rag_service
+def test_health_is_liveness_only():
+    """The SPA polls /api/health every 10-30s to tell a cold start from a dead
+    backend. It must stay free: no LLM probe (burns quota), no index probe
+    (slows every poll). A 200 is the whole contract."""
+    from starlette.testclient import TestClient
 
-    health = rag_service.health()
-    assert health["status"] == "ok"
-    assert health["configs"] == ["agentic"]  # naive mode removed
+    from finagent.api.main import app
+
+    with TestClient(app) as client:
+        resp = client.get("/api/health")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok"}
 
 
 def _build_agent():

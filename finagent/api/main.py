@@ -102,8 +102,10 @@ _executor = ThreadPoolExecutor(
 
 @app.get("/api/health", response_model=HealthResponse)
 def healthcheck():
-    return HealthResponse(**{k: v for k, v in rag_service.health().items()
-                             if k != "configs"})
+    """Liveness only — the SPA polls this to tell a cold start from a dead
+    backend, and reads nothing but the status code. Deliberately does no work:
+    it must not probe the LLM (burns quota) or the index (slows every poll)."""
+    return HealthResponse(status="ok")
 
 
 # --------------------------------------------------------------------------- #

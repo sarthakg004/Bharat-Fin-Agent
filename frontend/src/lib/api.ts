@@ -139,11 +139,9 @@ export interface UploadResponse {
 
 export interface HealthResponse {
   status: string;
-  collections: string[];
 }
 
 export type SSEEvent =
-  | { type: "chat"; chat_id: number }
   | { type: "status"; stage: string; label: string; index?: number; total?: number }
   | { type: "step_done"; stage: string; detail?: string | null }
   | { type: "research_plan"; company?: string; ticker?: string; objective?: string; tasks: ResearchPlanTask[] }

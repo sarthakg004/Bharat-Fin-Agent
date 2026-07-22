@@ -91,4 +91,3 @@ class UploadResponse(BaseModel):
 
 class HealthResponse(BaseModel):
     status: str
-    collections: list[str]

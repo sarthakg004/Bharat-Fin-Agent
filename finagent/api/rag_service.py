@@ -317,23 +317,6 @@ def _step_detail(node: str, delta: dict) -> Optional[str]:
     return None
 
 
-def _normalise_chunk(text: str, meta: dict, idx: int) -> dict:
-    company = meta.get("company") or meta.get("ticker", "?")
-    year = str(meta.get("year", "?"))
-    page = meta.get("page", "?")
-    citation = f"[{company} 10-K {year}, p. {page}]"
-    return {
-        "id": idx,
-        "text": text,
-        "company": company,
-        "ticker": meta.get("ticker", ""),
-        "year": year,
-        "page": page,
-        "source_url": meta.get("source_url", ""),
-        "citation": citation,
-    }
-
-
 def _langfuse_handler():
     """Langfuse tracing (open-source LLM observability) — one CallbackHandler
     per request captures the whole LangGraph run as a nested trace (per-node
@@ -705,13 +688,4 @@ def run_agentic(question: str, top_k: int = 5,
             "market_calls": len(state.get("market_data", []) or []),
             "citations": state.get("citations", []),
         },
-    }
-
-
-def health() -> dict:
-    # We don't probe the LLM (would burn quota). Just confirm imports + collections.
-    return {
-        "status": "ok",
-        "collections": ["us_filings"],
-        "configs": ["agentic"],
     }
