@@ -1,0 +1,38 @@
+{
+  "docs": 84,
+  "pool_depth": 24,
+  "hit_threshold": 0.5,
+  "results": {
+    "c600_p2500_large_m3": {
+      "child": 600,
+      "parent": 2500,
+      "embed": "BAAI/bge-large-en-v1.5",
+      "rerank": "BAAI/bge-reranker-v2-m3",
+      "mmr": false,
+      "dim": 1024,
+      "n": 149,
+      "mean_coverage@5": 0.5678,
+      "hit@5": 0.5772,
+      "mean_coverage@8": 0.6347,
+      "hit@8": 0.6577,
+      "elapsed_s": 2369.0,
+      "by_type": {
+        "comparison": {
+          "n": 21,
+          "cov@8": 0.5805,
+          "hit@8": 0.619
+        },
+        "narrative": {
+          "n": 57,
+          "cov@8": 0.6792,
+          "hit@8": 0.7193
+        },
+        "numeric": {
+          "n": 71,
+          "cov@8": 0.6151,
+          "hit@8": 0.6197
+        }
+      }
+    }
+  }
+}

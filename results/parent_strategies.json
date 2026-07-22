@@ -1,0 +1,81 @@
+{
+  "docs": 12,
+  "sample": 12,
+  "seed": 0,
+  "reranker_char_budget": 2000,
+  "retrieve_cap": 8,
+  "results": {
+    "child_600_100 (embedded unit)": {
+      "containment": 0.0521,
+      "chunks_per_doc": 1313.7,
+      "mean_chars": 445,
+      "median_chars": 515,
+      "pct_over_reranker_window": 0.0,
+      "ctx_chars_at_cap8": 3561
+    },
+    "fixed_1000_200 (old flat)": {
+      "containment": 0.4653,
+      "chunks_per_doc": 834.2,
+      "mean_chars": 745,
+      "median_chars": 892,
+      "pct_over_reranker_window": 0.0,
+      "ctx_chars_at_cap8": 5958
+    },
+    "parent_1500_200 (SHIPPED)": {
+      "containment": 0.7243,
+      "chunks_per_doc": 544.9,
+      "mean_chars": 1086,
+      "median_chars": 1366,
+      "pct_over_reranker_window": 0.0,
+      "ctx_chars_at_cap8": 8687
+    },
+    "parent_2500_300": {
+      "containment": 0.8007,
+      "chunks_per_doc": 328.8,
+      "mean_chars": 1785,
+      "median_chars": 2268,
+      "pct_over_reranker_window": 0.6958,
+      "ctx_chars_at_cap8": 14283
+    },
+    "parent_4000_400": {
+      "containment": 0.9417,
+      "chunks_per_doc": 187.4,
+      "mean_chars": 3097,
+      "median_chars": 3735,
+      "pct_over_reranker_window": 0.8649,
+      "ctx_chars_at_cap8": 24774
+    },
+    "paragraph (raw)": {
+      "containment": 0.2944,
+      "chunks_per_doc": 3155.1,
+      "mean_chars": 173,
+      "median_chars": 44,
+      "pct_over_reranker_window": 0.0723,
+      "ctx_chars_at_cap8": 1383
+    },
+    "paragraph_merged_1500": {
+      "containment": 0.5819,
+      "chunks_per_doc": 339.7,
+      "mean_chars": 1614,
+      "median_chars": 1435,
+      "pct_over_reranker_window": 0.2024,
+      "ctx_chars_at_cap8": 12909
+    },
+    "paragraph_merged_2500": {
+      "containment": 0.4965,
+      "chunks_per_doc": 240.7,
+      "mean_chars": 2278,
+      "median_chars": 2407,
+      "pct_over_reranker_window": 0.7354,
+      "ctx_chars_at_cap8": 18222
+    },
+    "page (whole page)": {
+      "containment": 1.0,
+      "chunks_per_doc": 159.8,
+      "mean_chars": 3442,
+      "median_chars": 3405,
+      "pct_over_reranker_window": 0.799,
+      "ctx_chars_at_cap8": 27540
+    }
+  }
+}

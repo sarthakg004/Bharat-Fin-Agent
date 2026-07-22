@@ -1,0 +1,28 @@
+{
+  "threads": 2,
+  "candidates": 22,
+  "sub_queries": 3,
+  "max_length": 512,
+  "results": {
+    "BAAI/bge-reranker-base": {
+      "params_M": 278.0,
+      "disk_MB": 2268.7,
+      "load_s": 5.5,
+      "rss_after_load_MB": 1295.2,
+      "rss_delta_MB": 436.6,
+      "rerank_s_per_subquery": 9.03,
+      "rerank_s_per_question": 27.08,
+      "ms_per_pair": 410.4
+    },
+    "BAAI/bge-reranker-v2-m3": {
+      "params_M": 567.8,
+      "disk_MB": 4586.5,
+      "load_s": 139.4,
+      "rss_after_load_MB": 3193.1,
+      "rss_delta_MB": 1103.3,
+      "rerank_s_per_subquery": 31.1,
+      "rerank_s_per_question": 93.3,
+      "ms_per_pair": 1413.6
+    }
+  }
+}

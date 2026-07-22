@@ -1,0 +1,47 @@
+{
+  "docs": 84,
+  "n_questions": 150,
+  "pool_depth": 24,
+  "hit_threshold": 0.5,
+  "rerank": "BAAI/bge-reranker-v2-m3",
+  "child": 600,
+  "note": "Recovered from the run log: the stage completed these 3 cells then CUDA-OOM'd loading bge-large. The bge-large cell was re-run separately -> geometry_study_large.json. Metric keys use '_' instead of '@' vs other files because these were transcribed.",
+  "results": {
+    "c600_p1500_small_m3": {
+      "child": 600,
+      "parent": 1500,
+      "embed": "BAAI/bge-small-en-v1.5",
+      "dim": 384,
+      "n": 150,
+      "mean_coverage@8": 0.5223,
+      "hit@8": 0.5503,
+      "mean_coverage@5": 0.4613,
+      "hit@5": 0.4765,
+      "elapsed_s": 511.9
+    },
+    "c600_p2500_small_m3": {
+      "child": 600,
+      "parent": 2500,
+      "embed": "BAAI/bge-small-en-v1.5",
+      "dim": 384,
+      "n": 150,
+      "mean_coverage@8": 0.5927,
+      "hit@8": 0.604,
+      "mean_coverage@5": 0.5281,
+      "hit@5": 0.5101,
+      "elapsed_s": 610.4
+    },
+    "c600_p4000_small_m3": {
+      "child": 600,
+      "parent": 4000,
+      "embed": "BAAI/bge-small-en-v1.5",
+      "dim": 384,
+      "n": 150,
+      "mean_coverage@8": 0.6071,
+      "hit@8": 0.6174,
+      "mean_coverage@5": 0.5293,
+      "hit@5": 0.5369,
+      "elapsed_s": 688.9
+    }
+  }
+}

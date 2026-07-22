@@ -1,0 +1,65 @@
+{
+  "n_questions": 150,
+  "gold": "results/financebench_gold_parentdoc.json",
+  "models": {
+    "BAAI/bge-reranker-v2-m3": 1024
+  },
+  "results": {
+    "bge-reranker-v2-m3@96": {
+      "pool_recall": 0.7867,
+      "final@5": 0.5067,
+      "final@8": 0.56,
+      "retention@5": 0.6441,
+      "retention@8": 0.7119,
+      "elapsed_s": 623.7,
+      "by_type": {
+        "comparison": {
+          "n": 22,
+          "pool_recall": 0.7727,
+          "final@5": 0.4545,
+          "final@8": 0.4545
+        },
+        "narrative": {
+          "n": 57,
+          "pool_recall": 0.7895,
+          "final@5": 0.5088,
+          "final@8": 0.5789
+        },
+        "numeric": {
+          "n": 71,
+          "pool_recall": 0.7887,
+          "final@5": 0.5211,
+          "final@8": 0.5775
+        }
+      }
+    },
+    "bge-reranker-v2-m3@192": {
+      "pool_recall": 0.8667,
+      "final@5": 0.5267,
+      "final@8": 0.58,
+      "retention@5": 0.6077,
+      "retention@8": 0.6692,
+      "elapsed_s": 1103.0,
+      "by_type": {
+        "comparison": {
+          "n": 22,
+          "pool_recall": 0.8636,
+          "final@5": 0.5,
+          "final@8": 0.5
+        },
+        "narrative": {
+          "n": 57,
+          "pool_recall": 0.8421,
+          "final@5": 0.5263,
+          "final@8": 0.5965
+        },
+        "numeric": {
+          "n": 71,
+          "pool_recall": 0.8873,
+          "final@5": 0.5352,
+          "final@8": 0.5915
+        }
+      }
+    }
+  }
+}

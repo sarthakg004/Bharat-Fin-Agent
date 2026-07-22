@@ -1,0 +1,24 @@
+{
+  "docs": 12,
+  "gold_passages": 29,
+  "sample": 12,
+  "seed": 0,
+  "results": {
+    "child_600_100 (what we embed)": {
+      "containment": 0.0521,
+      "mean_chunks_per_doc": 1313.7
+    },
+    "fixed_1000_200 (old default)": {
+      "containment": 0.4653,
+      "mean_chunks_per_doc": 834.2
+    },
+    "parent_1500_200 (SHIPPED)": {
+      "containment": 0.7243,
+      "mean_chunks_per_doc": 544.9
+    },
+    "parent_2500_300 (what 0.8007 measured)": {
+      "containment": 0.8007,
+      "mean_chunks_per_doc": 328.8
+    }
+  }
+}

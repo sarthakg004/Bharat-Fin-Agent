@@ -1,0 +1,754 @@
+{
+  "n_questions": 150,
+  "collection": "financebench_eval",
+  "pool_depth": 48,
+  "reranker": "BAAI/bge-reranker-v2-m3",
+  "elapsed_s": 338.3,
+  "metrics": {
+    "hit@1": 0.24,
+    "hit@3": 0.4467,
+    "hit@5": 0.4867,
+    "hit@8": 0.5533,
+    "hit@20": 0.6333,
+    "recall@1": 0.2067,
+    "recall@3": 0.3967,
+    "recall@5": 0.4467,
+    "recall@8": 0.5233,
+    "recall@20": 0.6,
+    "precision@1": 0.24,
+    "precision@3": 0.1556,
+    "precision@5": 0.1067,
+    "precision@8": 0.0783,
+    "precision@20": 0.0363,
+    "ndcg@1": 0.24,
+    "ndcg@3": 0.3274,
+    "ndcg@5": 0.3502,
+    "ndcg@8": 0.3779,
+    "ndcg@20": 0.3996,
+    "coverage@1": 0.2236,
+    "coverage@3": 0.3852,
+    "coverage@5": 0.45,
+    "coverage@8": 0.4995,
+    "coverage@20": 0.5822,
+    "mrr": 0.3564,
+    "pool_recall": 0.68
+  },
+  "by_type": {
+    "comparison": {
+      "n": 22,
+      "hit@8": 0.4091,
+      "recall@8": 0.3864,
+      "mrr": 0.2983
+    },
+    "narrative": {
+      "n": 57,
+      "hit@8": 0.5439,
+      "recall@8": 0.5351,
+      "mrr": 0.3397
+    },
+    "numeric": {
+      "n": 71,
+      "hit@8": 0.6056,
+      "recall@8": 0.5563,
+      "mrr": 0.3878
+    }
+  },
+  "failures": {
+    "n": 67,
+    "share_of_all_questions": 0.4467,
+    "breakdown": {
+      "Embedding semantic miss": {
+        "count": 29,
+        "pct_of_failures": 43.3
+      },
+      "Reranker removed relevant chunk": {
+        "count": 15,
+        "pct_of_failures": 22.4
+      },
+      "Chunk boundary split evidence": {
+        "count": 14,
+        "pct_of_failures": 20.9
+      },
+      "Gold annotation ambiguity": {
+        "count": 8,
+        "pct_of_failures": 11.9
+      },
+      "Cross-document retrieval (same company, wrong filing)": {
+        "count": 1,
+        "pct_of_failures": 1.5
+      }
+    }
+  },
+  "failure_detail": [
+    {
+      "id": "financebench_id_04672",
+      "qtype": "numeric",
+      "reason": "Chunk boundary split evidence",
+      "gold_rank": null,
+      "in_pool": false,
+      "best_single_parent_coverage": 0.458,
+      "numeric_density": 0.068,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_00499",
+      "qtype": "numeric",
+      "reason": "Embedding semantic miss",
+      "gold_rank": null,
+      "in_pool": false,
+      "best_single_parent_coverage": 0.645,
+      "numeric_density": 0.025,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_01226",
+      "qtype": "numeric",
+      "reason": "Embedding semantic miss",
+      "gold_rank": null,
+      "in_pool": false,
+      "best_single_parent_coverage": 1.0,
+      "numeric_density": 0.056,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_01865",
+      "qtype": "comparison",
+      "reason": "Gold annotation ambiguity",
+      "gold_rank": null,
+      "in_pool": false,
+      "best_single_parent_coverage": 1.0,
+      "numeric_density": 0.0,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_00807",
+      "qtype": "numeric",
+      "reason": "Embedding semantic miss",
+      "gold_rank": null,
+      "in_pool": false,
+      "best_single_parent_coverage": 0.733,
+      "numeric_density": 0.031,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_01319",
+      "qtype": "narrative",
+      "reason": "Embedding semantic miss",
+      "gold_rank": null,
+      "in_pool": false,
+      "best_single_parent_coverage": 0.938,
+      "numeric_density": 0.054,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_00540",
+      "qtype": "numeric",
+      "reason": "Embedding semantic miss",
+      "gold_rank": null,
+      "in_pool": false,
+      "best_single_parent_coverage": 0.625,
+      "numeric_density": 0.118,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_10420",
+      "qtype": "numeric",
+      "reason": "Chunk boundary split evidence",
+      "gold_rank": null,
+      "in_pool": false,
+      "best_single_parent_coverage": 0.277,
+      "numeric_density": 0.085,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_06655",
+      "qtype": "comparison",
+      "reason": "Embedding semantic miss",
+      "gold_rank": null,
+      "in_pool": false,
+      "best_single_parent_coverage": 0.5,
+      "numeric_density": 0.044,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_08135",
+      "qtype": "comparison",
+      "reason": "Embedding semantic miss",
+      "gold_rank": null,
+      "in_pool": false,
+      "best_single_parent_coverage": 1.0,
+      "numeric_density": 0.031,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_08286",
+      "qtype": "numeric",
+      "reason": "Embedding semantic miss",
+      "gold_rank": null,
+      "in_pool": false,
+      "best_single_parent_coverage": 1.0,
+      "numeric_density": 0.035,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_01935",
+      "qtype": "narrative",
+      "reason": "Chunk boundary split evidence",
+      "gold_rank": null,
+      "in_pool": false,
+      "best_single_parent_coverage": 0.0,
+      "numeric_density": 0.098,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_00799",
+      "qtype": "numeric",
+      "reason": "Embedding semantic miss",
+      "gold_rank": null,
+      "in_pool": false,
+      "best_single_parent_coverage": 0.636,
+      "numeric_density": 0.052,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_01079",
+      "qtype": "narrative",
+      "reason": "Embedding semantic miss",
+      "gold_rank": null,
+      "in_pool": false,
+      "best_single_parent_coverage": 0.579,
+      "numeric_density": 0.047,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_01148",
+      "qtype": "numeric",
+      "reason": "Gold annotation ambiguity",
+      "gold_rank": null,
+      "in_pool": false,
+      "best_single_parent_coverage": 1.0,
+      "numeric_density": 0.042,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_01936",
+      "qtype": "narrative",
+      "reason": "Reranker removed relevant chunk",
+      "gold_rank": 44,
+      "in_pool": true,
+      "best_single_parent_coverage": 1.0,
+      "numeric_density": 0.14,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_01930",
+      "qtype": "comparison",
+      "reason": "Reranker removed relevant chunk",
+      "gold_rank": 26,
+      "in_pool": true,
+      "best_single_parent_coverage": 1.0,
+      "numeric_density": 0.067,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_00222",
+      "qtype": "numeric",
+      "reason": "Embedding semantic miss",
+      "gold_rank": null,
+      "in_pool": false,
+      "best_single_parent_coverage": 0.84,
+      "numeric_density": 0.064,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_01198",
+      "qtype": "narrative",
+      "reason": "Reranker removed relevant chunk",
+      "gold_rank": 16,
+      "in_pool": true,
+      "best_single_parent_coverage": 0.75,
+      "numeric_density": 0.068,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_00917",
+      "qtype": "numeric",
+      "reason": "Gold annotation ambiguity",
+      "gold_rank": null,
+      "in_pool": false,
+      "best_single_parent_coverage": 1.0,
+      "numeric_density": 0.079,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_00757",
+      "qtype": "narrative",
+      "reason": "Gold annotation ambiguity",
+      "gold_rank": null,
+      "in_pool": false,
+      "best_single_parent_coverage": 1.0,
+      "numeric_density": 0.051,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_00476",
+      "qtype": "narrative",
+      "reason": "Reranker removed relevant chunk",
+      "gold_rank": 10,
+      "in_pool": true,
+      "best_single_parent_coverage": 0.8,
+      "numeric_density": 0.106,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_01028",
+      "qtype": "narrative",
+      "reason": "Embedding semantic miss",
+      "gold_rank": null,
+      "in_pool": false,
+      "best_single_parent_coverage": 1.0,
+      "numeric_density": 0.023,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_00723",
+      "qtype": "numeric",
+      "reason": "Embedding semantic miss",
+      "gold_rank": null,
+      "in_pool": false,
+      "best_single_parent_coverage": 0.846,
+      "numeric_density": 0.019,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_00720",
+      "qtype": "numeric",
+      "reason": "Embedding semantic miss",
+      "gold_rank": null,
+      "in_pool": false,
+      "best_single_parent_coverage": 0.846,
+      "numeric_density": 0.019,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_01351",
+      "qtype": "numeric",
+      "reason": "Embedding semantic miss",
+      "gold_rank": null,
+      "in_pool": false,
+      "best_single_parent_coverage": 0.929,
+      "numeric_density": 0.013,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_01964",
+      "qtype": "narrative",
+      "reason": "Embedding semantic miss",
+      "gold_rank": null,
+      "in_pool": false,
+      "best_single_parent_coverage": 0.583,
+      "numeric_density": 0.166,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_01981",
+      "qtype": "narrative",
+      "reason": "Gold annotation ambiguity",
+      "gold_rank": null,
+      "in_pool": false,
+      "best_single_parent_coverage": 1.0,
+      "numeric_density": 0.039,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_05718",
+      "qtype": "numeric",
+      "reason": "Reranker removed relevant chunk",
+      "gold_rank": 24,
+      "in_pool": true,
+      "best_single_parent_coverage": 0.585,
+      "numeric_density": 0.044,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_04254",
+      "qtype": "numeric",
+      "reason": "Chunk boundary split evidence",
+      "gold_rank": 25,
+      "in_pool": true,
+      "best_single_parent_coverage": 0.429,
+      "numeric_density": 0.041,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_00685",
+      "qtype": "comparison",
+      "reason": "Embedding semantic miss",
+      "gold_rank": null,
+      "in_pool": false,
+      "best_single_parent_coverage": 1.0,
+      "numeric_density": 0.012,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_01275",
+      "qtype": "numeric",
+      "reason": "Reranker removed relevant chunk",
+      "gold_rank": 15,
+      "in_pool": true,
+      "best_single_parent_coverage": 0.643,
+      "numeric_density": 0.028,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_00288",
+      "qtype": "narrative",
+      "reason": "Chunk boundary split evidence",
+      "gold_rank": null,
+      "in_pool": false,
+      "best_single_parent_coverage": 0.321,
+      "numeric_density": 0.037,
+      "filtered_to_company": false
+    },
+    {
+      "id": "financebench_id_04660",
+      "qtype": "numeric",
+      "reason": "Chunk boundary split evidence",
+      "gold_rank": 10,
+      "in_pool": true,
+      "best_single_parent_coverage": 0.067,
+      "numeric_density": 0.239,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_03838",
+      "qtype": "comparison",
+      "reason": "Chunk boundary split evidence",
+      "gold_rank": null,
+      "in_pool": false,
+      "best_single_parent_coverage": 0.222,
+      "numeric_density": 0.031,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_10285",
+      "qtype": "numeric",
+      "reason": "Reranker removed relevant chunk",
+      "gold_rank": 34,
+      "in_pool": true,
+      "best_single_parent_coverage": 0.727,
+      "numeric_density": 0.071,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_01290",
+      "qtype": "numeric",
+      "reason": "Chunk boundary split evidence",
+      "gold_rank": null,
+      "in_pool": false,
+      "best_single_parent_coverage": 0.333,
+      "numeric_density": 0.053,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_10130",
+      "qtype": "comparison",
+      "reason": "Chunk boundary split evidence",
+      "gold_rank": 17,
+      "in_pool": true,
+      "best_single_parent_coverage": 0.081,
+      "numeric_density": 0.079,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_01346",
+      "qtype": "numeric",
+      "reason": "Reranker removed relevant chunk",
+      "gold_rank": 15,
+      "in_pool": true,
+      "best_single_parent_coverage": 0.875,
+      "numeric_density": 0.013,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_00790",
+      "qtype": "numeric",
+      "reason": "Embedding semantic miss",
+      "gold_rank": null,
+      "in_pool": false,
+      "best_single_parent_coverage": 0.714,
+      "numeric_density": 0.019,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_01107",
+      "qtype": "narrative",
+      "reason": "Chunk boundary split evidence",
+      "gold_rank": null,
+      "in_pool": false,
+      "best_single_parent_coverage": 0.364,
+      "numeric_density": 0.028,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_00956",
+      "qtype": "comparison",
+      "reason": "Embedding semantic miss",
+      "gold_rank": null,
+      "in_pool": false,
+      "best_single_parent_coverage": 0.8,
+      "numeric_density": 0.093,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_00669",
+      "qtype": "numeric",
+      "reason": "Embedding semantic miss",
+      "gold_rank": null,
+      "in_pool": false,
+      "best_single_parent_coverage": 1.0,
+      "numeric_density": 0.07,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_00711",
+      "qtype": "numeric",
+      "reason": "Embedding semantic miss",
+      "gold_rank": null,
+      "in_pool": false,
+      "best_single_parent_coverage": 0.818,
+      "numeric_density": 0.101,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_00651",
+      "qtype": "comparison",
+      "reason": "Cross-document retrieval (same company, wrong filing)",
+      "gold_rank": null,
+      "in_pool": false,
+      "best_single_parent_coverage": 0.909,
+      "numeric_density": 0.119,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_01484",
+      "qtype": "comparison",
+      "reason": "Chunk boundary split evidence",
+      "gold_rank": null,
+      "in_pool": false,
+      "best_single_parent_coverage": 0.0,
+      "numeric_density": 0.0,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_01487",
+      "qtype": "comparison",
+      "reason": "Reranker removed relevant chunk",
+      "gold_rank": 14,
+      "in_pool": true,
+      "best_single_parent_coverage": 1.0,
+      "numeric_density": 0.026,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_00299",
+      "qtype": "narrative",
+      "reason": "Reranker removed relevant chunk",
+      "gold_rank": 21,
+      "in_pool": true,
+      "best_single_parent_coverage": 0.867,
+      "numeric_density": 0.04,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_02119",
+      "qtype": "narrative",
+      "reason": "Gold annotation ambiguity",
+      "gold_rank": null,
+      "in_pool": false,
+      "best_single_parent_coverage": 1.0,
+      "numeric_density": 0.17,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_00394",
+      "qtype": "narrative",
+      "reason": "Embedding semantic miss",
+      "gold_rank": null,
+      "in_pool": false,
+      "best_single_parent_coverage": 0.867,
+      "numeric_density": 0.04,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_01911",
+      "qtype": "narrative",
+      "reason": "Reranker removed relevant chunk",
+      "gold_rank": 13,
+      "in_pool": true,
+      "best_single_parent_coverage": 0.857,
+      "numeric_density": 0.02,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_01912",
+      "qtype": "narrative",
+      "reason": "Reranker removed relevant chunk",
+      "gold_rank": 9,
+      "in_pool": true,
+      "best_single_parent_coverage": 0.667,
+      "numeric_density": 0.094,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_00552",
+      "qtype": "numeric",
+      "reason": "Chunk boundary split evidence",
+      "gold_rank": null,
+      "in_pool": false,
+      "best_single_parent_coverage": 0.444,
+      "numeric_density": 0.069,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_01009",
+      "qtype": "narrative",
+      "reason": "Chunk boundary split evidence",
+      "gold_rank": null,
+      "in_pool": false,
+      "best_single_parent_coverage": 0.343,
+      "numeric_density": 0.04,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_00735",
+      "qtype": "narrative",
+      "reason": "Embedding semantic miss",
+      "gold_rank": null,
+      "in_pool": false,
+      "best_single_parent_coverage": 0.8,
+      "numeric_density": 0.033,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_00302",
+      "qtype": "narrative",
+      "reason": "Embedding semantic miss",
+      "gold_rank": null,
+      "in_pool": false,
+      "best_single_parent_coverage": 0.8,
+      "numeric_density": 0.107,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_02416",
+      "qtype": "narrative",
+      "reason": "Chunk boundary split evidence",
+      "gold_rank": 14,
+      "in_pool": true,
+      "best_single_parent_coverage": 0.333,
+      "numeric_density": 0.051,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_00724",
+      "qtype": "comparison",
+      "reason": "Gold annotation ambiguity",
+      "gold_rank": null,
+      "in_pool": false,
+      "best_single_parent_coverage": 1.0,
+      "numeric_density": 0.0,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_02419",
+      "qtype": "narrative",
+      "reason": "Gold annotation ambiguity",
+      "gold_rank": null,
+      "in_pool": false,
+      "best_single_parent_coverage": 1.0,
+      "numeric_density": 0.047,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_00521",
+      "qtype": "narrative",
+      "reason": "Embedding semantic miss",
+      "gold_rank": null,
+      "in_pool": false,
+      "best_single_parent_coverage": 1.0,
+      "numeric_density": 0.008,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_00601",
+      "qtype": "narrative",
+      "reason": "Embedding semantic miss",
+      "gold_rank": null,
+      "in_pool": false,
+      "best_single_parent_coverage": 0.75,
+      "numeric_density": 0.103,
+      "filtered_to_company": false
+    },
+    {
+      "id": "financebench_id_00605",
+      "qtype": "narrative",
+      "reason": "Embedding semantic miss",
+      "gold_rank": null,
+      "in_pool": false,
+      "best_single_parent_coverage": 1.0,
+      "numeric_density": 0.14,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_00606",
+      "qtype": "narrative",
+      "reason": "Reranker removed relevant chunk",
+      "gold_rank": 28,
+      "in_pool": true,
+      "best_single_parent_coverage": 0.75,
+      "numeric_density": 0.103,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_00216",
+      "qtype": "numeric",
+      "reason": "Embedding semantic miss",
+      "gold_rank": null,
+      "in_pool": false,
+      "best_single_parent_coverage": 1.0,
+      "numeric_density": 0.018,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_00215",
+      "qtype": "numeric",
+      "reason": "Reranker removed relevant chunk",
+      "gold_rank": 17,
+      "in_pool": true,
+      "best_single_parent_coverage": 0.857,
+      "numeric_density": 0.021,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_00566",
+      "qtype": "numeric",
+      "reason": "Reranker removed relevant chunk",
+      "gold_rank": 9,
+      "in_pool": true,
+      "best_single_parent_coverage": 0.8,
+      "numeric_density": 0.061,
+      "filtered_to_company": true
+    },
+    {
+      "id": "financebench_id_06247",
+      "qtype": "comparison",
+      "reason": "Embedding semantic miss",
+      "gold_rank": null,
+      "in_pool": false,
+      "best_single_parent_coverage": 0.528,
+      "numeric_density": 0.009,
+      "filtered_to_company": true
+    }
+  ]
+}

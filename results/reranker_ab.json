@@ -1,0 +1,122 @@
+{
+  "n_questions": 150,
+  "gold": "results/financebench_gold_parentdoc.json",
+  "models": {
+    "BAAI/bge-reranker-base": 512,
+    "BAAI/bge-reranker-v2-m3": 1024
+  },
+  "results": {
+    "bge-reranker-base@24": {
+      "pool_recall": 0.5267,
+      "final@5": 0.3267,
+      "final@8": 0.4267,
+      "retention@5": 0.6203,
+      "retention@8": 0.8101,
+      "elapsed_s": 142.2,
+      "by_type": {
+        "comparison": {
+          "n": 22,
+          "pool_recall": 0.4545,
+          "final@5": 0.3182,
+          "final@8": 0.3636
+        },
+        "narrative": {
+          "n": 57,
+          "pool_recall": 0.5088,
+          "final@5": 0.3333,
+          "final@8": 0.4561
+        },
+        "numeric": {
+          "n": 71,
+          "pool_recall": 0.5634,
+          "final@5": 0.3239,
+          "final@8": 0.4225
+        }
+      }
+    },
+    "bge-reranker-base@48": {
+      "pool_recall": 0.68,
+      "final@5": 0.3267,
+      "final@8": 0.4,
+      "retention@5": 0.4804,
+      "retention@8": 0.5882,
+      "elapsed_s": 214.8,
+      "by_type": {
+        "comparison": {
+          "n": 22,
+          "pool_recall": 0.5455,
+          "final@5": 0.2727,
+          "final@8": 0.3182
+        },
+        "narrative": {
+          "n": 57,
+          "pool_recall": 0.6842,
+          "final@5": 0.2982,
+          "final@8": 0.3509
+        },
+        "numeric": {
+          "n": 71,
+          "pool_recall": 0.7183,
+          "final@5": 0.3662,
+          "final@8": 0.4648
+        }
+      }
+    },
+    "bge-reranker-v2-m3@24": {
+      "pool_recall": 0.5267,
+      "final@5": 0.4467,
+      "final@8": 0.4733,
+      "retention@5": 0.8481,
+      "retention@8": 0.8987,
+      "elapsed_s": 310.8,
+      "by_type": {
+        "comparison": {
+          "n": 22,
+          "pool_recall": 0.4545,
+          "final@5": 0.3636,
+          "final@8": 0.4091
+        },
+        "narrative": {
+          "n": 57,
+          "pool_recall": 0.5088,
+          "final@5": 0.4561,
+          "final@8": 0.4737
+        },
+        "numeric": {
+          "n": 71,
+          "pool_recall": 0.5634,
+          "final@5": 0.4648,
+          "final@8": 0.493
+        }
+      }
+    },
+    "bge-reranker-v2-m3@48": {
+      "pool_recall": 0.68,
+      "final@5": 0.4867,
+      "final@8": 0.5467,
+      "retention@5": 0.7157,
+      "retention@8": 0.8039,
+      "elapsed_s": 579.7,
+      "by_type": {
+        "comparison": {
+          "n": 22,
+          "pool_recall": 0.5455,
+          "final@5": 0.3636,
+          "final@8": 0.4091
+        },
+        "narrative": {
+          "n": 57,
+          "pool_recall": 0.6842,
+          "final@5": 0.5088,
+          "final@8": 0.5439
+        },
+        "numeric": {
+          "n": 71,
+          "pool_recall": 0.7183,
+          "final@5": 0.507,
+          "final@8": 0.5915
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "docs": 3,
+  "pool_depth": 24,
+  "hit_threshold": 0.5,
+  "results": {
+    "c600_p1500_small_m3": {
+      "child": 600,
+      "parent": 1500,
+      "embed": "BAAI/bge-small-en-v1.5",
+      "rerank": "BAAI/bge-reranker-v2-m3",
+      "mmr": false,
+      "dim": 384,
+      "n": 21,
+      "mean_coverage@5": 0.394,
+      "hit@5": 0.4286,
+      "mean_coverage@8": 0.5337,
+      "hit@8": 0.5714,
+      "elapsed_s": 89.2
+    },
+    "c600_p1500_small_m3_mmr": {
+      "child": 600,
+      "parent": 1500,
+      "embed": "BAAI/bge-small-en-v1.5",
+      "rerank": "BAAI/bge-reranker-v2-m3",
+      "mmr": true,
+      "dim": 384,
+      "n": 21,
+      "mean_coverage@5": 0.3484,
+      "hit@5": 0.4286,
+      "mean_coverage@8": 0.3597,
+      "hit@8": 0.4286,
+      "elapsed_s": 75.6
+    }
+  }
+}
