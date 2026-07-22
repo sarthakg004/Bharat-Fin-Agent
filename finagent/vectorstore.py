@@ -122,12 +122,26 @@ def get_sparse_embeddings():
 
 @lru_cache(maxsize=1)
 def get_client():
-    """Shared QdrantClient. One per process; the client is thread-safe."""
+    """Shared QdrantClient. One per process; the client is thread-safe.
+
+    `QDRANT_EVAL_URL` points evaluation runs at a different cluster — normally a
+    local `qdrant/qdrant` container. The eval corpus is ~60% of all points and is
+    never queried when answering a user, so keeping it out of the managed cluster
+    is what leaves room there for the served index. Set it in the eval's
+    environment only; production never defines it.
+
+    Use a real local SERVER, not embedded `path=` mode: embedded takes an
+    exclusive file lock (the parallel eval runner spawns worker processes) and
+    silently ignores payload indexes, so every company/year filter would degrade
+    to a linear scan.
+    """
     from qdrant_client import QdrantClient
 
+    eval_url = (os.getenv("QDRANT_EVAL_URL") or "").strip()
     return QdrantClient(
-        url=qdrant_url(),
-        api_key=(os.getenv("QDRANT_API_KEY") or "").strip() or None,
+        url=eval_url or qdrant_url(),
+        api_key=((os.getenv("QDRANT_EVAL_API_KEY") if eval_url
+                  else os.getenv("QDRANT_API_KEY")) or "").strip() or None,
         timeout=int(os.getenv("QDRANT_TIMEOUT", "60")),
         prefer_grpc=False,
     )
