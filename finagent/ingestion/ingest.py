@@ -129,8 +129,8 @@ class CorpusIngester:
     # context. The chunk ablation showed a single 1000-char chunk captures only
     # ~47% of gold evidence vs ~74% at 1500 — but 1500 dilutes match precision,
     # so we match on children and hand the parent to synthesis.
-    PARENT_CHUNK_SIZE = 1500
-    PARENT_CHUNK_OVERLAP = 200
+    PARENT_CHUNK_SIZE = 2500
+    PARENT_CHUNK_OVERLAP = 300
     CHILD_CHUNK_SIZE = 600
     CHILD_CHUNK_OVERLAP = 100
 

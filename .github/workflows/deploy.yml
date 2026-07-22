@@ -19,7 +19,7 @@ env:
   SERVICE: finagent
   # Served Qdrant collection. Must match the embedder/geometry in the code
   # of the same commit -- see results/RETRIEVAL_EXPERIMENTS.md §7.
-  US_COLLECTION: us_filings
+  US_COLLECTION: us_filings_v2
   DATA_BUCKET: gs://fin-agent-498211-data
   # Public Cloud Run URL — baked into the frontend bundle so the SPA calls the API.
   BACKEND_URL: https://finagent-237355589454.asia-south1.run.app

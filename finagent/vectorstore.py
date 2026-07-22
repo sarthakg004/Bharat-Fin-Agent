@@ -36,8 +36,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-DEFAULT_EMBED_MODEL = "BAAI/bge-small-en-v1.5"
-DENSE_DIM = 384                     # bge-small-en-v1.5
+DEFAULT_EMBED_MODEL = "BAAI/bge-large-en-v1.5"
+DENSE_DIM = 1024                    # bge-large-en-v1.5
 
 # Output dimensionality per embedding model. `ensure_collection` must size the
 # dense vector from the model actually in use — creating a collection at the
