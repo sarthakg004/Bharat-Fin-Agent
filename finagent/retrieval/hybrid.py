@@ -34,9 +34,13 @@ class HybridRetriever:
     downloads/loads the model.
     """
 
-    DEFAULT_RERANKER = "BAAI/bge-reranker-large"  # spec'd model; ~1.3 GB
-    # Use "BAAI/bge-reranker-base" (~280 MB) for a much faster but slightly
-    # weaker reranker — pass reranker_model="BAAI/bge-reranker-base".
+    # Measured best on FinanceBench (see results/RETRIEVAL_EXPERIMENTS.md):
+    # hit@8 0.4000 -> 0.5467 vs bge-reranker-base on an identical pool.
+    # Its 8192-token window also removes the parent-size ceiling that capped
+    # base at 512 tokens (~2000 chars).
+    DEFAULT_RERANKER = "BAAI/bge-reranker-v2-m3"
+    # "BAAI/bge-reranker-base" is ~3.4x faster per pair on CPU and measurably
+    # weaker; pass it explicitly if latency matters more than recall.
 
     def __init__(
         self,
@@ -47,7 +51,7 @@ class HybridRetriever:
         # list now, so this is the total rather than a per-branch count.
         pool_top_k: int = 48,
         final_top_k: int = 5,
-        use_mmr: bool = True,
+        use_mmr: bool = False,
         auto_filter: bool = True,
         parent_doc: bool = True,
     ):
@@ -55,10 +59,14 @@ class HybridRetriever:
         self.reranker_model = reranker_model
         self.pool_top_k = pool_top_k
         self.final_top_k = final_top_k
-        # Select candidates with Maximal Marginal Relevance so the pool is
-        # diverse, not five near-identical passages. MMR is dense-only, so it
-        # trades the lexical half away — off by default now that fusion
-        # supplies the diversity a single-vector search lacked.
+        # Maximal Marginal Relevance for pool diversity. OFF, because
+        # LangChain's MMR path is dense-only: it issues a NearestQuery with
+        # `using="dense"` and no prefetch, so the sparse vector and the RRF
+        # fusion below never run. Leaving this on silently reduced the whole
+        # hybrid retriever to a single dense search — BM25 vectors were written
+        # for every point at ingest and never read at query time. Do not flip it
+        # back without re-measuring: `tests/test_hybrid_is_hybrid.py` asserts the
+        # query that actually reaches Qdrant is the fused one.
         self.use_mmr = use_mmr
         # Company/year metadata filtering inferred from the query text (no LLM).
         # Without it, one company's question competes against every other

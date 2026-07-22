@@ -17,6 +17,16 @@ from __future__ import annotations
 _SHARED_RERANKERS: dict = {}
 
 
+# Scoring window, in tokens. The reranker scores the PARENT (collapse runs
+# before rerank), so this must cover a whole parent or the tail is invisible to
+# ranking. bge-reranker-base caps at 512 (~2000 chars) — fine for 1500-char
+# parents, which is why base was never truncating today. v2-m3 allows 8192; we
+# cap it at 1024 because that already covers a 2500-char parent and a larger
+# window costs memory and time for nothing.
+_MAX_LENGTH = {"BAAI/bge-reranker-v2-m3": 1024}
+_DEFAULT_MAX_LENGTH = 512
+
+
 def _get_shared_reranker(model_name: str):
     """Return the shared `CrossEncoder` for `model_name`, loading it on first use."""
     reranker = _SHARED_RERANKERS.get(model_name)
@@ -25,6 +35,8 @@ def _get_shared_reranker(model_name: str):
 
         from finagent.device import get_device
 
-        reranker = CrossEncoder(model_name, device=get_device())
+        reranker = CrossEncoder(
+            model_name, device=get_device(),
+            max_length=_MAX_LENGTH.get(model_name, _DEFAULT_MAX_LENGTH))
         _SHARED_RERANKERS[model_name] = reranker
     return reranker

@@ -55,7 +55,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Bake the bge models into the venv-side HF cache so cold start loads from disk.
 RUN python -c "from sentence_transformers import SentenceTransformer, CrossEncoder; \
 SentenceTransformer('BAAI/bge-small-en-v1.5'); \
-CrossEncoder('BAAI/bge-reranker-base')"
+CrossEncoder('BAAI/bge-reranker-v2-m3')"
 
 # Bake the BM25 sparse encoder (~0.1 MB) that produces the lexical half of
 # hybrid retrieval. Without it the runtime tries to fetch from HF on first

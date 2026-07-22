@@ -11,8 +11,9 @@ automatically when text retrieval comes back empty or weakly graded, so
 questions about companies not in the corpus hit the web instead of returning
 "no information".
 
-We default to the small reranker (`bge-reranker-base`) so backend startup is
-quick; swap to `bge-reranker-large` once you don't mind the download.
+Retrieval is hybrid (dense + BM25-sparse, fused server-side with RRF in Qdrant)
+and reranked with `bge-reranker-v2-m3`. Both were chosen by measurement, not
+default — see `results/RETRIEVAL_EXPERIMENTS.md` for the A/Bs and the numbers.
 """
 
 from __future__ import annotations
@@ -47,10 +48,13 @@ def _build_agent(collection: Optional[str] = None) -> AgenticRAGv4:
         # US-only active retrieval. Non-US / non-corpus questions get
         # empty/weak filing retrieval and escalate to web_search automatically.
         collections=[coll],
-        # Reranker is env-configurable so we can A/B smaller models without a
-        # code change (default kept at bge-reranker-base). The image bakes
-        # whatever this resolves to at build time.
-        reranker_model=os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-base"),
+        # Reranker is env-configurable so we can A/B without a code change; the
+        # image bakes whatever this resolves to at build time.
+        # v2-m3 replaced bge-reranker-base after a 150-question A/B on the eval
+        # collection: hit@8 0.4000 -> 0.5467 at the same pool depth, i.e. the
+        # SAME candidates ranked better (pool_recall is identical, 0.6800).
+        # It costs ~3.4x CPU per pair; see results/RETRIEVAL_EXPERIMENTS.md.
+        reranker_model=os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-v2-m3"),
         # Fused (sparse+dense) candidate pool. Widened over time — 8+8 →
         # 12+12 → 24+24 — because narrative/MD&A prose was where first-stage
         # recall was weakest and the reranker can only reorder what the pool
