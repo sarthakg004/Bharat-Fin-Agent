@@ -77,8 +77,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     CHROMA_DIR=/app/data/chroma \
     PYTHONPATH=/app \
     PATH="/opt/venv/bin:$PATH" \
-    # Per-session memory: the client carries history, nothing persisted server-side.
-    STATELESS=1 \
     PORT=8080 \
     # Models are baked above — force offline loading so cold start makes no HF
     # Hub network call (faster + robust if HF is down/rate-limits).

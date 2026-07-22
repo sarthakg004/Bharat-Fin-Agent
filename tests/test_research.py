@@ -382,7 +382,7 @@ def test_research_endpoint_streams_events(monkeypatch):
                   for line in resp.text.splitlines() if line.startswith("data: ")]
 
     types = [e["type"] for e in events]
-    for expected in ("chat", "research_plan", "agent_start", "agent_done",
+    for expected in ("research_plan", "agent_start", "agent_done",
                      "sources", "chunk", "metrics", "done"):
         assert expected in types, f"missing {expected} in {types}"
     # Ordering: plan before agent events, sources before report chunks.

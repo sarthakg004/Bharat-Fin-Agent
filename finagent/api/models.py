@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal, Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -30,24 +30,25 @@ class ProviderConfig(BaseModel):
 
 
 class ChatTurn(BaseModel):
-    """One prior turn of conversation, supplied by the client for per-session
-    memory when the server runs stateless (no server-side chat store)."""
+    """One prior turn of conversation. The server keeps no chat store, so the
+    client owns the thread and replays recent turns with each request."""
     role: Literal["user", "assistant"]
     content: str
 
 
 class QueryRequest(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
-    chat_id: Optional[int] = Field(
+    session_id: Optional[str] = Field(
         default=None,
-        description="Existing chat to append to. If null, the server creates one.",
+        max_length=64,
+        description="Opaque client-owned thread id. Not persisted — used only to "
+                    "group this run's traces with the rest of the conversation.",
     )
     top_k: int = Field(default=5, ge=1, le=20)
     provider_config: Optional[ProviderConfig] = None
     chat_history: Optional[list[ChatTurn]] = Field(
         default=None,
-        description="Recent turns for conversation memory. Used when the server "
-                    "runs stateless (STATELESS=1); ignored otherwise.",
+        description="Recent turns for conversation memory; the client owns the thread.",
     )
     upload_ids: Optional[list[str]] = Field(
         default=None,
@@ -63,7 +64,7 @@ class ResearchRequest(BaseModel):
     supported (research runs over filings + live sources, not attached files).
     """
     question: str = Field(min_length=1, max_length=2000)
-    chat_id: Optional[int] = Field(default=None)
+    session_id: Optional[str] = Field(default=None, max_length=64)
     provider_config: Optional[ProviderConfig] = None
     chat_history: Optional[list[ChatTurn]] = Field(
         default=None,
@@ -85,72 +86,9 @@ class UploadResponse(BaseModel):
 
 
 # --------------------------------------------------------------------------- #
-# Health + configs
+# Health
 # --------------------------------------------------------------------------- #
 
 class HealthResponse(BaseModel):
     status: str
     collections: list[str]
-
-
-class ConfigInfo(BaseModel):
-    id: str
-    label: str
-    model: str
-    description: str
-
-
-class ConfigsResponse(BaseModel):
-    configs: list[ConfigInfo]
-
-
-# --------------------------------------------------------------------------- #
-# Chats + messages
-# --------------------------------------------------------------------------- #
-
-class ChatSummary(BaseModel):
-    """List-view chat row."""
-    id: int
-    title: str
-    created_at: str
-    updated_at: str
-    message_count: int = 0
-    preview: Optional[str] = None
-
-
-class ChatListResponse(BaseModel):
-    chats: list[ChatSummary]
-
-
-class CreateChatRequest(BaseModel):
-    title: str = "New chat"
-
-
-class RenameChatRequest(BaseModel):
-    title: str = Field(min_length=1, max_length=200)
-
-
-class ChatMessage(BaseModel):
-    id: int
-    chat_id: int
-    role: Literal["user", "assistant"]
-    content: str
-    chunks: list[dict] = []
-    charts: list[dict] = []
-    metadata: dict = {}
-    latency: Optional[float] = None
-    created_at: str
-
-
-class ChatMessagesResponse(BaseModel):
-    chat: ChatSummary
-    messages: list[ChatMessage]
-
-
-class DeleteResponse(BaseModel):
-    deleted: int
-
-
-class GenericOk(BaseModel):
-    ok: bool = True
-    detail: Optional[Any] = None

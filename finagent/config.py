@@ -4,7 +4,7 @@ config.py  ·  finagent/config.py
 Centralised application settings. **All environment variables are read here and
 nowhere else** — every other module imports the `settings` instance instead of
 calling `os.getenv()` directly. Variable *names* are unchanged from what Cloud
-Run / `.env` already provide (`GROQ_API_KEY`, `STATELESS`, `ALLOWED_ORIGINS`,
+Run / `.env` already provide (`GROQ_API_KEY`, `ALLOWED_ORIGINS`,
 `RERANKER_MODEL`, `CHROMA_DIR`, …); only the access point is centralised.
 
 Implementation note: this uses `pydantic.BaseModel` (already a dependency) rather
@@ -53,7 +53,6 @@ class Settings(BaseModel):
     tavily_api_key: str = Field(default="", description="TAVILY_API_KEY")
 
     # --- Runtime behaviour ---------------------------------------------------
-    stateless: bool = Field(default=False, description="STATELESS")
     allowed_origins: List[str] = Field(default_factory=list, description="ALLOWED_ORIGINS (CSV)")
     force_ipv4: bool = Field(default=False, description="FORCE_IPV4")
     # Dynamic SEC fetch: persist the fetched filing into the on-disk corpus
@@ -89,7 +88,6 @@ class Settings(BaseModel):
             openai_api_key=(os.getenv("OPENAI_API_KEY") or "").strip(),
             anthropic_api_key=(os.getenv("ANTHROPIC_API_KEY") or "").strip(),
             tavily_api_key=(os.getenv("TAVILY_API_KEY") or "").strip(),
-            stateless=_as_bool(os.getenv("STATELESS")),
             allowed_origins=_as_list(os.getenv("ALLOWED_ORIGINS")),
             force_ipv4=_as_bool(os.getenv("FORCE_IPV4")),
             persist_dynamic_fetch=_as_bool(os.getenv("PERSIST_DYNAMIC_FETCH"), default=True),

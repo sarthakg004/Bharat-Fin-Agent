@@ -534,39 +534,29 @@ def test_all_keys_exhausted_circuit_breaker():
         L._EXHAUSTED_UNTIL.pop("groq", None)   # don't leak the latch to other tests
 
 
-def test_client_chat_history_wins_in_both_modes(monkeypatch):
-    """Regression: local (non-stateless) dev ignored the SPA's `chat_history`
-    and built memory from a freshly created SQLite chat — i.e. every question
-    started with zero memory ("what about the tie-up?" lost the company under
-    discussion). Client-supplied history must win in BOTH modes; the SQLite
-    store stays as the fallback for callers that pass a chat_id."""
-    from types import SimpleNamespace
+def test_client_chat_history_is_the_only_memory():
+    """The server is stateless: memory is exactly the turns the client replayed,
+    capped at the last 6 and truncated. A request with no history yields none —
+    never a crash, and never turns invented from a server-side store."""
     from finagent.api import main as M
     from finagent.api.models import ChatTurn, QueryRequest
 
     turns = [ChatTurn(role="user", content="News on Fluence Energy?"),
              ChatTurn(role="assistant", content="FLNC surged on the Siemens/Nvidia tie-up.")]
     req = QueryRequest(question="Any confirmation of the tie-up?", chat_history=turns)
-    expected = [{"role": "user", "content": "News on Fluence Energy?"},
-                {"role": "assistant", "content": "FLNC surged on the Siemens/Nvidia tie-up."}]
+    assert M._agent_history(req) == [
+        {"role": "user", "content": "News on Fluence Energy?"},
+        {"role": "assistant", "content": "FLNC surged on the Siemens/Nvidia tie-up."},
+    ]
 
-    # Stateless (Cloud Run): no store touched.
-    monkeypatch.setattr(M, "STATELESS", True)
-    assert M._resolve_memory(req) == (0, expected)
+    # No client history → empty memory.
+    assert M._agent_history(QueryRequest(question="q")) == []
 
-    # Local (SQLite store): client history still wins; the store only logs.
-    monkeypatch.setattr(M, "STATELESS", False)
-    monkeypatch.setattr(M, "history", SimpleNamespace(
-        get_chat=lambda cid: None,
-        create_chat=lambda title: {"id": 42},
-        add_message=lambda *a, **kw: 1,
-        auto_title_if_default=lambda *a: None,
-    ))
-    assert M._resolve_memory(req) == (42, expected)
-
-    # No client history + no prior turns → empty memory, not a crash.
-    monkeypatch.setattr(M, "_build_history_for_agent", lambda cid: [])
-    assert M._resolve_memory(QueryRequest(question="q")) == (42, [])
+    # Only the last 6 turns survive, and each is truncated to 1200 chars.
+    long_turns = [ChatTurn(role="user", content="x" * 2000)] * 8
+    got = M._agent_history(QueryRequest(question="q", chat_history=long_turns))
+    assert len(got) == 6
+    assert all(len(t["content"]) == 1200 for t in got)
 
 
 def test_numeric_accuracy_metric():

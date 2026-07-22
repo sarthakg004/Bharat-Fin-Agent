@@ -1,22 +1,16 @@
 """
-FastAPI app — multi-chat agentic RAG.
+FastAPI app — agentic RAG.
 
-The single agentic pipeline (`AgenticRAGv4`) drives every answer. Conversations
-are organised into chat threads; the agent gets the last few turns of the
-active thread as memory.
+The single agentic pipeline (`AgenticRAGv4`) drives every answer. The server is
+stateless: it stores nothing between requests. The client owns the conversation
+thread and replays recent turns via `QueryRequest.chat_history`, which the agent
+uses as memory.
 
 Endpoints
 ---------
     GET    /api/health
-    GET    /api/configs              # legacy; returns just the agentic config
-    GET    /api/chats                # list all chat threads
-    POST   /api/chats                # create new chat
-    GET    /api/chats/{id}           # chat metadata + messages
-    PATCH  /api/chats/{id}           # rename
-    DELETE /api/chats/{id}           # delete chat + its messages
-    DELETE /api/chats                # delete all chats
     POST   /api/upload               # parse a PDF/DOCX into ephemeral chunks
-    POST   /api/query                # SSE stream — appends to a chat
+    POST   /api/query                # SSE stream — one answer
     POST   /api/research             # SSE stream — Deep Research Mode
 
 Streaming events on /api/query: status, sources, chart, chunk, metrics, done.
@@ -68,19 +62,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from finagent.api import history, rag_service
+from finagent.api import rag_service
 from finagent.api.models import (
-    ChatListResponse,
-    ChatMessage,
-    ChatMessagesResponse,
-    ChatSummary,
-    ConfigInfo,
-    ConfigsResponse,
-    CreateChatRequest,
-    DeleteResponse,
     HealthResponse,
     QueryRequest,
-    RenameChatRequest,
     ResearchRequest,
     UploadResponse,
 )
@@ -111,108 +96,14 @@ _executor = ThreadPoolExecutor(
     max_workers=int(os.getenv("RAG_MAX_WORKERS", "1")), thread_name_prefix="rag"
 )
 
-# Stateless mode (set on scale-to-zero hosts like Cloud Run): no server-side
-# chat store — the client supplies conversation memory via QueryRequest.chat_history
-# and nothing is persisted to disk. Local dev leaves this off and keeps the
-# SQLite multi-chat store + /api/chats endpoints.
-STATELESS = os.getenv("STATELESS", "").strip().lower() in ("1", "true", "yes")
-
-
 # --------------------------------------------------------------------------- #
-# Health + configs
+# Health
 # --------------------------------------------------------------------------- #
 
 @app.get("/api/health", response_model=HealthResponse)
 def healthcheck():
-    return HealthResponse(**{k: v for k, v in rag_service.health().items() if k != "configs"})
-
-
-@app.get("/api/configs", response_model=ConfigsResponse)
-def list_configs():
-    return ConfigsResponse(configs=[
-        ConfigInfo(
-            id="agentic",
-            label="Agentic RAG",
-            model="openai/gpt-oss-120b",
-            description=(
-                "Planner → router → hybrid retrieve → grader → rewrite/synthesize → "
-                "table agent → market tools → web search → critic → verifier. "
-                "Loops on poor retrieval and unsupported claims; refuses if it can't ground."
-            ),
-        ),
-    ])
-
-
-# --------------------------------------------------------------------------- #
-# Chats — list / create / read / rename / delete
-# --------------------------------------------------------------------------- #
-
-def _to_summary(d: dict) -> ChatSummary:
-    return ChatSummary(
-        id=d["id"], title=d["title"],
-        created_at=str(d["created_at"]), updated_at=str(d["updated_at"]),
-        message_count=int(d.get("message_count", 0)),
-        preview=(d.get("preview") or None),
-    )
-
-
-@app.get("/api/chats", response_model=ChatListResponse)
-def list_chats():
-    return ChatListResponse(chats=[_to_summary(c) for c in history.list_chats(200)])
-
-
-@app.post("/api/chats", response_model=ChatSummary)
-def create_chat(req: CreateChatRequest):
-    chat = history.create_chat(title=req.title)
-    if not chat:
-        raise HTTPException(status_code=500, detail="Could not create chat.")
-    chat["message_count"] = 0
-    chat["preview"] = None
-    return _to_summary(chat)
-
-
-@app.get("/api/chats/{chat_id}", response_model=ChatMessagesResponse)
-def get_chat(chat_id: int):
-    chat = history.get_chat(chat_id)
-    if not chat:
-        raise HTTPException(status_code=404, detail=f"Chat {chat_id} not found.")
-    msgs = history.list_messages(chat_id)
-    # The summary endpoint computes preview + count; do the same inline.
-    chat["message_count"] = len(msgs)
-    chat["preview"] = next((m["content"] for m in msgs if m["role"] == "user"), None)
-    return ChatMessagesResponse(
-        chat=_to_summary(chat),
-        messages=[
-            ChatMessage(
-                id=m["id"], chat_id=m["chat_id"], role=m["role"],
-                content=m["content"], chunks=m["chunks"], charts=m["charts"],
-                metadata=m["metadata"], latency=m["latency"],
-                created_at=str(m["created_at"]),
-            )
-            for m in msgs
-        ],
-    )
-
-
-@app.patch("/api/chats/{chat_id}", response_model=ChatSummary)
-def rename_chat(chat_id: int, req: RenameChatRequest):
-    ok = history.rename_chat(chat_id, req.title)
-    if not ok:
-        raise HTTPException(status_code=404, detail=f"Chat {chat_id} not found.")
-    return _to_summary(history.get_chat(chat_id) or {})
-
-
-@app.delete("/api/chats/{chat_id}", response_model=DeleteResponse)
-def delete_chat(chat_id: int):
-    ok = history.delete_chat(chat_id)
-    if not ok:
-        raise HTTPException(status_code=404, detail=f"Chat {chat_id} not found.")
-    return DeleteResponse(deleted=1)
-
-
-@app.delete("/api/chats", response_model=DeleteResponse)
-def delete_all_chats():
-    return DeleteResponse(deleted=history.delete_all_chats())
+    return HealthResponse(**{k: v for k, v in rag_service.health().items()
+                             if k != "configs"})
 
 
 # --------------------------------------------------------------------------- #
@@ -223,37 +114,17 @@ def _sse(event: dict) -> str:
     return f"data: {json.dumps(event, default=str, ensure_ascii=False)}\n\n"
 
 
-def _build_history_for_agent(chat_id: int) -> list[dict]:
-    """The agent's `chat_history` parameter — last 6 turns, truncated."""
-    msgs = history.recent_turns(chat_id, k=6)
-    return [
-        {"role": m["role"], "content": (m["content"] or "")[:1200]}
-        for m in msgs
-    ]
+def _agent_history(request: QueryRequest) -> list[dict]:
+    """The agent's `chat_history` — the last 6 client-supplied turns, truncated.
 
-
-def _resolve_memory(request: QueryRequest) -> tuple[int, list[dict]]:
-    """(chat_id, agent_history) for this query.
-
-    The client's `chat_history` always wins when supplied — the SPA owns the
-    thread (sessionStorage) and never sends `chat_id`, so deriving memory from
-    the SQLite store built it from a brand-new chat every time (i.e. none).
-    The SQLite store remains the persistence log + fallback for callers that
-    do pass a `chat_id`.
+    The server stores nothing: the SPA owns the thread (sessionStorage) and
+    replays recent turns with each request, so memory is exactly what the
+    client sent and no more.
     """
-    client = [
+    return [
         {"role": t.role, "content": (t.content or "")[:1200]}
         for t in (request.chat_history or [])
     ][-6:]
-    if STATELESS:
-        return request.chat_id or 0, client
-    chat_id = request.chat_id
-    if chat_id is None or not history.get_chat(chat_id):
-        chat_id = history.create_chat(title="New chat")["id"]
-    # Persist the user message first so any failure mid-stream still keeps it.
-    history.add_message(chat_id, role="user", content=request.question)
-    history.auto_title_if_default(chat_id, request.question)
-    return chat_id, client or _build_history_for_agent(chat_id)
 
 
 # Friendly, market-neutral labels for each graph node, surfaced live as the
@@ -457,7 +328,7 @@ async def _run_rag(request: QueryRequest, hist: list[dict],
         lambda: rag_service.run_agentic(
             request.question, request.top_k, None, hist,
             provider, synth_model, api_key,
-            session_id=str(request.chat_id) if request.chat_id else None,
+            session_id=request.session_id or None,
             extra_chunks=extra_chunks,
             on_step=on_step, on_step_done=on_step_done,
         ),
@@ -467,9 +338,7 @@ async def _run_rag(request: QueryRequest, hist: list[dict],
 async def _stream_answer(request: QueryRequest) -> AsyncGenerator[str, None]:
     t0 = time.time()
 
-    # Resolve the conversation + memory (client history wins in both modes).
-    chat_id, agent_history = _resolve_memory(request)
-    yield _sse({"type": "chat", "chat_id": chat_id})
+    agent_history = _agent_history(request)
 
     # Resolve uploaded-document chunks up front so an expired upload fails the
     # request cleanly instead of silently answering without the document.
@@ -535,13 +404,7 @@ async def _stream_answer(request: QueryRequest) -> AsyncGenerator[str, None]:
         result = rag_task.result()
     except Exception as e:
         err = _classify_provider_error(e, request.provider_config)
-        code, message = err["code"], err["message"]
-        if not STATELESS:
-            history.add_message(
-                chat_id, role="assistant", content="",
-                metadata={"error": message},
-            )
-        yield _sse({"type": "error", "code": code, "message": message})
+        yield _sse(err)
         yield _sse({"type": "done"})
         return
 
@@ -574,15 +437,6 @@ async def _stream_answer(request: QueryRequest) -> AsyncGenerator[str, None]:
         "output_tokens": meta.get("output_tokens"),
         "agentic": meta,
     })
-
-    if not STATELESS:
-        try:
-            history.add_message(
-                chat_id, role="assistant", content=answer,
-                chunks=chunks, charts=charts, metadata=meta, latency=latency,
-            )
-        except Exception:
-            pass
 
     yield _sse({"type": "done"})
 
@@ -625,10 +479,9 @@ async def query(request: QueryRequest):
 async def _stream_research(request: ResearchRequest) -> AsyncGenerator[str, None]:
     t0 = time.time()
 
-    # ResearchRequest carries the same question/chat_id/chat_history fields
-    # _resolve_memory reads, so memory + persistence behave exactly like chat.
-    chat_id, agent_history = _resolve_memory(request)
-    yield _sse({"type": "chat", "chat_id": chat_id})
+    # ResearchRequest carries the same chat_history field, so memory behaves
+    # exactly like chat.
+    agent_history = _agent_history(request)
 
     loop = asyncio.get_event_loop()
     events: asyncio.Queue = asyncio.Queue()
@@ -649,7 +502,7 @@ async def _stream_research(request: ResearchRequest) -> AsyncGenerator[str, None
             # orchestrator itself never talks to retrieval or tools directly.
             run_fn=lambda q: rag_service.run_agentic(
                 q, provider=provider, synth_model=synth_model, api_key=api_key,
-                session_id=str(chat_id) if chat_id else None),
+                session_id=request.session_id or None),
             provider=provider, model=synth_model, api_key=api_key,
             max_agents=request.max_agents,
         )
@@ -667,9 +520,6 @@ async def _stream_research(request: ResearchRequest) -> AsyncGenerator[str, None
         result = task.result()
     except Exception as e:
         err = _classify_provider_error(e, request.provider_config)
-        if not STATELESS:
-            history.add_message(chat_id, role="assistant", content="",
-                                metadata={"error": err["message"]})
         yield _sse(err)
         yield _sse({"type": "done"})
         return
@@ -691,13 +541,6 @@ async def _stream_research(request: ResearchRequest) -> AsyncGenerator[str, None
                 "input_tokens": meta.get("input_tokens"),
                 "output_tokens": meta.get("output_tokens"),
                 "agentic": meta})
-
-    if not STATELESS:
-        try:
-            history.add_message(chat_id, role="assistant", content=report,
-                                chunks=chunks, metadata=meta, latency=latency)
-        except Exception:
-            pass
 
     yield _sse({"type": "done"})
 

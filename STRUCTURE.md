@@ -38,7 +38,7 @@ evaluation/      ← config, retrieval, graph, api (run_agentic as the eval subj
 ## Top-level modules
 
 **`config.py`** — Centralised settings (`Settings` + a module-level `settings`).
-All environment variables (`GROQ_API_KEY`, `STATELESS`, `ALLOWED_ORIGINS`,
+All environment variables (`GROQ_API_KEY`, `ALLOWED_ORIGINS`,
 `RERANKER_MODEL`, `CHROMA_DIR`, …) are read here and nowhere else; other modules
 import `settings`. Built on `pydantic.BaseModel` (not `pydantic_settings`) to
 avoid adding a dependency. Multi-key LLM rotation (`GROQ_API_KEY2`, …) is the one
@@ -104,7 +104,7 @@ executor note in `api/main.py`).
 the `/api/query` SSE stream, the `/api/research` Deep Research stream,
 chat endpoints, and static SPA hosting.
 `rag_service.py` builds/caches the agent and normalises its output;
-`history.py` / `models.py` are the chat store and Pydantic schemas.
+`models.py` holds the Pydantic request/response schemas.
 
 **`evaluation/`** — Dev-time only (never imported by the serve path). Canonical
 modules: `dataset` (load + tag FinanceBench), `retrieval` (pool-recall / Hit@k /
