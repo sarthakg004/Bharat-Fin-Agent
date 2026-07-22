@@ -33,6 +33,7 @@ FROM python:3.11-slim AS builder
 ENV PIP_NO_CACHE_DIR=1 \
     HF_HOME=/app/.hf \
     SENTENCE_TRANSFORMERS_HOME=/app/.hf \
+    FASTEMBED_CACHE_PATH=/app/.fastembed \
     PATH="/opt/venv/bin:$PATH"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -56,6 +57,12 @@ RUN python -c "from sentence_transformers import SentenceTransformer, CrossEncod
 SentenceTransformer('BAAI/bge-small-en-v1.5'); \
 CrossEncoder('BAAI/bge-reranker-base')"
 
+# Bake the BM25 sparse encoder (~0.1 MB) that produces the lexical half of
+# hybrid retrieval. Without it the runtime tries to fetch from HF on first
+# query and dies under HF_HUB_OFFLINE=1: "Could not load model Qdrant/bm25".
+RUN python -c "from fastembed import SparseTextEmbedding; \
+SparseTextEmbedding('Qdrant/bm25')"
+
 # Bake the Docling models (layout + TableFormer only, ~500 MB — no OCR, no
 # code/picture classifiers) so the upload parser loads offline at runtime.
 RUN python -c "from pathlib import Path; \
@@ -73,6 +80,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     HF_HOME=/app/.hf \
     SENTENCE_TRANSFORMERS_HOME=/app/.hf \
+    FASTEMBED_CACHE_PATH=/app/.fastembed \
     STATIC_DIR=/app/static \
     PYTHONPATH=/app \
     PATH="/opt/venv/bin:$PATH" \
@@ -105,6 +113,7 @@ WORKDIR /app
 COPY --from=builder /opt/venv     /opt/venv
 COPY --from=builder /app/.hf      /app/.hf
 COPY --from=builder /app/.docling /app/.docling
+COPY --from=builder /app/.fastembed /app/.fastembed
 
 # App code + built SPA. The corpus is NOT in the image any more — it lives in
 # Qdrant, which is why this build no longer needs the 2.2 GB data directory.

@@ -55,6 +55,25 @@ def test_deployed_image_ships_no_vector_data():
     assert "data/" in (root / ".dockerignore").read_text()
 
 
+def test_image_bakes_every_model_loaded_offline():
+    """The runtime sets HF_HUB_OFFLINE=1, so any model it loads must be baked
+    into the image at build time.
+
+    The BM25 sparse encoder was missed on the Qdrant cutover: the container
+    started and /api/health passed, but the first real query died with
+    "Could not load model Qdrant/bm25". Nothing catches that except asking the
+    Dockerfile whether it bakes what the code names.
+    """
+    from pathlib import Path
+
+    from finagent.vectorstore import DEFAULT_EMBED_MODEL, SPARSE_MODEL
+
+    text = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text()
+    assert "HF_HUB_OFFLINE=1" in text
+    for model in (DEFAULT_EMBED_MODEL, SPARSE_MODEL):
+        assert model in text, f"{model} is loaded at runtime but never baked"
+
+
 def _build_agent():
     from finagent.graph import AgenticRAGv4
 
