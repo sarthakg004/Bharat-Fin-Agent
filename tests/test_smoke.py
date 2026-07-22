@@ -559,6 +559,36 @@ def test_client_chat_history_is_the_only_memory():
     assert all(len(t["content"]) == 1200 for t in got)
 
 
+def test_session_id_reaches_the_tracer(monkeypatch):
+    """Regression: `session_id` is only useful if it survives the whole way to
+    run_agentic, which tags the Langfuse trace with it. The previous field
+    (chat_id) was wired here but never sent by the SPA, so session grouping was
+    silently dead — assert the value actually arrives."""
+    import json
+
+    from starlette.testclient import TestClient
+
+    from finagent.api import main as M
+    from finagent.api import rag_service
+
+    seen: dict = {}
+
+    def fake_run_agentic(question, top_k=5, company_filter=None, chat_history=None,
+                         provider="groq", synth_model=None, api_key=None, **kwargs):
+        seen.update(kwargs)
+        return {"answer": "ok", "chunks": [], "charts": [], "metadata": {}}
+
+    monkeypatch.setattr(rag_service, "run_agentic", fake_run_agentic)
+
+    with TestClient(M.app) as client:
+        resp = client.post("/api/query",
+                           json={"question": "Revenue?", "session_id": "thread-abc"})
+        assert resp.status_code == 200
+        resp.text          # drain the stream so the run completes
+
+    assert seen.get("session_id") == "thread-abc"
+
+
 def test_numeric_accuracy_metric():
     """The deterministic numeric-correctness metric matches gold within tolerance,
     handles the percent/ratio dual form, and excludes non-numeric golds."""

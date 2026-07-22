@@ -102,6 +102,9 @@ export interface QueryRequest {
   question: string;
   top_k?: number;
   provider_config?: ProviderConfig;
+  /** Thread id — not persisted server-side; groups this turn's traces with the
+   * rest of the conversation in Langfuse's Sessions view. */
+  session_id?: string;
   /** Per-session conversation memory (the server is stateless). */
   chat_history?: ChatTurn[];
   /** Ids from POST /api/upload — the documents to answer over. */
@@ -115,6 +118,7 @@ export interface QueryRequest {
 export interface ResearchRequest {
   question: string;
   provider_config?: ProviderConfig;
+  session_id?: string;
   chat_history?: ChatTurn[];
   max_agents?: number;
 }

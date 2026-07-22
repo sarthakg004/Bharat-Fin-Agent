@@ -41,9 +41,14 @@ export function useRAGQuery() {
       const startedAt = Date.now();
       let firstChunk = true;
       const uploadIds = useChatStore.getState().uploads.map((u) => u.id);
+      // `ask` creates the thread before streaming, so this is set by now. It's
+      // the client's own thread id — the server doesn't store it, it just tags
+      // the traces so follow-up turns group into one Langfuse session.
+      const sessionId = useThreadStore.getState().activeId ?? undefined;
       const request = mode === "research"
-        ? { question, chat_history: history, provider_config: currentProviderConfig() }
-        : { question, top_k: 5, chat_history: history,
+        ? { question, session_id: sessionId, chat_history: history,
+            provider_config: currentProviderConfig() }
+        : { question, top_k: 5, session_id: sessionId, chat_history: history,
             provider_config: currentProviderConfig(),
             upload_ids: uploadIds.length ? uploadIds : undefined };
       try {
