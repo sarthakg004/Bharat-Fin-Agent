@@ -25,6 +25,7 @@ from __future__ import annotations
 from typing import Optional
 
 from finagent.retrieval.reranker import _get_shared_reranker
+from finagent.vectorstore import DEFAULT_EMBED_MODEL
 
 
 class HybridRetriever:
@@ -123,7 +124,7 @@ class HybridRetriever:
     def from_collection(
         cls,
         collection: str,
-        embedding_model: str = "BAAI/bge-small-en-v1.5",
+        embedding_model: str = DEFAULT_EMBED_MODEL,
         **kwargs,
     ) -> "HybridRetriever":
         """Build a retriever directly from a Qdrant collection name."""

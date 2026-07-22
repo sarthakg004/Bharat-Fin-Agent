@@ -61,6 +61,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Optional, Union
 
+from finagent.vectorstore import DEFAULT_EMBED_MODEL
+
 from tqdm import tqdm
 
 # Lazy imports for heavy ML deps happen inside methods so help-printing /
@@ -141,7 +143,7 @@ class CorpusIngester:
         state_dir: Union[str, Path] = "data",
         collection_name: str = "financial_filings",
         market: str = "us",
-        embedding_model: str = "BAAI/bge-small-en-v1.5",
+        embedding_model: str = DEFAULT_EMBED_MODEL,
         embedding_provider: str = "huggingface",
         chunk_size: int = DEFAULT_CHUNK_SIZE,
         chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,

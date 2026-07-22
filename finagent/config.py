@@ -20,6 +20,7 @@ from typing import List, Optional
 
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
+from finagent.vectorstore import DEFAULT_EMBED_MODEL
 
 load_dotenv()  # make .env visible no matter which module imports settings first
 
@@ -71,7 +72,7 @@ class Settings(BaseModel):
 
     # --- Models --------------------------------------------------------------
     reranker_model: str = Field(default="BAAI/bge-reranker-base", description="RERANKER_MODEL")
-    embedding_model: str = Field(default="BAAI/bge-small-en-v1.5", description="embedding model")
+    embedding_model: str = Field(default=DEFAULT_EMBED_MODEL, description="embedding model")
 
     # --- Storage / collections ----------------------------------------------
     qdrant_url: str = Field(default="", description="QDRANT_URL / QDRANT_CLUSTER_ENDPOINT")

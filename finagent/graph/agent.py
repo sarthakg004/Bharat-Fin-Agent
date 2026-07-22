@@ -50,6 +50,7 @@ from finagent.tools.xbrl import XBRLClient
 from finagent.graph.nodes import (
     FetchNodes, NumericNodes, ExternalNodes, SynthesisNodes, VerificationNodes,
 )
+from finagent.vectorstore import DEFAULT_EMBED_MODEL
 
 
 # --------------------------------------------------------------------------- #
@@ -508,7 +509,7 @@ def _build_cli() -> argparse.ArgumentParser:
     p.add_argument("--router-model", default=None)
     p.add_argument("--code-model", default=None)
     p.add_argument("--verifier-model", default=None)
-    p.add_argument("--embedding-model", default="BAAI/bge-small-en-v1.5")
+    p.add_argument("--embedding-model", default=DEFAULT_EMBED_MODEL)
     p.add_argument("--reranker-model", default="BAAI/bge-reranker-large")
     p.add_argument("--pool-top-k", type=int, default=48)
     p.add_argument("--final-top-k", type=int, default=5)

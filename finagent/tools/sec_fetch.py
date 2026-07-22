@@ -31,6 +31,7 @@ from typing import Optional
 
 from finagent.tools.base import BaseTool
 from finagent.tools.resolver import TickerCIKResolver
+from finagent.vectorstore import DEFAULT_EMBED_MODEL
 
 
 def _sec_identity() -> tuple[str, str]:
@@ -57,7 +58,7 @@ class SecFilingFetcher(BaseTool):
         resolver: Optional[TickerCIKResolver] = None,
         collection_name: str = "us_filings",
         corpus_dir: str | Path = "data/us/pdfs",
-        embedding_model: str = "BAAI/bge-small-en-v1.5",
+        embedding_model: str = DEFAULT_EMBED_MODEL,
         market: str = "us",
     ) -> None:
         self.resolver = resolver or TickerCIKResolver()

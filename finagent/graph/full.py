@@ -62,6 +62,7 @@ from finagent.graph.table_agent import TableAgent
 # --------------------------------------------------------------------------- #
 
 from finagent.prompts.planner import ROUTER_PROMPT, ROUTER_SYSTEM  # noqa: F401
+from finagent.vectorstore import DEFAULT_EMBED_MODEL
 
 # Fused planner+router: ONE structured call both decomposes the question into
 # sub-queries AND routes each to its lane. This replaces two sequential LLM
@@ -641,7 +642,7 @@ def _build_cli() -> argparse.ArgumentParser:
     p.add_argument("--grader-model", default=None)
     p.add_argument("--router-model", default=None)
     p.add_argument("--code-model", default=None)
-    p.add_argument("--embedding-model", default="BAAI/bge-small-en-v1.5")
+    p.add_argument("--embedding-model", default=DEFAULT_EMBED_MODEL)
     p.add_argument("--reranker-model", default=HybridRetriever.DEFAULT_RERANKER)
     p.add_argument("--pool-top-k", type=int, default=48)
     p.add_argument("--final-top-k", type=int, default=5)

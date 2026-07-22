@@ -61,6 +61,7 @@ from tqdm import tqdm
 from finagent.graph.state import AgentState, CriticReport, SubQueries
 from finagent.runtime import DEFAULTS as RUNTIME_DEFAULTS
 from finagent.runtime import RuntimeContext, create_llm, current_context
+from finagent.vectorstore import DEFAULT_EMBED_MODEL
 
 load_dotenv()
 
@@ -106,7 +107,7 @@ class AgenticRAG:
     def __init__(
         self,
         collection_name: str = "us_filings",
-        embedding_model: str = "BAAI/bge-small-en-v1.5",
+        embedding_model: str = DEFAULT_EMBED_MODEL,
         top_k: int = 5,
         collections: Optional[list[str]] = None,
     ):
@@ -460,7 +461,7 @@ def _build_cli() -> argparse.ArgumentParser:
     p.add_argument("--planner-model", default=None)
     p.add_argument("--synth-model", default=None)
     p.add_argument("--critic-model", default=None)
-    p.add_argument("--embedding-model", default="BAAI/bge-small-en-v1.5")
+    p.add_argument("--embedding-model", default=DEFAULT_EMBED_MODEL)
     p.add_argument("--top-k", type=int, default=5)
     p.add_argument("--question", default=None, help="Single question to answer")
     p.add_argument("--dataset", default=None, help="JSONL/parquet eval set for a batch run")
