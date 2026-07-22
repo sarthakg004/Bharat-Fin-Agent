@@ -81,7 +81,6 @@ class RuntimeContext:
     # pool on rate limits.
     api_key: Optional[str] = None
     temperature: float = 0.0
-    top_k: int = 5
     # The client's conversation id. Scopes anything cached BETWEEN turns of one
     # chat (a fetched filing, a research finding) so it is reused within the
     # conversation and invisible to every other user. None → no cross-turn

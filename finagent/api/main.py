@@ -329,8 +329,8 @@ async def _run_rag(request: QueryRequest, hist: list[dict],
     return await loop.run_in_executor(
         _executor,
         lambda: rag_service.run_agentic(
-            request.question, request.top_k, None, hist,
-            provider, synth_model, api_key,
+            request.question, chat_history=hist,
+            provider=provider, synth_model=synth_model, api_key=api_key,
             session_id=request.session_id or None,
             extra_chunks=extra_chunks,
             on_step=on_step, on_step_done=on_step_done,

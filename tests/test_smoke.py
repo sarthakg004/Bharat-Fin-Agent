@@ -622,7 +622,7 @@ def test_session_id_reaches_the_tracer(monkeypatch):
 
     seen: dict = {}
 
-    def fake_run_agentic(question, top_k=5, company_filter=None, chat_history=None,
+    def fake_run_agentic(question, company_filter=None, chat_history=None,
                          provider="groq", synth_model=None, api_key=None, **kwargs):
         seen.update(kwargs)
         return {"answer": "ok", "chunks": [], "charts": [], "metadata": {}}

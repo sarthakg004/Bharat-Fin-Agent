@@ -48,7 +48,7 @@ export function useRAGQuery() {
       const request = mode === "research"
         ? { question, session_id: sessionId, chat_history: history,
             provider_config: currentProviderConfig() }
-        : { question, top_k: 5, session_id: sessionId, chat_history: history,
+        : { question, session_id: sessionId, chat_history: history,
             provider_config: currentProviderConfig(),
             upload_ids: uploadIds.length ? uploadIds : undefined };
       try {

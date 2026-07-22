@@ -389,9 +389,14 @@ class FetchNodes:
         except Exception as e:
             self._log(state, f"ephemeral rank failed ({e}); using fetch order")
             return [{**c, "source": self._fetched_source(c), "sub_query": subs[0]}
-                    for c in fetched[: self._request_top_k()]]
+                    for c in fetched[: self.final_top_k]]
 
-        top_k = self._request_top_k()
+        # Same per-sub-query keep count as indexed retrieval (HybridRetriever
+        # trims its reranked pool to `final_top_k` too). An EDGAR-fetched filing
+        # or an uploaded PDF isn't in Qdrant, so it can't go through that path —
+        # but it gets the same embed → rerank → keep-N treatment, so the two
+        # lanes contribute comparable amounts of evidence to one answer.
+        top_k = self.final_top_k
         pre_k = max(top_k * 4, 20)
         out: list[dict] = []
         seen: set = set()

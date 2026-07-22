@@ -327,7 +327,7 @@ def _langfuse_handler():
         return None
 
 
-def run_agentic(question: str, top_k: int = 5,
+def run_agentic(question: str,
                 company_filter: Optional[list[str]] = None,
                 chat_history: Optional[list[dict]] = None,
                 provider: str = "groq",
@@ -361,8 +361,7 @@ def run_agentic(question: str, top_k: int = 5,
     rag = get_agentic(collection)
     # Everything request-specific goes here, not onto the shared agent.
     ctx = RuntimeContext(provider=provider, synth_model=synth_model,
-                         api_key=api_key, top_k=top_k or 5,
-                         session_id=session_id)
+                         api_key=api_key, session_id=session_id)
 
     # `chat_history` lives directly on AgentState (TypedDict, total=False) so
     # nodes can read it without changing graph signatures.

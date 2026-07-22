@@ -100,7 +100,6 @@ export interface ChatTurn {
 
 export interface QueryRequest {
   question: string;
-  top_k?: number;
   provider_config?: ProviderConfig;
   /** Thread id — not persisted server-side; groups this turn's traces with the
    * rest of the conversation in Langfuse's Sessions view. */

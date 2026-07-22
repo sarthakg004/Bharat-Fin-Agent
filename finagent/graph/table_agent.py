@@ -317,7 +317,7 @@ def main():
     )
     # Standalone runs have no graph config to carry the provider choice, so
     # scope it explicitly for the call.
-    with use_context(RuntimeContext(provider=args.provider, top_k=args.top_k)):
+    with use_context(RuntimeContext(provider=args.provider)):
         out = ta.answer(args.question)
     print("=" * 60)
     print(f"Question: {args.question}")

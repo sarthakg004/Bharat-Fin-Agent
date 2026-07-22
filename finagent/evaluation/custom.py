@@ -86,7 +86,6 @@ def run_custom_eval(
     summary_path: Union[str, Path] = DEFAULT_SUMMARY,
     provider: str = "groq",
     collection: Optional[str] = None,
-    top_k: int = 5,
     resume: bool = True,
     ragas: bool = False,
 ) -> dict:
@@ -112,7 +111,7 @@ def run_custom_eval(
             continue
         t0 = time.time()
         try:
-            res = run_agentic(question=spec["question"], top_k=top_k,
+            res = run_agentic(question=spec["question"],
                               provider=provider, collection=collection)
             row = {
                 "financebench_id": qid,

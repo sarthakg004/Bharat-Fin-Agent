@@ -44,7 +44,6 @@ class QueryRequest(BaseModel):
         description="Opaque client-owned thread id. Not persisted — used only to "
                     "group this run's traces with the rest of the conversation.",
     )
-    top_k: int = Field(default=5, ge=1, le=20)
     provider_config: Optional[ProviderConfig] = None
     chat_history: Optional[list[ChatTurn]] = Field(
         default=None,

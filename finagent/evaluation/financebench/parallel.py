@@ -133,7 +133,6 @@ def run_parallel(
     workers: Optional[int] = None,
     provider: str = "groq",
     synth_model: Optional[str] = None,
-    top_k: int = 5,
 ) -> list[dict]:
     """Answer `questions` (a DataFrame) across N worker processes; merge to
     `output_path`. Resumable: a worker shard that already has answers skips
@@ -185,7 +184,7 @@ def run_parallel(
         shard_outs.append(shard_out)
         cmd = [sys.executable, "-m", "finagent.evaluation.financebench.parallel",
                "--worker", str(shard_in), "--output", str(shard_out),
-               "--provider", provider, "--top-k", str(top_k)]
+               "--provider", provider]
         if synth_model:
             cmd += ["--synth-model", synth_model]
         procs.append(subprocess.Popen(cmd, env=_worker_env(keys, w)))
@@ -443,7 +442,6 @@ def main() -> None:
                    help="default: min(n_keys, 4)")
     p.add_argument("--provider", default="groq")
     p.add_argument("--synth-model", default=None)
-    p.add_argument("--top-k", type=int, default=5)
     p.add_argument("--sample", type=int, default=None,
                    help="limit to the first N questions (smoke runs)")
     p.add_argument("--worker", default=None, metavar="SHARD_JSONL",
@@ -483,8 +481,7 @@ def main() -> None:
 
         shard = pd.read_json(args.worker, lines=True)
         run_agent_outputs(shard, output_path=args.output,
-                          provider=args.provider, synth_model=args.synth_model,
-                          top_k=args.top_k)
+                          provider=args.provider, synth_model=args.synth_model)
         return
 
     if args.score:
@@ -525,8 +522,7 @@ def main() -> None:
     if args.sample:
         qs = qs.head(args.sample)
     run_parallel(qs, output_path=args.output, workers=args.workers,
-                 provider=args.provider, synth_model=args.synth_model,
-                 top_k=args.top_k)
+                 provider=args.provider, synth_model=args.synth_model)
     final_report(args.output,
                  metrics_json=run_dir / "final_metrics.json",
                  metrics_md=run_dir / "final_metrics.md")

@@ -41,7 +41,6 @@ def run_agent_outputs(
     output_path: Union[str, Path] = DEFAULT_OUTPUTS,
     provider: str = "groq",
     synth_model: Optional[str] = None,
-    top_k: int = 5,
     resume: bool = True,
 ) -> list[dict]:
     """Answer every question with the production agent; save incrementally.
@@ -111,7 +110,6 @@ def run_agent_outputs(
                 try:
                     res = run_agentic(
                         question=question,
-                        top_k=top_k,
                         provider=provider,
                         synth_model=synth_model,
                         collection=eval_collection,

@@ -87,8 +87,10 @@ class AgenticRAG:
     embedding_model : str
         MUST match the model used at ingestion.
     top_k : int
-        Chunks retrieved per sub-query (construction default; a request can
-        override it via `RuntimeContext.top_k`).
+        Chunks retrieved per sub-query. Fixed at construction — a request
+        cannot change how much evidence the agent gathers. (v4 supersedes this
+        with `final_top_k`, which the ephemeral fetch/upload lane reuses so
+        both lanes keep the same number of chunks per sub-query.)
 
     The agent holds RESOURCES only and is immutable after construction, so one
     instance is safe to share across concurrent requests. Which provider, model
@@ -400,14 +402,6 @@ class AgenticRAG:
                 self.collection_name, self.embedding_model
             )
         return self._retriever
-
-    def _request_top_k(self) -> int:
-        """Chunks to keep per sub-query for THIS request.
-
-        The API's `top_k` used to reach the nodes by assigning to the shared
-        agent's `final_top_k`; it now rides the request context instead.
-        """
-        return current_context().top_k
 
     def _get_llm(self, role: str):
         """The LLM for a role, built from the RUNNING REQUEST's context.
