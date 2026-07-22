@@ -60,8 +60,11 @@ def _build_agent(collection: Optional[str] = None) -> AgenticRAGv4:
         pool_top_k=48, final_top_k=5,
         retrieve_cap=8,
         max_rewrites=2, max_critic_retries=1,
-        # Cloud: PERSIST_DYNAMIC_FETCH=false → fetched filings are used in-memory
-        # for the session and never grow the baked index.
+        # PERSIST_DYNAMIC_FETCH=true everywhere now: the index is a Qdrant
+        # server, so a fetched filing is upserted into it and the next user
+        # gets it for free. Deterministic point ids make the concurrent
+        # duplicate write harmless. (The eval sets it false to keep
+        # financebench_eval frozen; the old Chroma image had to.)
         persist_fetch=settings.persist_dynamic_fetch,
         table_collection="tables",
         web_top_k=10,

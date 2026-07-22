@@ -587,7 +587,7 @@ async def research(request: ResearchRequest):
 # at the same origin (no CORS).
 # --------------------------------------------------------------------------- #
 
-_STATIC_DIR = Path(os.getenv("STATIC_DIR", "static"))
+_STATIC_DIR = Path(os.getenv("STATIC_DIR", "static")).resolve()
 
 if _STATIC_DIR.exists() and (_STATIC_DIR / "index.html").exists():
     # Serve hashed JS/CSS chunks under their real paths.
@@ -607,7 +607,12 @@ if _STATIC_DIR.exists() and (_STATIC_DIR / "index.html").exists():
     def _spa_fallback(full_path: str):
         if full_path.startswith("api/"):
             raise HTTPException(status_code=404)
-        candidate = _STATIC_DIR / full_path
-        if candidate.is_file():
+        # Confine the read to STATIC_DIR. `full_path` is percent-DECODED after
+        # routing, so "..%2f" and "%2e%2e" arrive here as "../" — Starlette's
+        # raw-path normalisation never saw them. Before this guard,
+        # GET /..%2f..%2fproc/self/environ served the container's environment,
+        # i.e. every Secret Manager value on the service.
+        candidate = (_STATIC_DIR / full_path).resolve()
+        if candidate.is_relative_to(_STATIC_DIR) and candidate.is_file():
             return FileResponse(candidate)
         return FileResponse(_STATIC_DIR / "index.html")
