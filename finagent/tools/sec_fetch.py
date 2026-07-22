@@ -13,10 +13,10 @@ The corpus-membership **gate** distinguishes three cases cheaply:
   * US-listed, not indexed  → fetch + ingest, then retrieve;
   * not US-listed           → leave it for the web-search branch.
 
-The first two are decided by a cheap Chroma metadata query (`where ticker=…`,
+The first two are decided by a cheap metadata query (`ticker == …`,
 limit 1) and the Phase-2 resolver (a CIK means SEC-registered/US-listed).
 
-Persistence note: locally this writes straight to the on-disk Chroma store and
+Persistence note: this upserts straight into the Qdrant collection and
 survives across runs. The Cloud Run scale-to-zero persistence problem
 (ingested chunks vanish when the instance is recycled) is a *deploy-time*
 concern handled in Phase 12 — it does not affect local behaviour here.
@@ -44,7 +44,7 @@ class SecFilingFetcher(BaseTool):
     """Fetch + ingest a company's latest SEC 10-K on demand (self-expanding corpus).
 
     Usage:
-        f = SecFilingFetcher(collection_name="us_filings", chroma_dir="data/chroma")
+        f = SecFilingFetcher(collection_name="us_filings")
         f.gate("AAPL")      # -> "already_indexed" | "fetch" | "not_us_listed"
         f.run("CRM")        # resolve -> fetch latest 10-K -> ingest -> report
     """
@@ -56,14 +56,12 @@ class SecFilingFetcher(BaseTool):
         self,
         resolver: Optional[TickerCIKResolver] = None,
         collection_name: str = "us_filings",
-        chroma_dir: str | Path = "data/chroma",
         corpus_dir: str | Path = "data/us/pdfs",
         embedding_model: str = "BAAI/bge-small-en-v1.5",
         market: str = "us",
     ) -> None:
         self.resolver = resolver or TickerCIKResolver()
         self.collection_name = collection_name
-        self.chroma_dir = str(chroma_dir)
         self.corpus_dir = Path(corpus_dir)
         self.embedding_model = embedding_model
         self.market = market
@@ -74,18 +72,18 @@ class SecFilingFetcher(BaseTool):
     def _get_store(self):
         if self._store is None:
             from finagent.vectorstore import build_store
-            self._store = build_store(self.collection_name, self.embedding_model,
-                                      self.chroma_dir)
+            self._store = build_store(self.collection_name, self.embedding_model)
         return self._store
 
     def is_indexed(self, ticker: str) -> bool:
-        """Cheap Chroma metadata check: is any chunk tagged with this ticker?"""
+        """Cheap metadata check: is any chunk tagged with this ticker?"""
+        from finagent.vectorstore import exists_where
+
         t = (ticker or "").upper().strip()
         if not t:
             return False
         try:
-            got = self._get_store()._collection.get(where={"ticker": t}, limit=1)
-            return bool(got.get("ids"))
+            return exists_where(self.collection_name, "ticker", t)
         except Exception:
             return False
 
@@ -134,7 +132,7 @@ class SecFilingFetcher(BaseTool):
     def fetch_chunks(self, ticker: str, company: str = "",
                      filing_type: str = "10-K", n: int = 1) -> dict:
         """Fetch a filing and parse+chunk it **in memory** — NO embedding, NO
-        Chroma write. For the cloud / per-session path: the chunks are ranked
+        upsert. For the ephemeral path: the chunks are ranked
         in-memory against the question and fed to synthesis, so we never grow or
         persist the index. Returns ``{"ok", "ticker", "form", "chunks": [...]}``
         where each chunk is ``{text, company, ticker, year, source, ...}``.
@@ -147,7 +145,7 @@ class SecFilingFetcher(BaseTool):
                     "error": "no filing downloaded"}
 
         ingester = CorpusIngester(
-            corpus_dir=self.corpus_dir, chroma_dir=self.chroma_dir,
+            corpus_dir=self.corpus_dir,
             collection_name=self.collection_name, market=self.market,
             embedding_model=self.embedding_model,
         )
@@ -182,7 +180,7 @@ class SecFilingFetcher(BaseTool):
         manifest_path.write_text(json.dumps(ok, indent=2))
 
         ingester = CorpusIngester(
-            corpus_dir=self.corpus_dir, chroma_dir=self.chroma_dir,
+            corpus_dir=self.corpus_dir,
             collection_name=self.collection_name, market=self.market,
             embedding_model=self.embedding_model,
         )
@@ -300,7 +298,7 @@ class SecFilingFetcher(BaseTool):
             tmp = Path(tf.name)
         try:
             ingester = CorpusIngester(
-                corpus_dir=self.corpus_dir, chroma_dir=self.chroma_dir,
+                corpus_dir=self.corpus_dir,
                 collection_name=self.collection_name, market=self.market,
                 embedding_model=self.embedding_model,
             )

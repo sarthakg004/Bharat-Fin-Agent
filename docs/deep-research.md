@@ -119,7 +119,7 @@ like chat answers.
   are assembled into a sectioned report (deterministic, no LLM) rather than
   returning nothing.
 * **Parallelism** — specialists run sequentially by default because the serve
-  path pins graph runs to one worker (Chroma/hnswlib + reranker
+  path pins graph runs to one worker (the vector store + reranker
   thread-safety; see `api/main.py`). `RESEARCH_PARALLEL_AGENTS=n` opts into a
   thread pool where the deployment can afford it.
 * **Latency expectation** — one specialist ≈ one chat question (tens of

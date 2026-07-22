@@ -14,7 +14,7 @@ uvicorn finagent.api.main:app --host 0.0.0.0 --port ${PORT:-8080} --workers 1
 So `finagent/api/main.py` must stay at that path and expose a module-level
 `app`. The Dockerfile copies `finagent/` wholesale (`COPY finagent/ ./finagent/`),
 so internal reorganisation is invisible to the build as long as that import
-string resolves. `requirements.txt`, `pyproject.toml`, and `data/chroma/` paths
+string resolves. `requirements.txt`, `pyproject.toml`, and `data/qdrant/` paths
 are also load-bearing and unchanged.
 
 ## Dependency direction
@@ -24,7 +24,7 @@ Strictly downward — a module may import from those above it, never below:
 ```
 config.py        ← imported by everything; imports nothing from finagent
 llm.py           ← config
-ingestion/       ← config, (low-level) chroma_client, vectorstore
+ingestion/       ← config, (low-level) qdrant_client, vectorstore
 retrieval/       ← config, llm
 tools/           ← config, llm, retrieval (some tools)
 prompts/         ← re-exports prompt strings from graph/ (see note)
@@ -39,7 +39,7 @@ evaluation/      ← config, retrieval, graph, api (run_agentic as the eval subj
 
 **`config.py`** — Centralised settings (`Settings` + a module-level `settings`).
 All environment variables (`GROQ_API_KEY`, `ALLOWED_ORIGINS`,
-`RERANKER_MODEL`, `CHROMA_DIR`, …) are read here and nowhere else; other modules
+`RERANKER_MODEL`, `QDRANT_URL`, …) are read here and nowhere else; other modules
 import `settings`. Built on `pydantic.BaseModel` (not `pydantic_settings`) to
 avoid adding a dependency. Multi-key LLM rotation (`GROQ_API_KEY2`, …) is the one
 deliberate exception — it stays dynamic in `llm.py`.
@@ -50,8 +50,8 @@ at this path; imports only config-level concerns.
 
 **`ingestion/`** — The parse → chunk → embed → store pipeline.
 `pipeline.ingest_corpus` / `CorpusIngester` (pypdf for PDFs, unstructured for
-SEC HTML) write the corpus into Chroma via the low-level `chroma_client.py` /
-`vectorstore.py` helpers — the single source of "where Chroma lives".
+SEC HTML) write the corpus into Qdrant via the low-level `runtime.py` /
+`vectorstore.py` helpers — the single source of "where Qdrant lives".
 `upload.parse_upload` (Docling) parses user-uploaded documents into ephemeral
 in-memory chunks for the API. `table_ingest.py` / `table_embed.py` are offline
 run-once CLIs that built the `tables` collection consumed by
@@ -329,7 +329,7 @@ prompt problem — the agent had no usable evidence. Root causes and fixes:
    and no `InventoryNet`). Now exact: ATVI 24.26, CVS 17.98, Nike 3.46.
 
 **Cost.** Every fix is cost-neutral or cost-reducing: the eval reads local
-Chroma (no EDGAR load), fewer questions escalate to Tavily, and Groq free-tier
+Qdrant (no EDGAR load), fewer questions escalate to Tavily, and Groq free-tier
 model choice doesn't change the cloud bill. Nothing here adds an LLM call.
 
 **Validation.** Spot-checked end-to-end on previously-failing questions (all

@@ -87,7 +87,8 @@ match the evidence (scale-insensitively) or be derivable from it in one
 arithmetic step; an LLM verifier runs only as a rescue when figures fail to
 ground. Ungrounded figures re-route, then refuse.
 
-Retrieval uses an on-disk **Chroma** store (`finagent/vectorstore.py`);
+Retrieval uses a remote **Qdrant** collection (`finagent/vectorstore.py`) with
+hybrid dense + BM25-sparse search fused server-side by RRF;
 embeddings and the reranker run on GPU when available, else CPU
 (`finagent/device.py`). The FastAPI layer (`finagent/api/`) streams the answer
 over SSE — with live per-node progress events driving the UI's thinking trace —
@@ -108,9 +109,9 @@ different keys of the rotating pool so rate limits don't hit in lockstep.
 finagent/
   graph/         the LangGraph agent (base → corrective → full → agent)
   tools/         XBRL, calculator, SEC fetch, EDGAR FTS, market, web search
-  retrieval/     hybrid retriever (BM25 ∪ dense + rerank), filters, reranker
+  retrieval/     hybrid retriever (RRF-fused sparse+dense + rerank), filters, reranker
   api/           FastAPI: SSE streaming + agent service
-  vectorstore.py · chroma_client.py · device.py · llm.py
+  vectorstore.py · runtime.py · device.py · llm.py
   ingestion/     corpus builders (PDF parse, chunk, embed)
   evaluation/    FinanceBench + RAGAS harness (incl. parallel multi-key runner)
 frontend/        React + TypeScript + Vite + Tailwind SPA
@@ -139,7 +140,7 @@ This produces **one aggregate metrics list** — `results/final_metrics.json` /
 (faithfulness, answer relevancy, context precision/recall) overall and per
 question type (numeric / comparison / narrative).
 
-The eval answers from the dedicated **`financebench_eval`** Chroma collection —
+The eval answers from the dedicated **`financebench_eval`** collection —
 the benchmark's own filings, ingested through the production pipeline and covering
 the historical years the questions ask about. (Production serves `us_filings`
 plus on-demand SEC fetch; the eval pins the corpus so it measures retrieval, not
@@ -243,17 +244,17 @@ cd frontend && npm install && npm run dev
 
 Open **http://localhost:5173** and ask a question.
 
-**Vector store:** the prebuilt `data/chroma` is not committed (size). Build it from
-source filings with the ingestion extra:
+**Vector store:** set `QDRANT_URL` + `QDRANT_API_KEY`, then build the corpus:
 
 ```bash
 pip install -e ".[ingest]"
 python -m finagent.ingestion.fetchPDFs
-python -m finagent.ingestion.ingest        # parse + chunk + embed into data/chroma
+python -m finagent.ingestion.ingest        # parse + chunk + embed into Qdrant
 python -m finagent.ingestion.table_ingest
 ```
 
-Point `CHROMA_DIR` at an existing store if you already have one.
+Ingestion is idempotent: point ids are derived from (filing, position, content),
+so re-running overwrites rather than duplicates.
 
 **Tests:** `pytest`
 
@@ -262,8 +263,8 @@ Point `CHROMA_DIR` at an existing store if you already have one.
 ## Deployment
 
 CI/CD deploys on every push to `main` (`.github/workflows/deploy.yml`): the
-backend builds into a single Cloud Run image (SPA + API + baked Chroma store +
-baked encoder models, scale-to-zero) and the frontend deploys to Firebase
+backend builds into a single Cloud Run image (SPA + API + baked encoder models,
+scale-to-zero; the corpus lives in Qdrant, not the image) and the frontend deploys to Firebase
 Hosting. The image stays CPU-only and within the existing 8 GiB / 2 vCPU
 service shape — none of the agent's lanes add resident memory beyond the
 shared encoder models.
@@ -276,8 +277,8 @@ Set in `.env` (see `.env.example`):
 |---|---|
 | `GROQ_API_KEY` (+ `…2`–`…8`) | Default LLM provider; roles stagger across keys, rotate on rate-limit, drop revoked keys, and fail fast with "limit exhausted" when the whole pool is spent |
 | `TAVILY_API_KEY` | Web search (optional) |
-| `CHROMA_DIR` | Chroma directory (default `data/chroma`) |
-| `PERSIST_DYNAMIC_FETCH` | `false` on Cloud Run: fetched filings stay in-memory |
+| `QDRANT_URL` / `QDRANT_API_KEY` | Qdrant cluster holding the corpus (required) |
+| `PERSIST_DYNAMIC_FETCH` | `true`: a dynamically fetched filing is upserted into the shared index |
 | `OPENAI_API_KEY` / `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` | Optional; usually set in the UI |
 | `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_BASE_URL` | [Langfuse](https://langfuse.com) tracing (optional; open source) |
 | `LANGCHAIN_*` | LangSmith tracing (optional) |

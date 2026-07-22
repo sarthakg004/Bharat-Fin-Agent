@@ -1,10 +1,10 @@
 """
 table_embed.py  ·  finagent/ingestion/table_embed.py
 
-Offline, run-once CLI (not on the serve path): it built the `tables` Chroma
+Offline, run-once CLI (not on the serve path): it built the `tables` Qdrant
 collection consumed at runtime by `graph/table_agent.py`.
 
-Build a second Chroma collection (`tables`) keyed on extracted-table titles +
+Build a second Qdrant collection (`tables`) keyed on extracted-table titles +
 first/last row + columns, so a question like "Reliance balance sheet 2023"
 retrieves the actual balance-sheet table rather than narrative chunks.
 
@@ -15,13 +15,13 @@ Usage as a library
 ------------------
     from finagent.ingestion.table_embed import TableEmbedder
 
-    emb = TableEmbedder(chroma_dir="data/chroma", collection_name="tables")
+    emb = TableEmbedder(collection_name="tables")
     emb.embed_all("data/tables/index.json")
 
 CLI
 ---
     python -m finagent.ingestion.table_embed \\
-        --index data/tables/index.json --chroma-dir data/chroma \\
+        --index data/tables/index.json \\
         --collection tables
 """
 
@@ -36,17 +36,14 @@ from tqdm import tqdm
 
 
 class TableEmbedder:
-    """Embed table titles (plus structural hints) into a Chroma collection."""
+    """Embed table titles (plus structural hints) into a Qdrant collection."""
 
     def __init__(
         self,
-        chroma_dir: Union[str, Path] = "data/chroma",
         collection_name: str = "tables",
         embedding_model: str = "BAAI/bge-small-en-v1.5",
         batch_size: int = 128,
     ):
-        self.chroma_dir = Path(chroma_dir)
-        self.chroma_dir.mkdir(parents=True, exist_ok=True)
         self.collection_name = collection_name
         self.embedding_model = embedding_model
         self.batch_size = batch_size
@@ -129,7 +126,7 @@ class TableEmbedder:
 
     @staticmethod
     def _safe_metadata(t: dict) -> dict:
-        """Chroma requires scalar metadata values; strip out nested dicts."""
+        """Payload values must be scalars; strip out nested dicts."""
         keep = {
             "table_id", "company", "year", "page", "title",
             "parquet_path", "local_path", "market", "filing_type",
@@ -146,26 +143,19 @@ class TableEmbedder:
         return out
 
     # ------------------------------------------------------------------ #
-    # Chroma
+    # Vector store
     # ------------------------------------------------------------------ #
 
     def _get_store(self):
-        from langchain_chroma import Chroma
+        from finagent.vectorstore import build_store
 
-        from finagent.chroma_client import chroma_kwargs_for_langchain
-        from finagent.vectorstore import get_embeddings
+        return build_store(self.collection_name, self.embedding_model, create=True)
 
-        return Chroma(
-            collection_name=self.collection_name,
-            embedding_function=get_embeddings(self.embedding_model),
-            **chroma_kwargs_for_langchain(self.chroma_dir),
-        )
+    def _existing_ids(self, store=None) -> set:
+        from finagent.vectorstore import distinct_values
 
-    @staticmethod
-    def _existing_ids(store) -> set:
         try:
-            got = store._collection.get(include=["metadatas"])
-            return {m.get("table_id") for m in (got.get("metadatas") or []) if m}
+            return distinct_values(self.collection_name, "table_id", limit=200_000)
         except Exception:
             return set()
 
@@ -175,9 +165,8 @@ class TableEmbedder:
 # --------------------------------------------------------------------------- #
 
 def main():
-    p = argparse.ArgumentParser(description="Embed extracted tables into Chroma.")
+    p = argparse.ArgumentParser(description="Embed extracted tables into Qdrant.")
     p.add_argument("--index", default="data/tables/index.json")
-    p.add_argument("--chroma-dir", default="data/chroma")
     p.add_argument("--collection", default="tables")
     p.add_argument("--embedding-model", default="BAAI/bge-small-en-v1.5")
     p.add_argument("--reindex", action="store_true",
@@ -185,7 +174,6 @@ def main():
     args = p.parse_args()
 
     emb = TableEmbedder(
-        chroma_dir=args.chroma_dir,
         collection_name=args.collection,
         embedding_model=args.embedding_model,
     )

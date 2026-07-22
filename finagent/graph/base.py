@@ -8,7 +8,7 @@ Pipeline (StateGraph):
     START → planner → retrieve → synthesize → critic → END
 
     planner     decomposes the question into 1-3 sub-queries (structured output)
-    retrieve    similarity-search each sub-query in Chroma, merge + dedupe
+    retrieve    similarity-search each sub-query, merge + dedupe
     synthesize  strong LLM writes the final answer with inline citations
     critic      checks each claim against the context (logs failures; no loop yet)
 
@@ -83,9 +83,7 @@ class AgenticRAG:
     Parameters
     ----------
     collection_name : str
-        Chroma collection (e.g. "us_filings").
-    chroma_dir : str
-        Persistent Chroma directory (must match ingestion).
+        Qdrant collection (e.g. "us_filings").
     embedding_model : str
         MUST match the model used at ingestion.
     top_k : int
@@ -106,7 +104,6 @@ class AgenticRAG:
     def __init__(
         self,
         collection_name: str = "us_filings",
-        chroma_dir: Union[str, Path] = "data/chroma",
         embedding_model: str = "BAAI/bge-small-en-v1.5",
         top_k: int = 5,
         collections: Optional[list[str]] = None,
@@ -120,7 +117,6 @@ class AgenticRAG:
         # `collection_name`; pass several to let the agent pull from all of
         # them and rerank — the question decides what's relevant.
         self.collections = collections or [collection_name]
-        self.chroma_dir = str(chroma_dir)
         self.embedding_model = embedding_model
         self.top_k = top_k
 
@@ -401,7 +397,7 @@ class AgenticRAG:
             from finagent.vectorstore import build_store
 
             self._retriever = build_store(
-                self.collection_name, self.embedding_model, self.chroma_dir
+                self.collection_name, self.embedding_model
             )
         return self._retriever
 
@@ -462,7 +458,6 @@ def append_comparison_row(
 def _build_cli() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Run the Week-2 agentic RAG graph.")
     p.add_argument("--collection", default="us_filings")
-    p.add_argument("--chroma-dir", default="data/chroma")
     p.add_argument(
         "--provider",
         choices=["groq", "gemini", "openai", "anthropic"],
@@ -502,7 +497,6 @@ def main():
 
     agent = AgenticRAG(
         collection_name=args.collection,
-        chroma_dir=args.chroma_dir,
         embedding_model=args.embedding_model,
         top_k=args.top_k,
     )

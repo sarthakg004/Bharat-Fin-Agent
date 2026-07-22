@@ -152,8 +152,7 @@ class AgenticRAGv2(AgenticRAG):
         self,
         *args,
         reranker_model: str = HybridRetriever.DEFAULT_RERANKER,
-        bm25_top_k: int = 24,
-        dense_top_k: int = 24,
+        pool_top_k: int = 48,
         final_top_k: int = 5,
         # After merging every sub-query's hits into one pool, a final
         # cross-encoder rerank against the ORIGINAL question keeps only the
@@ -173,8 +172,7 @@ class AgenticRAGv2(AgenticRAG):
     ):
         super().__init__(*args, **kwargs)
         self.reranker_model = reranker_model
-        self.bm25_top_k = bm25_top_k
-        self.dense_top_k = dense_top_k
+        self.pool_top_k = pool_top_k
         self.final_top_k = final_top_k
         self.retrieve_cap = retrieve_cap
         # Grader is fast & cheap — default to the planner-tier model.
@@ -197,7 +195,7 @@ class AgenticRAGv2(AgenticRAG):
     # ------------------------------------------------------------------ #
 
     def _get_hybrids(self) -> list[HybridRetriever]:
-        """One hybrid retriever per filings collection (BM25 + dense + rerank).
+        """One hybrid retriever per filings collection (fused lexical+dense, reranked).
         Retrieving over several collections and letting the grader/reranker sort
         it out keeps every collection searchable without a toggle."""
         if self._hybrids is None:
@@ -205,10 +203,9 @@ class AgenticRAGv2(AgenticRAG):
 
             self._hybrids = [
                 HybridRetriever(
-                    build_store(c, self.embedding_model, self.chroma_dir),
+                    build_store(c, self.embedding_model),
                     reranker_model=self.reranker_model,
-                    bm25_top_k=self.bm25_top_k,
-                    dense_top_k=self.dense_top_k,
+                    pool_top_k=self.pool_top_k,
                     final_top_k=self.final_top_k,
                 )
                 for c in self.collections
@@ -535,7 +532,6 @@ class AgenticRAGv2(AgenticRAG):
 def _build_cli() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Run the Corrective-RAG (v2) graph.")
     p.add_argument("--collection", default="us_filings")
-    p.add_argument("--chroma-dir", default="data/chroma")
     p.add_argument("--provider", choices=["groq", "gemini", "openai", "anthropic"],
                    default="groq")
     p.add_argument("--planner-model", default=None)
@@ -544,8 +540,7 @@ def _build_cli() -> argparse.ArgumentParser:
     p.add_argument("--grader-model", default=None)
     p.add_argument("--embedding-model", default="BAAI/bge-small-en-v1.5")
     p.add_argument("--reranker-model", default=HybridRetriever.DEFAULT_RERANKER)
-    p.add_argument("--bm25-top-k", type=int, default=24)
-    p.add_argument("--dense-top-k", type=int, default=24)
+    p.add_argument("--pool-top-k", type=int, default=48)
     p.add_argument("--final-top-k", type=int, default=5)
     p.add_argument("--grade-threshold", type=float, default=3.0)
     p.add_argument("--max-rewrites", type=int, default=3)
@@ -578,11 +573,9 @@ def main():
 
     agent = AgenticRAGv2(
         collection_name=args.collection,
-        chroma_dir=args.chroma_dir,
         embedding_model=args.embedding_model,
         reranker_model=args.reranker_model,
-        bm25_top_k=args.bm25_top_k,
-        dense_top_k=args.dense_top_k,
+        pool_top_k=args.pool_top_k,
         final_top_k=args.final_top_k,
         grade_threshold=args.grade_threshold,
         max_rewrites=args.max_rewrites,

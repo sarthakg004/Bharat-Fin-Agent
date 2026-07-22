@@ -1,4 +1,4 @@
-"""Data ingestion pipeline: raw filings → parsed text → chunks → embeddings → Chroma.
+"""Data ingestion pipeline: raw filings → parsed text → chunks → embeddings → Qdrant.
 
 PDFs are parsed with pypdf (reliable on born-digital annual reports); SEC HTML
 filings with unstructured's partition_html + chunk_by_title. User-uploaded

@@ -5,7 +5,7 @@ Centralised application settings. **All environment variables are read here and
 nowhere else** — every other module imports the `settings` instance instead of
 calling `os.getenv()` directly. Variable *names* are unchanged from what Cloud
 Run / `.env` already provide (`GROQ_API_KEY`, `ALLOWED_ORIGINS`,
-`RERANKER_MODEL`, `CHROMA_DIR`, …); only the access point is centralised.
+`RERANKER_MODEL`, `QDRANT_URL`, …); only the access point is centralised.
 
 Implementation note: this uses `pydantic.BaseModel` (already a dependency) rather
 than `pydantic_settings.BaseSettings` to avoid adding a new requirement — the
@@ -65,7 +65,7 @@ class Settings(BaseModel):
     # --- Deep Research mode ---------------------------------------------------
     # Max specialist agents per research run (bounds latency + LLM quota) and
     # how many run concurrently. Parallel stays 1 by default: the serve path
-    # pins graph runs to one worker (Chroma/hnswlib + reranker thread-safety).
+    # pins graph runs to one worker (reranker/tokenizer thread-safety).
     research_max_agents: int = Field(default=8, description="RESEARCH_MAX_AGENTS")
     research_parallel_agents: int = Field(default=1, description="RESEARCH_PARALLEL_AGENTS")
 
@@ -74,7 +74,8 @@ class Settings(BaseModel):
     embedding_model: str = Field(default="BAAI/bge-small-en-v1.5", description="embedding model")
 
     # --- Storage / collections ----------------------------------------------
-    chroma_dir: str = Field(default="data/chroma", description="CHROMA_DIR")
+    qdrant_url: str = Field(default="", description="QDRANT_URL / QDRANT_CLUSTER_ENDPOINT")
+    qdrant_api_key: str = Field(default="", description="QDRANT_API_KEY")
     static_dir: str = Field(default="static", description="STATIC_DIR")
     us_collection: str = Field(default="us_filings", description="US filings collection")
     financebench_collection: str = Field(default="financebench_eval", description="eval collection")
@@ -94,7 +95,9 @@ class Settings(BaseModel):
             research_max_agents=int(os.getenv("RESEARCH_MAX_AGENTS", "8")),
             research_parallel_agents=int(os.getenv("RESEARCH_PARALLEL_AGENTS", "1")),
             reranker_model=os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-base"),
-            chroma_dir=os.getenv("CHROMA_DIR", "data/chroma"),
+            qdrant_url=(os.getenv("QDRANT_URL")
+                        or os.getenv("QDRANT_CLUSTER_ENDPOINT") or "").strip(),
+            qdrant_api_key=(os.getenv("QDRANT_API_KEY") or "").strip(),
             static_dir=os.getenv("STATIC_DIR", "static"),
             us_collection=os.getenv("US_COLLECTION", "us_filings"),
             financebench_collection=os.getenv("FINANCEBENCH_COLLECTION", "financebench_eval"),

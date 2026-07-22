@@ -25,7 +25,6 @@ from finagent.evaluation.financebench.indexing import EVAL_COLLECTION
 def run_retrieval_eval(
     eval_dataset: Optional[pd.DataFrame] = None,
     collection: str = EVAL_COLLECTION,
-    chroma_dir: Optional[str] = None,
     reranker_model: str = "BAAI/bge-reranker-base",
 ) -> RetrievalResult:
     """Run the decomposed retrieval eval; return a `RetrievalResult`.
@@ -33,11 +32,9 @@ def run_retrieval_eval(
     `eval_dataset` is optional — the gold map is derived from the full
     FinanceBench question set when omitted.
     """
-    gold_map = build_gold_map(questions=eval_dataset, collection_name=collection,
-                              chroma_dir=chroma_dir)
+    gold_map = build_gold_map(questions=eval_dataset, collection_name=collection)
     evaluator = RetrievalEvaluator(
-        collection_name=collection, chroma_dir=chroma_dir,
-        reranker_model=reranker_model,
+        collection_name=collection, reranker_model=reranker_model,
     )
     return evaluator.evaluate(gold_map)
 

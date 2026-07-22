@@ -5,7 +5,7 @@ Parse a user-uploaded document (PDF/DOCX) into ephemeral in-memory chunks with
 Docling. The chunks mirror the shape of `sec_fetch.fetch_chunks` output, so
 they ride the existing `fetched_chunks` lane through the agent: ranked in
 memory against the question (`_rank_fetched_chunks`) and never written to the
-persistent Chroma index — the stateless-safe pattern the dynamic-fetch path
+persistent index — the stateless-safe pattern the dynamic-fetch path
 already uses on Cloud Run.
 
 Docling (layout model + TableFormer, no OCR) is a heavy import; it is loaded

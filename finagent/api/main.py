@@ -50,7 +50,7 @@ if os.getenv("FORCE_IPV4", "").strip().lower() in ("1", "true", "yes"):
     _socket.getaddrinfo = _getaddrinfo_ipv4
 
 # Native-thread safety. The graph runs in a ThreadPoolExecutor, so embedding /
-# tokenizer / Chroma work happens off the main thread. The HuggingFace
+# tokenizer / embedding work happens off the main thread. The HuggingFace
 # `tokenizers` Rust parallelism is not fork/thread-safe and can SIGSEGV; disable
 # it before transformers is imported (it reads this at import time). Overridable.
 # On a GPU box you may also want FINAGENT_DEVICE=cpu locally, since CUDA from a
@@ -86,16 +86,13 @@ app.add_middleware(
     allow_methods=["*"], allow_headers=["*"],
 )
 
-# The agent graph touches non-thread-safe native stacks: Chroma/hnswlib (a
-# concurrent read while the dynamic-fetch ingest WRITES the same collection
-# segfaults) and CUDA from worker threads. So run the graph on a SINGLE worker —
-# requests queue rather than racing the native libs. The API stays async for I/O
-# (SSE); only the heavy RAG call is serialized here.
-#
-# NOTE: our own request state is now thread-safe — provider/model/key live in a
-# per-request RuntimeContext (finagent.runtime) instead of on the shared agent.
-# The remaining blocker is the native libraries above, so raise RAG_MAX_WORKERS
-# only once the ingest write-path is off the live collection (Phase 12).
+# Graph runs are serialized on a SINGLE worker. The storage layer no longer
+# requires it — Qdrant is a server and handles concurrent read/write itself, and
+# request state lives in a per-request RuntimeContext rather than on the shared
+# agent. What remains is local: the cross-encoder and HF tokenizers are the
+# memory-heavy, not-fully-thread-safe part, and one CPU serving several graph
+# runs just time-slices the same core. Raising RAG_MAX_WORKERS is now a capacity
+# decision, not a correctness one.
 _executor = ThreadPoolExecutor(
     max_workers=int(os.getenv("RAG_MAX_WORKERS", "1")), thread_name_prefix="rag"
 )

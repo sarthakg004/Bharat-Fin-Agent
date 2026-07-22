@@ -46,22 +46,22 @@ _GEN_PROMPT = (
 )
 
 
-def _sample_chunks(collection: str, chroma_dir: str, n: int, seed: int):
+def _sample_chunks(collection: str, n: int, seed: int):
     """Return n (text, metadata) chunks sampled from a collection."""
-    from finagent.vectorstore import build_store
+    from finagent.vectorstore import build_store, get_client
 
-    store = build_store(collection, EMBED_MODEL, chroma_dir)
-    # Page through the collection — a single .get() trips SQLite's variable cap.
-    col = store._collection
-    docs: list[tuple] = []
-    offset = 0
+    store = build_store(collection, EMBED_MODEL)
+    client, docs, offset = get_client(), [], None
     while True:
-        batch = col.get(include=["documents", "metadatas"], limit=2000, offset=offset)
-        ids = batch.get("documents") or []
-        if not ids:
+        points, offset = client.scroll(collection_name=collection, limit=2000,
+                                       with_payload=True, with_vectors=False,
+                                       offset=offset)
+        if not points:
             break
-        docs.extend(zip(batch["documents"], batch["metadatas"]))
-        offset += len(ids)
+        docs.extend((p.payload.get("page_content", ""),
+                     p.payload.get("metadata", {})) for p in points)
+        if offset is None:
+            break
     # Only chunks with enough text to ground a real question.
     docs = [(t, m) for t, m in docs if t and len(t) > 250]
     random.Random(seed).shuffle(docs)
@@ -108,7 +108,6 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--n", type=int, default=60, help="chunks sampled per collection")
     ap.add_argument("--collections", default="us_filings")
-    ap.add_argument("--chroma-dir", default="data/chroma")
     ap.add_argument(
         "--rerankers",
         default="BAAI/bge-reranker-base,cross-encoder/ms-marco-MiniLM-L-6-v2",
@@ -127,7 +126,7 @@ def main() -> None:
     else:
         samples = []
         for col in collections:
-            chunks, _ = _sample_chunks(col, args.chroma_dir, args.n, args.seed)
+            chunks, _ = _sample_chunks(col, args.n, args.seed)
             for text, meta in chunks:
                 samples.append({"collection": col, "text": text, "meta": meta, "q": ""})
         print(f"Sampled {len(samples)} chunks across {collections}")
@@ -140,8 +139,8 @@ def main() -> None:
 
     retrievers = {
         col: HybridRetriever(
-            build_store(col, EMBED_MODEL, args.chroma_dir),
-            bm25_top_k=args.pool, dense_top_k=args.pool, final_top_k=args.pool * 2,
+            build_store(col, EMBED_MODEL),
+            pool_top_k=args.pool * 2, final_top_k=args.pool * 2,
         )
         for col in collections
     }

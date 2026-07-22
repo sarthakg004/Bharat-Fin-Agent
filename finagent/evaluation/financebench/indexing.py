@@ -95,7 +95,6 @@ def build_manifest(
 
 def index_eval_corpus(
     manifest_path: Union[str, Path] = DEFAULT_MANIFEST,
-    chroma_dir: Optional[str] = None,
     collection_name: str = EVAL_COLLECTION,
     reset: bool = False,
 ) -> dict:
@@ -105,17 +104,11 @@ def index_eval_corpus(
     and BGE-small embeddings, so retrieval here mirrors production. Idempotent:
     re-running skips already-indexed filings unless `reset=True`.
     """
-    import os
-
-    if chroma_dir is None:
-        chroma_dir = os.getenv("CHROMA_DIR", "data/chroma")
-
     if not Path(manifest_path).exists():
         build_manifest(manifest_path=manifest_path)
 
     ing = CorpusIngester(
         corpus_dir=DEFAULT_PDF_DIR,
-        chroma_dir=chroma_dir,
         collection_name=collection_name,
         market="us",
     )

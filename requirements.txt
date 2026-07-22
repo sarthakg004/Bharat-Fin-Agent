@@ -35,8 +35,9 @@ langfuse>=4.13,<5               # open-source LLM tracing; inert without LANGFUS
 langchain>=0.3                  # required by langfuse.langchain CallbackHandler
 
 # ── Vector store + hybrid retrieval ──────────────────────────────────────────
-langchain-chroma>=0.1.4
-chromadb>=0.5.0
+qdrant-client>=1.12          # remote vector DB (hybrid dense+sparse search)
+langchain-qdrant>=0.2        # LangChain integration
+fastembed>=0.4               # BM25 sparse vectors (tokenise+weight; no NN)
 rank-bm25                       # BM25 lexical half of hybrid retrieval
 
 # ── Embeddings + rerank ──────────────────────────────────────────────────────

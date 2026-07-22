@@ -83,14 +83,6 @@ jobs:
       - name: Set up gcloud
         uses: google-github-actions/setup-gcloud@v2
 
-      # The repo doesn't carry the 360 MB Chroma DB — pull it from the private
-      # GCS bucket and unpack it so the Docker build's `COPY data/chroma/` works.
-      - name: Fetch Chroma DB from GCS
-        run: |
-          gcloud storage cp "${DATA_BUCKET}/chroma.tar.gz" chroma.tar.gz
-          tar xzf chroma.tar.gz
-          echo "Chroma files:" && ls -1 data/chroma | head
-
       # Backend → Cloud Run. `--source .` builds the Dockerfile via Cloud Build.
       # Not passing --set-env-vars / --set-secrets PRESERVES the existing API
       # keys + ALLOWED_ORIGINS already configured on the service.

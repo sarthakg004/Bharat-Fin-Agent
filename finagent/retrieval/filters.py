@@ -205,30 +205,38 @@ def infer_filter(question: str, vocab: dict, years_by_co: dict) -> Optional[dict
     return flt
 
 
-def chroma_where(flt: Optional[dict]) -> Optional[dict]:
-    """Translate an inferred filter into a Chroma `where` clause."""
+def qdrant_filter(flt: Optional[dict]):
+    """Translate an inferred filter into a Qdrant `Filter`.
+
+    Each clause is ANDed; values within a clause are ORed (MatchAny). Keys are
+    prefixed with the metadata payload key, since LangChain nests document
+    metadata under it.
+    """
     if not flt:
         return None
-    comps = flt.get("companies") or []
-    clauses: list[dict] = []
-    if len(comps) == 1:
-        clauses.append({"company": comps[0]})
-    elif comps:
-        clauses.append({"company": {"$in": comps}})
-    yrs = flt.get("years") or []
-    if yrs:
-        clauses.append({"year": {"$in": yrs}} if len(yrs) > 1 else {"year": yrs[0]})
-    items = flt.get("items") or []
-    if items:
-        clauses.append({"item": {"$in": items}} if len(items) > 1
-                       else {"item": items[0]})
-    if not clauses:
-        return None
-    return clauses[0] if len(clauses) == 1 else {"$and": clauses}
+    from qdrant_client import models
+
+    from finagent.vectorstore import META_KEY
+
+    def clause(field: str, values: list[str]):
+        return models.FieldCondition(
+            key=f"{META_KEY}.{field}",
+            match=(models.MatchValue(value=values[0]) if len(values) == 1
+                   else models.MatchAny(any=list(values))),
+        )
+
+    must = [clause(field, vals)
+            for field, vals in (("company", flt.get("companies") or []),
+                                ("year", flt.get("years") or []),
+                                ("item", flt.get("items") or []))
+            if vals]
+    return models.Filter(must=must) if must else None
 
 
 def metadata_matches(meta: dict, flt: Optional[dict]) -> bool:
-    """Python-side equivalent of `chroma_where` (for BM25 index masking)."""
+    """Python-side equivalent of `qdrant_filter`, for ranking chunks held in
+    memory (an ephemerally fetched filing, an uploaded document) that never
+    reach the database."""
     if not flt:
         return True
     comps = flt.get("companies") or []

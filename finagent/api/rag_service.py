@@ -51,12 +51,13 @@ def _build_agent(collection: Optional[str] = None) -> AgenticRAGv4:
         # code change (default kept at bge-reranker-base). The image bakes
         # whatever this resolves to at build time.
         reranker_model=os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-base"),
-        # Wider first-stage pool (8/8 → 12/12 → 24/24) so narrative/MD&A prose —
-        # where first-stage recall was weakest — has more chances to surface
-        # before the reranker. The wider pool is then trimmed back to a tight,
-        # globally-best set by `retrieve_cap`, so the synthesizer still sees few
-        # high-precision passages, not 25 noisy ones.
-        bm25_top_k=24, dense_top_k=24, final_top_k=5,
+        # Fused (sparse+dense) candidate pool. Widened over time — 8+8 →
+        # 12+12 → 24+24 — because narrative/MD&A prose was where first-stage
+        # recall was weakest and the reranker can only reorder what the pool
+        # contains. Qdrant now returns ONE RRF-fused list, so this is the total
+        # depth rather than a per-branch count. The pool is trimmed back to a
+        # tight, globally-best set by `retrieve_cap`.
+        pool_top_k=48, final_top_k=5,
         retrieve_cap=8,
         max_rewrites=2, max_critic_retries=1,
         # Cloud: PERSIST_DYNAMIC_FETCH=false → fetched filings are used in-memory

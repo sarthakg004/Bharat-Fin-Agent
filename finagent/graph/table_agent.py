@@ -6,7 +6,7 @@ a tiny pandas snippet, and executing it in a sandbox.
 
 Pipeline:
     question
-        ↓ similarity-search top-K in the `tables` Chroma collection
+        ↓ similarity-search top-K in the `tables` collection
         ↓ load each hit's parquet into a pandas DataFrame
         ↓ LLM writes a snippet that assigns the answer to `result`
         ↓ execute under a restricted globals dict (no imports, no I/O)
@@ -23,7 +23,7 @@ Usage as a library
 ------------------
     from finagent.graph.table_agent import TableAgent
 
-    ta = TableAgent(chroma_dir="data/chroma", collection_name="tables")
+    ta = TableAgent(collection_name="tables")
     out = ta.answer("What was HDFC Bank's net interest margin in FY23?")
     print(out["answer"])
     print(out["code"])
@@ -35,8 +35,7 @@ from __future__ import annotations
 import argparse
 import re
 import textwrap
-from pathlib import Path
-from typing import Optional, Union
+from typing import Optional
 
 from finagent.runtime import RuntimeContext, use_context
 
@@ -93,7 +92,6 @@ class TableAgent:
 
     def __init__(
         self,
-        chroma_dir: Union[str, Path] = "data/chroma",
         collection_name: str = "tables",
         embedding_model: str = "BAAI/bge-small-en-v1.5",
         top_k: int = 3,
@@ -103,7 +101,6 @@ class TableAgent:
         # runtime context in `_get_llm` — this object is built once and shared,
         # so holding a copy of them meant the first caller's key served every
         # later table computation.
-        self.chroma_dir = str(chroma_dir)
         self.collection_name = collection_name
         self.embedding_model = embedding_model
         self.top_k = top_k
@@ -288,7 +285,7 @@ class TableAgent:
             from finagent.vectorstore import build_store
 
             self._retriever = build_store(
-                self.collection_name, self.embedding_model, self.chroma_dir
+                self.collection_name, self.embedding_model
             )
         return self._retriever
 
@@ -306,7 +303,6 @@ class TableAgent:
 def main():
     p = argparse.ArgumentParser(description="Answer a numeric question via the table agent.")
     p.add_argument("--question", required=True)
-    p.add_argument("--chroma-dir", default="data/chroma")
     p.add_argument("--collection", default="tables")
     p.add_argument("--embedding-model", default="BAAI/bge-small-en-v1.5")
     p.add_argument("--provider", choices=["groq", "gemini", "openai", "anthropic"],
@@ -315,7 +311,6 @@ def main():
     args = p.parse_args()
 
     ta = TableAgent(
-        chroma_dir=args.chroma_dir,
         collection_name=args.collection,
         embedding_model=args.embedding_model,
         top_k=args.top_k,

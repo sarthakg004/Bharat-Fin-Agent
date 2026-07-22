@@ -37,22 +37,22 @@ def test_health_is_liveness_only():
     assert resp.json() == {"status": "ok"}
 
 
-def test_deployed_image_keeps_the_index_read_only():
-    """The served Chroma index must never be written at request time.
+def test_deployed_image_ships_no_vector_data():
+    """The corpus lives in Qdrant, not in the image.
 
-    A write to the container filesystem is lost on scale-to-zero, and a
-    Chroma/hnswlib write concurrent with a read segfaults the process. This
-    lived only as a comment for a while, and the Dockerfile did not actually
-    set it — so the deployed image ran with the local default (true).
+    Baking it in was what forced a 2.2 GB image and a read-only index. Now that
+    the store is a remote server, dynamic fetch can write to the shared index
+    (PERSIST_DYNAMIC_FETCH=true) because the server handles concurrent
+    read/write and deterministic point ids make a duplicate write harmless.
     """
     from pathlib import Path
 
-    from finagent.config import _as_bool
-
-    dockerfile = Path(__file__).resolve().parents[1] / "Dockerfile"
-    assert "PERSIST_DYNAMIC_FETCH=false" in dockerfile.read_text(), \
-        "the image must pin the index read-only"
-    assert _as_bool("false") is False
+    root = Path(__file__).resolve().parents[1]
+    dockerfile = root / "Dockerfile"
+    text = dockerfile.read_text()
+    assert "COPY data/" not in text, "the image must not bake in corpus data"
+    assert "PERSIST_DYNAMIC_FETCH=true" in text
+    assert "data/" in (root / ".dockerignore").read_text()
 
 
 def _build_agent():
@@ -61,7 +61,7 @@ def _build_agent():
     return AgenticRAGv4(
         collection_name="us_filings",
         reranker_model="BAAI/bge-reranker-base",
-        bm25_top_k=8, dense_top_k=8, final_top_k=5,
+        pool_top_k=16, final_top_k=5,
         max_rewrites=2, max_critic_retries=1,
         table_collection="tables",
         web_top_k=10, table_top_k=3,

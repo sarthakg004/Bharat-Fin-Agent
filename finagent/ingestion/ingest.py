@@ -3,7 +3,7 @@ ingest.py
 
 Unified ingestion pipeline for financial filings. Reads the manifest produced
 by fetch_pdfs.py, parses each document (PDF or SEC HTML),
-chunks the text, embeds the chunks, and stores everything in Chroma.
+chunks the text, embeds the chunks, and stores everything in Qdrant.
 
 Handles both formats — PDFs are parsed with pypdf, HTML (US SEC
 filings) with unstructured.io.
@@ -14,7 +14,6 @@ Usage as a library
 
     ing = CorpusIngester(
         corpus_dir="data/us/pdfs",
-        chroma_dir="data/chroma",
         collection_name="us_filings",
         market="us",
     )
@@ -25,19 +24,17 @@ Usage as CLI
 ------------
     python ingest.py --manifest data/us/pdfs/sec_manifest.json \\
                      --corpus-dir data/us/pdfs \\
-                     --chroma-dir data/chroma \\
                      --collection us_filings \\
                      --market us
 
     python ingest.py --manifest data/us/sec_manifest.json \\
                      --corpus-dir data/us \\
-                     --chroma-dir data/chroma \\
                      --collection us_filings \\
                      --market us
 
 Design notes
 ------------
-* The same Chroma store can hold multiple collections — one per market. The
+* The same cluster holds multiple collections — one per corpus. The
   agent can query a specific market by passing the right collection name.
 * Embeddings model: BAAI/bge-small-en-v1.5 by default (runs on CPU in a few
   minutes for ~40 docs; bge-large is better quality but 4x slower).
@@ -51,7 +48,7 @@ Design notes
   silently returned zero elements on several born-digital annual-report
   PDFs that pypdf reads fine, so pypdf is the reliable choice here. HTML (SEC
   filings) still goes through unstructured's `partition()`, which gives Element
-  objects with section metadata. Page numbers are preserved in Chroma so the
+  objects with section metadata. Page numbers are preserved in the payload so the
   retriever can show citations.
 """
 
@@ -114,7 +111,7 @@ class IngestionStats:
 
 
 class CorpusIngester:
-    """Parse, chunk, embed, and index a corpus of financial filings into Chroma.
+    """Parse, chunk, embed, and index a corpus of financial filings into Qdrant.
 
     Works identically for annual-report PDFs and US SEC 10-K HTML files.
     The market parameter is stored as document metadata so the agent can
@@ -141,7 +138,7 @@ class CorpusIngester:
     def __init__(
         self,
         corpus_dir: Union[str, Path] = "data/us",
-        chroma_dir: Union[str, Path] = "data/chroma",
+        state_dir: Union[str, Path] = "data",
         collection_name: str = "financial_filings",
         market: str = "us",
         embedding_model: str = "BAAI/bge-small-en-v1.5",
@@ -158,8 +155,8 @@ class CorpusIngester:
         """
         Args:
             corpus_dir: Where the source files live (output_dir from fetch_pdfs.py).
-            chroma_dir: Persistent Chroma directory. Can be shared across collections.
-            collection_name: Chroma collection to write into (e.g. "us_filings").
+            state_dir: Where the ingestion-stats JSON is written.
+            collection_name: Qdrant collection to write into (e.g. "us_filings").
             market: stored as document metadata (default "us").
             embedding_model: Model name. For HuggingFace: any sentence-transformers
                 model. For OpenAI: "text-embedding-3-small" or similar.
@@ -171,7 +168,7 @@ class CorpusIngester:
                 For Week 1 baseline, "fast" is correct.
         """
         self.corpus_dir = Path(corpus_dir)
-        self.chroma_dir = Path(chroma_dir)
+        self.state_dir = Path(state_dir)
         self.collection_name = collection_name
         self.market = market
         self.embedding_model = embedding_model
@@ -190,7 +187,7 @@ class CorpusIngester:
         # flat parent-sized chunks — it ranks in memory with no parent swap).
         self.parent_doc = parent_doc
 
-        self.chroma_dir.mkdir(parents=True, exist_ok=True)
+        self.state_dir.mkdir(parents=True, exist_ok=True)
 
         # Resources initialized lazily on first use.
         self._embeddings = None
@@ -208,17 +205,17 @@ class CorpusIngester:
         manifest_path: Optional[Union[str, Path]] = None,
         skip_if_already_indexed: bool = True,
     ) -> IngestionStats:
-        """Ingest every successful record from the manifest into Chroma.
+        """Ingest every successful record from the manifest into Qdrant.
 
         Args:
             manifest_path: Path to the JSON manifest written by fetch_pdfs.py.
                 If None, walks corpus_dir for .pdf and .htm files directly.
             skip_if_already_indexed: If True, files whose source_url is already
-                in Chroma are skipped (idempotent re-runs).
+                already indexed are skipped (idempotent re-runs).
 
         Returns:
             IngestionStats summarizing the run. Also written to
-            {chroma_dir}/ingestion_stats_{market}.json.
+            {state_dir}/ingestion_stats_{market}.json.
         """
         stats = IngestionStats()
         t0 = time.time()
@@ -274,8 +271,8 @@ class CorpusIngester:
 
         stats.total_seconds = time.time() - t0
 
-        # Persist stats next to the Chroma store for reference.
-        stats_path = self.chroma_dir / f"ingestion_stats_{self.market}.json"
+        # Persist stats for reference.
+        stats_path = self.state_dir / f"ingestion_stats_{self.market}.json"
         with open(stats_path, "w") as f:
             json.dump(stats.as_dict(), f, indent=2)
 
@@ -283,25 +280,30 @@ class CorpusIngester:
         return stats
 
     def ingest_file(self, file_path: Path, record: dict) -> int:
-        """Parse one file, chunk it, embed the chunks, push to Chroma.
+        """Parse one file, chunk it, embed the chunks, upsert them.
 
         Args:
             file_path: Path to a single PDF or HTML file.
             record: The manifest record for this file. We propagate selected
-                fields (company, ticker, year, sector) as Chroma metadata
+                fields (company, ticker, year, sector) as point metadata
                 so the retriever can show citations and the router can filter.
 
         Returns:
-            Number of chunks added to Chroma.
+            Number of chunks upserted.
         """
         docs = self._documents_for(file_path, self._base_meta(record, file_path),
                                    parent_doc=self.parent_doc)
         if not docs:
             return 0
 
-        # Push to Chroma. add_documents handles embedding internally.
+        # Upsert with DETERMINISTIC ids: the same chunk of the same filing
+        # always lands on the same point, so re-ingesting (or two writers racing
+        # on the same filing) overwrites rather than duplicating.
+        from finagent.vectorstore import chunk_point_id
+
         store = self._get_vector_store()
-        store.add_documents(docs)
+        ids = [chunk_point_id(d.metadata, d.page_content) for d in docs]
+        store.add_documents(docs, ids=ids)
 
         return len(docs)
 
@@ -322,7 +324,7 @@ class CorpusIngester:
     def _documents_for(self, file_path: Path, base_meta: dict,
                        parent_doc: bool = False) -> list:
         """Parse + chunk one file into LangChain Documents (no embedding / no
-        Chroma write). Shared by `ingest_file` and by the ephemeral dynamic-fetch
+        upsert). Shared by `ingest_file` and by the ephemeral dynamic-fetch
         path that ranks a freshly-fetched filing in memory without indexing it.
 
         Branch by format. HTML (US SEC filings) uses structure-aware chunking
@@ -390,7 +392,7 @@ class CorpusIngester:
 
     def documents_from_record(self, record: dict) -> list:
         """Public: parse + chunk a single manifest record into Documents,
-        without touching Chroma. Used by the ephemeral fetch path (flat chunks,
+        without touching the database. Used by the ephemeral fetch path (flat chunks,
         no parent-document metadata — it ranks in memory)."""
         file_path = Path(record["local_path"])
         if not file_path.exists():
@@ -501,18 +503,17 @@ class CorpusIngester:
 
     def reset_collection(self) -> None:
         """Delete the collection. Useful when re-ingesting from scratch."""
-        store = self._get_vector_store()
-        store.delete_collection()
-        # Re-create empty by clearing the cached handle.
-        self._vector_store = None
+        from finagent.vectorstore import delete_collection
+
+        delete_collection(self.collection_name)
+        self._vector_store = None          # recreated on next use
         print(f"Collection '{self.collection_name}' reset")
 
     def query(self, question: str, k: int = 5) -> list:
         """Convenience method for quick sanity-checking after ingestion.
 
         Returns top-k chunks with metadata. Not used by the agent — the
-        agent will use Chroma directly via langchain_chroma — this is just
-        for a CLI smoke test.
+        agent uses the hybrid retriever — this is just a CLI smoke test.
         """
         store = self._get_vector_store()
         return store.similarity_search(question, k=k)
@@ -649,29 +650,18 @@ class CorpusIngester:
 
     def _get_vector_store(self):
         if self._vector_store is None:
-            from langchain_chroma import Chroma
+            from finagent.vectorstore import build_store
 
-            from finagent.chroma_client import chroma_kwargs_for_langchain
-
-            self._vector_store = Chroma(
-                collection_name=self.collection_name,
-                embedding_function=self._get_embeddings(),
-                **chroma_kwargs_for_langchain(self.chroma_dir),
-            )
+            self._vector_store = build_store(
+                self.collection_name, self.embedding_model, create=True)
         return self._vector_store
 
     def _existing_source_urls(self) -> set:
-        """Return the set of source_urls already in Chroma, for skip-if-indexed."""
+        """source_urls already indexed, for skip-if-indexed."""
+        from finagent.vectorstore import distinct_values
+
         try:
-            store = self._get_vector_store()
-            # Chroma's .get() with no IDs returns all entries. For very large
-            # collections this gets slow — for ~40 documents it's instant.
-            existing = store.get(include=["metadatas"])
-            return {
-                m.get("source_url", "")
-                for m in (existing.get("metadatas") or [])
-                if m
-            }
+            return distinct_values(self.collection_name, "source_url", limit=200_000)
         except Exception:
             return set()
 
@@ -698,7 +688,7 @@ class CorpusIngester:
 
 def _build_cli() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Ingest a corpus of financial filings into Chroma.",
+        description="Ingest a corpus of financial filings into Qdrant.",
     )
     parser.add_argument(
         "--manifest",
@@ -711,14 +701,9 @@ def _build_cli() -> argparse.ArgumentParser:
         help="Source files directory (default: data/us)",
     )
     parser.add_argument(
-        "--chroma-dir",
-        default="data/chroma",
-        help="Where to persist Chroma (default: data/chroma)",
-    )
-    parser.add_argument(
         "--collection",
         default="financial_filings",
-        help="Chroma collection name (default: financial_filings).",
+        help="Qdrant collection name (default: financial_filings).",
     )
     parser.add_argument(
         "--market",
@@ -765,7 +750,6 @@ def main():
 
     ing = CorpusIngester(
         corpus_dir=args.corpus_dir,
-        chroma_dir=args.chroma_dir,
         collection_name=args.collection,
         market=args.market,
         embedding_model=args.embedding_model,

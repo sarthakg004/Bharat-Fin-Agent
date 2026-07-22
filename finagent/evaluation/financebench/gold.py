@@ -37,7 +37,6 @@ DEFAULT_GOLD_PATH = "results/financebench_gold.json"
 def build_gold_map(
     questions: Optional[pd.DataFrame] = None,
     collection_name: str = EVAL_COLLECTION,
-    chroma_dir: Optional[str] = None,
     pdf_dir: Union[str, Path] = DEFAULT_PDF_DIR,
     gold_path: Union[str, Path] = DEFAULT_GOLD_PATH,
     reuse: bool = True,
@@ -64,7 +63,7 @@ def build_gold_map(
     elif "qtype" not in questions.columns:
         questions = tag_question_types(questions)
 
-    store = build_store(collection_name, chroma_dir=chroma_dir)
+    store = build_store(collection_name)
     pdf_dir = Path(pdf_dir)
 
     gold: dict = {}

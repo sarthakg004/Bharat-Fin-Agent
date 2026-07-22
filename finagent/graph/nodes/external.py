@@ -229,7 +229,7 @@ class ExternalNodes:
         question is about a company that simply isn't in the ingested corpus
         (recent IPO, foreign listing, etc.). Without it, web search would only
         fire when the router happened to call the question "external" — but
-        the router doesn't know what's in our Chroma collections.
+        the router doesn't know what's in our indexed collections.
         """
         sub_queries = state.get("sub_queries") or [state["question"]]
         routes = state.get("query_routes") or ["narrative"] * len(sub_queries)

@@ -28,13 +28,8 @@ from finagent.vectorstore import build_store
 
 from .indexing import EVAL_COLLECTION
 
-RRF_K = 60          # RRF damping constant (standard default)
-POOL_DEPTH = 100    # how many candidates to pull from each retriever
+POOL_DEPTH = 100    # candidates pulled from the fused (sparse+dense) search
 DEFAULT_RERANKER = "BAAI/bge-reranker-base"  # matches the deployed agent
-
-
-def _tokenize(text: str) -> list[str]:
-    return text.lower().split()
 
 
 @dataclass
@@ -63,18 +58,15 @@ class RetrievalEvaluator:
     def __init__(
         self,
         collection_name: str = EVAL_COLLECTION,
-        chroma_dir: Optional[str] = None,
         reranker_model: str = DEFAULT_RERANKER,
         pool_ks: tuple = (20, 50, 100),
         hit_ks: tuple = (1, 3, 5),
     ):
-        self.store = build_store(collection_name, chroma_dir=chroma_dir)
+        self.collection_name = collection_name
+        self.store = build_store(collection_name)
         self.reranker_model = reranker_model
         self.pool_ks = pool_ks
         self.hit_ks = hit_ks
-        self._bm25 = None
-        self._all_texts: list[str] = []
-        self._all_metas: list[dict] = []
         self._vocab: dict = {}
         self._years_by_co: dict = {}
         self._reranker = None
@@ -83,27 +75,15 @@ class RetrievalEvaluator:
     # Lazy resources
     # ------------------------------------------------------------------ #
 
-    def _ensure_bm25(self):
-        if self._bm25 is None:
-            from rank_bm25 import BM25Okapi
-
-            col = self.store._collection
-            texts, metas, offset = [], [], 0
-            while True:
-                batch = col.get(include=["documents", "metadatas"],
-                                limit=2000, offset=offset)
-                docs = batch.get("documents") or []
-                if not docs:
-                    break
-                texts.extend(docs)
-                metas.extend(batch.get("metadatas") or [{}] * len(docs))
-                offset += len(docs)
-            self._all_texts = texts
-            self._all_metas = metas
+    def _ensure_vocab(self):
+        """Company/year vocabulary from the collection's own metadata."""
+        if not self._vocab:
             from finagent.retrieval.filters import build_company_vocab
-            self._vocab, self._years_by_co = build_company_vocab(metas)
-            self._bm25 = BM25Okapi([_tokenize(t) for t in texts])
-        return self._bm25
+            from finagent.vectorstore import scroll_payloads
+
+            self._vocab, self._years_by_co = build_company_vocab(
+                scroll_payloads(self.collection_name))
+        return self._vocab
 
     def _ensure_reranker(self):
         if self._reranker is None:
@@ -117,46 +97,33 @@ class RetrievalEvaluator:
     # ------------------------------------------------------------------ #
 
     def _fused_pool(self, query: str) -> list[str]:
-        """RRF-fused BM25 ∪ dense ranked list of chunk texts (deduped).
+        """The production candidate pool: sparse (BM25) and dense fused by RRF.
 
-        Mirrors production: the candidate pool is restricted to the company /
-        year the question names (inferred from the collection's own metadata,
-        no LLM) so one filing's question doesn't compete with 83 other
-        filings' boilerplate. Questions naming no indexed company search the
-        whole collection, exactly as the deployed retriever does.
+        Fusion now happens inside Qdrant, so this calls exactly what the
+        deployed retriever calls. The pool is restricted to the company / year
+        the question names (inferred from the collection's own metadata, no
+        LLM) so one filing's question doesn't compete with 83 other filings'
+        boilerplate. Questions naming no indexed company search the whole
+        collection, exactly as the deployed retriever does.
         """
-        from finagent.retrieval.filters import (
-            chroma_where, infer_filter, metadata_matches)
+        from finagent.retrieval.filters import infer_filter, qdrant_filter
 
-        bm25 = self._ensure_bm25()
+        self._ensure_vocab()
         flt = infer_filter(query, self._vocab, self._years_by_co)
 
-        scores = bm25.get_scores(_tokenize(query))
-
         def _pool(f):
-            idx = (range(len(scores)) if not f else
-                   [i for i in range(len(self._all_texts))
-                    if metadata_matches(self._all_metas[i], f)])
-            b = [self._all_texts[i] for i in
-                 sorted(idx, key=lambda i: -scores[i])[:POOL_DEPTH]]
-            d = [x.page_content for x in
-                 self.store.similarity_search(query, k=POOL_DEPTH,
-                                              filter=chroma_where(f))]
-            return b, d
+            try:
+                return [d.page_content for d in self.store.similarity_search(
+                    query, k=POOL_DEPTH, filter=qdrant_filter(f))]
+            except Exception:
+                return []
 
-        bm25_texts, dense_texts = _pool(flt)
+        texts = _pool(flt)
         # Mirror production: relax an over-narrow year/item clause (e.g. this
         # collection predates section tagging) back to company-only.
-        if (not bm25_texts and not dense_texts and flt
-                and (flt.get("years") or flt.get("items"))):
-            bm25_texts, dense_texts = _pool({"companies": flt["companies"]})
-
-        # Reciprocal Rank Fusion across the two ranked lists.
-        rrf: dict[str, float] = {}
-        for ranked in (bm25_texts, dense_texts):
-            for rank, text in enumerate(ranked, start=1):
-                rrf[text] = rrf.get(text, 0.0) + 1.0 / (RRF_K + rank)
-        return sorted(rrf, key=lambda t: -rrf[t])
+        if not texts and flt and (flt.get("years") or flt.get("items")):
+            texts = _pool({"companies": flt["companies"]})
+        return texts
 
     @staticmethod
     def _first_gold_rank(ranked: list[str], gold: list[str]) -> Optional[int]:

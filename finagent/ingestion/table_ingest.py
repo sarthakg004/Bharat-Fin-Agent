@@ -1,13 +1,13 @@
 """
 table_ingest.py  ·  finagent/ingestion/table_ingest.py
 
-Offline, run-once CLI (not on the serve path): it built the `tables` Chroma
+Offline, run-once CLI (not on the serve path): it built the `tables`
 collection consumed at runtime by `graph/table_agent.py`. Re-run only to
 rebuild that collection from scratch.
 
 Extract tables from financial filings (PDFs + 10-K HTML), persist each as a
 parquet DataFrame, and write a master `data/tables/index.json` so the next
-stage (`table_embed.py`) can build the `tables` Chroma collection.
+stage (`table_embed.py`) can build the `tables` collection.
 
 Per table we save:
     - company, year, page_num, market

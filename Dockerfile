@@ -1,15 +1,15 @@
 # syntax=docker/dockerfile:1.6
 # =============================================================================
 # FinAgent — single image for Google Cloud Run.
-# Serves the React SPA + FastAPI API on one origin. The prebuilt Chroma vector
-# store is baked into the image, so full hybrid retrieval (BM25 + dense + rerank)
-# works without any external vector DB.
+# Serves the React SPA + FastAPI API on one origin. The corpus lives in a Qdrant
+# cluster (hybrid dense + BM25-sparse search with server-side RRF), so the image
+# ships code and models only — no vector data.
 #
 # Three stages: (1) build the SPA, (2) a builder that compiles/installs the
 # Python deps + bakes the models with build tools present, (3) a slim runtime
 # that copies only the finished venv + model cache — no compilers in the final
 # image. This trims the runtime image (smaller pull = faster cold start) and
-# guarantees deps that need a C/C++ toolchain (e.g. chromadb/hnswlib) still
+# guarantees deps that need a C/C++ toolchain still
 # build, because the toolchain lives in the throwaway builder stage.
 # =============================================================================
 
@@ -74,17 +74,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     HF_HOME=/app/.hf \
     SENTENCE_TRANSFORMERS_HOME=/app/.hf \
     STATIC_DIR=/app/static \
-    CHROMA_DIR=/app/data/chroma \
     PYTHONPATH=/app \
     PATH="/opt/venv/bin:$PATH" \
     PORT=8080 \
-    # The baked index is READ-ONLY at serve time. A dynamically fetched filing
-    # is ranked in memory for that session and never written back. Two reasons:
-    # writes to the container filesystem vanish on scale-to-zero (so we'd pay
-    # ingestion cost to grow an index that evaporates), and a Chroma/hnswlib
-    # write concurrent with a read segfaults the process. Local dev leaves this
-    # unset (default true) and keeps a self-expanding index.
-    PERSIST_DYNAMIC_FETCH=false \
+    # The corpus lives in Qdrant, so a dynamically fetched filing can be
+    # upserted into the shared index and stay there — the server handles
+    # concurrent read/write, and deterministic point ids make a duplicate write
+    # harmless. QDRANT_URL / QDRANT_API_KEY are set on the service.
+    PERSIST_DYNAMIC_FETCH=true \
     # Models are baked above — force offline loading so cold start makes no HF
     # Hub network call (faster + robust if HF is down/rate-limits).
     HF_HUB_OFFLINE=1 \
@@ -109,14 +106,14 @@ COPY --from=builder /opt/venv     /opt/venv
 COPY --from=builder /app/.hf      /app/.hf
 COPY --from=builder /app/.docling /app/.docling
 
-# App code + built SPA + the prebuilt Chroma store (read at $CHROMA_DIR).
+# App code + built SPA. The corpus is NOT in the image any more — it lives in
+# Qdrant, which is why this build no longer needs the 2.2 GB data directory.
 COPY finagent/      ./finagent/
 COPY pyproject.toml ./
 COPY --from=spa /spa/dist ./static
-COPY data/chroma/   ./data/chroma/
 
 EXPOSE 8080
 
-# Cloud Run sets $PORT (default 8080). Single worker keeps the models + Chroma
+# Cloud Run sets $PORT (default 8080). Single worker keeps the models
 # in one process.
 CMD ["sh", "-c", "uvicorn finagent.api.main:app --host 0.0.0.0 --port ${PORT:-8080} --workers 1"]

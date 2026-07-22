@@ -327,7 +327,6 @@ class AgenticRAGv3(AgenticRAGv2):
     def table_agent(self) -> TableAgent:
         if self._table_agent is None:
             self._table_agent = TableAgent(
-                chroma_dir=self.chroma_dir,
                 collection_name=self.table_collection,
                 embedding_model=self.embedding_model,
                 top_k=self.table_top_k,
@@ -633,7 +632,6 @@ class AgenticRAGv3(AgenticRAGv2):
 def _build_cli() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Run the table-augmented RAG (v3) graph.")
     p.add_argument("--collection", default="us_filings")
-    p.add_argument("--chroma-dir", default="data/chroma")
     p.add_argument("--table-collection", default="tables")
     p.add_argument("--provider", choices=["groq", "gemini", "openai", "anthropic"],
                    default="groq")
@@ -645,8 +643,7 @@ def _build_cli() -> argparse.ArgumentParser:
     p.add_argument("--code-model", default=None)
     p.add_argument("--embedding-model", default="BAAI/bge-small-en-v1.5")
     p.add_argument("--reranker-model", default=HybridRetriever.DEFAULT_RERANKER)
-    p.add_argument("--bm25-top-k", type=int, default=24)
-    p.add_argument("--dense-top-k", type=int, default=24)
+    p.add_argument("--pool-top-k", type=int, default=48)
     p.add_argument("--final-top-k", type=int, default=5)
     p.add_argument("--table-top-k", type=int, default=3)
     p.add_argument("--grade-threshold", type=float, default=3.0)
@@ -680,11 +677,9 @@ def main():
 
     agent = AgenticRAGv3(
         collection_name=args.collection,
-        chroma_dir=args.chroma_dir,
         embedding_model=args.embedding_model,
         reranker_model=args.reranker_model,
-        bm25_top_k=args.bm25_top_k,
-        dense_top_k=args.dense_top_k,
+        pool_top_k=args.pool_top_k,
         final_top_k=args.final_top_k,
         table_collection=args.table_collection,
         table_top_k=args.table_top_k,

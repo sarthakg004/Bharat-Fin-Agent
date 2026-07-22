@@ -172,7 +172,6 @@ class AgenticRAGv4(FetchNodes, NumericNodes, ExternalNodes,
             self._fetcher = SecFilingFetcher(
                 resolver=self.xbrl.resolver,        # reuse the cached resolver
                 collection_name=self.collections[0],
-                chroma_dir=self.chroma_dir,
                 embedding_model=self.embedding_model,
             )
         return self._fetcher
@@ -411,16 +410,16 @@ class AgenticRAGv4(FetchNodes, NumericNodes, ExternalNodes,
         # dropped the table/market lanes on the retry pass).
         g.add_edge("rewrite", "router")
         # Numeric chain stays SEQUENTIAL: xbrl→calculator→table_agent share the
-        # XBRL client (facts + resolver cache) and table_agent reads the Chroma
-        # `tables` collection. Keeping them ordered avoids the concurrent-Chroma
+        # XBRL client (facts + resolver cache) and table_agent reads the
+        # `tables` collection. Keeping them ordered avoids the concurrent-client
         # segfault class this codebase already hit once (commit 71e6bda).
         g.add_edge("xbrl", "calculator")
         g.add_edge("calculator", "table_agent")
         # #2: the three NETWORK-bound lanes are mutually independent (distinct
         # state keys, different services) and dominate tool latency, so fan them
         # out to run in PARALLEL after the numeric chain. Only web_search's
-        # news-fallback touches Chroma, and it can't race table_agent (which has
-        # already finished) — so no two Chroma readers ever overlap.
+        # news-fallback touches the store, and it can't race table_agent (which
+        # has already finished) — so no two store readers ever overlap.
         g.add_edge("table_agent", "market_data")
         g.add_edge("table_agent", "web_search")
         g.add_edge("table_agent", "edgar_search")
@@ -499,7 +498,6 @@ class AgenticRAGv4(FetchNodes, NumericNodes, ExternalNodes,
 def _build_cli() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Run the full agentic RAG (v4).")
     p.add_argument("--collection", default="us_filings")
-    p.add_argument("--chroma-dir", default="data/chroma")
     p.add_argument("--table-collection", default="tables")
     p.add_argument("--provider", choices=["groq", "gemini", "openai", "anthropic"],
                    default="groq")
@@ -512,8 +510,7 @@ def _build_cli() -> argparse.ArgumentParser:
     p.add_argument("--verifier-model", default=None)
     p.add_argument("--embedding-model", default="BAAI/bge-small-en-v1.5")
     p.add_argument("--reranker-model", default="BAAI/bge-reranker-large")
-    p.add_argument("--bm25-top-k", type=int, default=24)
-    p.add_argument("--dense-top-k", type=int, default=24)
+    p.add_argument("--pool-top-k", type=int, default=48)
     p.add_argument("--final-top-k", type=int, default=5)
     p.add_argument("--table-top-k", type=int, default=3)
     p.add_argument("--web-top-k", type=int, default=3)
@@ -553,11 +550,9 @@ def main():
 
     agent = AgenticRAGv4(
         collection_name=args.collection,
-        chroma_dir=args.chroma_dir,
         embedding_model=args.embedding_model,
         reranker_model=args.reranker_model,
-        bm25_top_k=args.bm25_top_k,
-        dense_top_k=args.dense_top_k,
+        pool_top_k=args.pool_top_k,
         final_top_k=args.final_top_k,
         table_collection=args.table_collection,
         table_top_k=args.table_top_k,

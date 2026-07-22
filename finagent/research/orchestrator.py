@@ -21,7 +21,7 @@ Design
   local to its own run; the merger shifts them onto one global numbering that
   matches the concatenated evidence list, so every claim in the final report
   still clicks through to its source chunk.
-* **Sequential by default.** The codebase serializes graph runs (Chroma/
+* **Sequential by default.** The codebase serializes graph runs (reranker/
   hnswlib + reranker thread-safety, see api/main.py); `RESEARCH_PARALLEL_AGENTS`
   raises the specialist fan-out for deployments that can afford it.
 """
@@ -517,7 +517,7 @@ class DeepResearch:
 
         if self.parallel > 1:
             # ponytail: opt-in only — the serve path pins graph runs to one
-            # worker (Chroma/hnswlib + reranker thread-safety); raise
+            # worker (reranker/tokenizer thread-safety); raise
             # RESEARCH_PARALLEL_AGENTS only where run_fn is safe to reenter.
             from concurrent.futures import ThreadPoolExecutor
             with ThreadPoolExecutor(max_workers=self.parallel) as pool:

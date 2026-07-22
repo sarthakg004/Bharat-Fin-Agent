@@ -340,11 +340,11 @@ class FetchNodes:
     def _indexed_years(self, ticker: str) -> set[str]:
         """Metadata `year` values indexed for `ticker` (empty when unknowable —
         e.g. baseline corpora keyed by company name rather than ticker)."""
+        from finagent.vectorstore import distinct_values
+
         try:
-            col = self.fetcher._get_store()._collection
-            res = col.get(where={"ticker": ticker},
-                          include=["metadatas"], limit=2000)
-            return {str(m.get("year", "")) for m in (res.get("metadatas") or [])}
+            return distinct_values(self.fetcher.collection_name, "year",
+                                   where_field="ticker", where_value=ticker)
         except Exception:
             return set()
 
