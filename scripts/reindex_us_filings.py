@@ -91,8 +91,13 @@ def main() -> None:
           f"· child {CHILD}/{CHILD_OVERLAP}")
     print("production keeps serving", SOURCE, "throughout\n")
 
+    # data/us/pdfs, NOT data/us: the parent directory also contains
+    # data/us/eval/financebench/pdfs (368 benchmark filings). Walking data/us
+    # would ingest the eval corpus into the SERVED index -- 368 extra documents
+    # that blow the free tier and leak benchmark data into production. The live
+    # us_filings holds 84 documents, all from data/us/pdfs; this keeps that scope.
     ing = CorpusIngester(
-        corpus_dir="data/us",
+        corpus_dir="data/us/pdfs",
         collection_name=args.collection,
         embedding_model=EMBED,
         market="us",
