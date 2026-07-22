@@ -37,6 +37,24 @@ def test_health_is_liveness_only():
     assert resp.json() == {"status": "ok"}
 
 
+def test_deployed_image_keeps_the_index_read_only():
+    """The served Chroma index must never be written at request time.
+
+    A write to the container filesystem is lost on scale-to-zero, and a
+    Chroma/hnswlib write concurrent with a read segfaults the process. This
+    lived only as a comment for a while, and the Dockerfile did not actually
+    set it — so the deployed image ran with the local default (true).
+    """
+    from pathlib import Path
+
+    from finagent.config import _as_bool
+
+    dockerfile = Path(__file__).resolve().parents[1] / "Dockerfile"
+    assert "PERSIST_DYNAMIC_FETCH=false" in dockerfile.read_text(), \
+        "the image must pin the index read-only"
+    assert _as_bool("false") is False
+
+
 def _build_agent():
     from finagent.graph import AgenticRAGv4
 

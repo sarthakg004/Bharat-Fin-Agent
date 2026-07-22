@@ -78,6 +78,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONPATH=/app \
     PATH="/opt/venv/bin:$PATH" \
     PORT=8080 \
+    # The baked index is READ-ONLY at serve time. A dynamically fetched filing
+    # is ranked in memory for that session and never written back. Two reasons:
+    # writes to the container filesystem vanish on scale-to-zero (so we'd pay
+    # ingestion cost to grow an index that evaporates), and a Chroma/hnswlib
+    # write concurrent with a read segfaults the process. Local dev leaves this
+    # unset (default true) and keeps a self-expanding index.
+    PERSIST_DYNAMIC_FETCH=false \
     # Models are baked above — force offline loading so cold start makes no HF
     # Hub network call (faster + robust if HF is down/rate-limits).
     HF_HUB_OFFLINE=1 \
