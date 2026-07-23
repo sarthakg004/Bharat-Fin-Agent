@@ -1,10 +1,14 @@
 # Controls what `gcloud run deploy --source .` uploads to Cloud Build.
-# IMPORTANT: gcloud falls back to .gitignore when this file is absent, and
-# .gitignore excludes data/ — which would drop the Chroma store the image needs.
-# This file overrides that: we ignore data/ EXCEPT data/chroma.
 #
-# (For a 670 MB store, building locally with `docker build` + pushing to
-# Artifact Registry is often faster than re-uploading on every --source deploy.)
+# The corpus lives in Qdrant now, so the image needs NO data at all — see the
+# Dockerfile header and .dockerignore, which excludes data/ outright. Every
+# byte of data/ we upload here is therefore paid for twice (Cloud Build ingress
+# + a source archive kept in GCS forever) and then discarded by the build.
+#
+# This file used to preserve data/chroma for the old Chroma-in-the-image
+# architecture, which meant ~2.4 GB per deploy of pure waste. Keep data/
+# excluded wholesale; if the image ever needs a data file again, add that ONE
+# path back rather than reopening the directory.
 
 .git/
 .github/
@@ -25,18 +29,6 @@ tests/
 .pytest_cache/
 .ruff_cache/
 
-# Keep ONLY data/chroma (baked into the image); exclude the rest of data/.
-# We list the non-chroma items EXPLICITLY rather than `data/*` + `!data/chroma`,
-# because that re-include is unreliable in gcloud's ignore parser and was
-# silently dropping data/chroma from the upload.
-data/us/
-data/India/
-data/tables/
-data/*.db
-data/*.csv
-data/*.txt
-
-# The Chroma tarball CI downloads from GCS and unpacks into data/chroma/.
-# The build only needs the unpacked data/chroma/ — uploading the tarball too
-# would ship the Chroma store TWICE in the source zip (~360 MB wasted).
+# The whole corpus — 6.5 GB locally, none of it wanted by the build.
+data/
 chroma.tar.gz
