@@ -96,7 +96,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     TRANSFORMERS_OFFLINE=1 \
     HF_HUB_DISABLE_TELEMETRY=1 \
     # Docling loads the baked layout/table models from here (no network).
-    DOCLING_ARTIFACTS_PATH=/app/.docling
+    DOCLING_ARTIFACTS_PATH=/app/.docling \
+    # Load the embedder + cross-encoder during container startup instead of
+    # inside the first query. Baked models still take ~139 s to deserialize on
+    # 2 vCPU (results/reranker_bench.json), and startup is the only window
+    # where Cloud Run gives this process full CPU. Unset elsewhere so tests and
+    # local dev stay lazy.
+    WARM_MODELS=1
 
 # Runtime-only system libs (no build-essential): libgomp1 for torch/onnx,
 # ca-certificates for outbound HTTPS (Groq/Tavily), curl for debugging.

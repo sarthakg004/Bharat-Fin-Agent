@@ -23,8 +23,10 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncGenerator
 
@@ -71,7 +73,57 @@ from finagent.api.models import (
 )
 
 
-app = FastAPI(title="FinAgent API", version="2.0.0")
+# Model warm-up. The cross-encoder needs ~139 s to load on 2 vCPU
+# (results/reranker_bench.json) and was otherwise loaded lazily *inside the
+# first query* — so the first user of a cold instance paid the load on top of
+# their answer, while /api/health had already gone green and the SPA had
+# already dropped its cold-start banner.
+#
+# This BLOCKS startup rather than warming in a background thread, because
+# Cloud Run throttles CPU to ~0 outside request processing (same reason
+# rag_service flushes Langfuse synchronously). A background loader would only
+# get CPU during the SPA's ~1 ms health polls and would never finish. Container
+# startup is the one window with full CPU — and --cpu-boost applies to it.
+#
+# Holding the port closed IS the readiness signal: the SPA's health fetch fails
+# while we load, so it keeps showing "warming up" and goes green exactly when
+# the instance can answer. Cloud Run's default startup probe is TCP with a
+# 240 s budget; this lands in ~55 s at 8 vCPU (~170 s at 2).
+#
+# Off by default: the tests boot this app through TestClient, which runs
+# lifespan, and must not pull 3 GB of weights into CI. Dockerfile sets it.
+_WARM_MODELS = os.getenv("WARM_MODELS", "").strip().lower() in ("1", "true", "yes")
+
+
+def _warm() -> None:
+    """Load the embedder + cross-encoder once, before the first request."""
+    t0 = time.time()
+    try:
+        from finagent.retrieval.reranker import _get_shared_reranker
+        from finagent.vectorstore import get_embeddings
+
+        # Resolve the models the SERVED agent will use, so we never warm one
+        # pair and then lazily load another on the first query. Constructing
+        # the agent is cheap and offline — its retrievers/stores stay lazy.
+        agent = rag_service.get_agentic()
+        get_embeddings(agent.embedding_model)
+        _get_shared_reranker(agent.reranker_model)
+        print(f"[warm] models ready in {time.time() - t0:.0f}s", flush=True)
+    except Exception as e:
+        # Never refuse to boot over a warm failure — the lazy path still works,
+        # it is just slow. Serving late beats not serving.
+        print(f"[warm] failed after {time.time() - t0:.0f}s "
+              f"({type(e).__name__}: {e}); falling back to lazy load", flush=True)
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    if _WARM_MODELS:
+        _warm()
+    yield
+
+
+app = FastAPI(title="FinAgent API", version="2.0.0", lifespan=_lifespan)
 
 # CORS — the SPA is hosted on Firebase (a different origin) and calls this API
 # directly. Set ALLOWED_ORIGINS on Cloud Run to your Firebase URL(s),
@@ -105,7 +157,10 @@ _executor = ThreadPoolExecutor(
 def healthcheck():
     """Liveness only — the SPA polls this to tell a cold start from a dead
     backend, and reads nothing but the status code. Deliberately does no work:
-    it must not probe the LLM (burns quota) or the index (slows every poll)."""
+    it must not probe the LLM (burns quota) or the index (slows every poll).
+
+    It needs no readiness flag: `_warm` blocks startup, so this route cannot be
+    reached until the models are loaded. Answering at all IS the ready signal."""
     return HealthResponse(status="ok")
 
 
@@ -268,6 +323,38 @@ def _resolve_uploads(upload_ids: list[str]) -> tuple[list[dict], list[str]]:
     return chunks, missing
 
 
+class ClientGone(Exception):
+    """The browser disconnected mid-run — abort the graph at the next node.
+
+    Raised from the progress callback, which the graph stream invokes
+    unguarded as every node starts, so it unwinds the run in the worker
+    thread. A cancelled `Future` alone is not enough: `run_in_executor` cannot
+    interrupt a thread that has already started, so without a cooperative
+    check the abandoned run keeps going.
+    """
+
+
+def _abandon(task: asyncio.Future, cancelled: threading.Event) -> None:
+    """Stop a graph run whose client has gone away.
+
+    Closing the tab used to change nothing: the run held the single executor
+    worker to completion and kept calling the provider, so the next question
+    queued behind it and the shared key pool ate the 429s. Retrying three times
+    stacked three full pipelines. `cancel()` drops the run if it is still
+    queued; the event aborts it at the next node boundary if it already started.
+    """
+    if task.done():
+        return
+    cancelled.set()
+    task.cancel()
+
+
+def _swallow(task: asyncio.Future) -> None:
+    """Retrieve the result of an abandoned task so asyncio does not log its
+    exception as unhandled — nobody is left to await it."""
+    task.add_done_callback(lambda f: f.cancelled() or f.exception())
+
+
 def _classify_provider_error(e: Exception, pc) -> dict:
     """Classify a provider failure into a user-facing SSE error event
     (shared by /api/query and /api/research)."""
@@ -371,9 +458,13 @@ async def _stream_answer(request: QueryRequest) -> AsyncGenerator[str, None]:
     # instead of a single static spinner.
     loop = asyncio.get_event_loop()
     step_queue: asyncio.Queue = asyncio.Queue()
+    cancelled = threading.Event()
 
     def _on_step(node: str) -> None:
-        # Fired when a node STARTS — drives the spinner's current-activity label.
+        # Fired when a node STARTS — drives the spinner's current-activity label,
+        # and doubles as the cancellation checkpoint (see `ClientGone`).
+        if cancelled.is_set():
+            raise ClientGone()
         label = _STEP_LABELS.get(node)
         if label:
             loop.call_soon_threadsafe(
@@ -396,6 +487,7 @@ async def _stream_answer(request: QueryRequest) -> AsyncGenerator[str, None]:
     rag_task = asyncio.ensure_future(_run_rag(
         request, agent_history, extra_chunks=upload_chunks or None,
         on_step=_on_step, on_step_done=_on_step_done))
+    _swallow(rag_task)
 
     try:
         while not (rag_task.done() and step_queue.empty()):
@@ -410,6 +502,12 @@ async def _stream_answer(request: QueryRequest) -> AsyncGenerator[str, None]:
         yield _sse(err)
         yield _sse({"type": "done"})
         return
+    finally:
+        # Reached on a client disconnect too: Starlette closes this generator,
+        # which throws GeneratorExit/CancelledError in at the `yield` above.
+        # Both skip the `except Exception` and land here. No-op once the run
+        # has finished normally.
+        _abandon(rag_task, cancelled)
 
     answer = result.get("answer") or ""
     chunks = result.get("chunks") or []
@@ -505,8 +603,15 @@ async def _stream_research(request: ResearchRequest) -> AsyncGenerator[str, None
 
     loop = asyncio.get_event_loop()
     events: asyncio.Queue = asyncio.Queue()
+    cancelled = threading.Event()
 
     def _on_event(evt: dict) -> None:
+        # Also the cancellation checkpoint — the orchestrator calls this
+        # unguarded between specialists, and an abandoned research run is the
+        # most expensive thing this service can leave holding the executor
+        # (one full agent pipeline per specialist).
+        if cancelled.is_set():
+            raise ClientGone()
         loop.call_soon_threadsafe(events.put_nowait, evt)
 
     pc = request.provider_config
@@ -531,6 +636,7 @@ async def _stream_research(request: ResearchRequest) -> AsyncGenerator[str, None
                             on_event=_on_event)
 
     task = asyncio.ensure_future(loop.run_in_executor(_executor, _run))
+    _swallow(task)
     try:
         while not (task.done() and events.empty()):
             try:
@@ -544,6 +650,8 @@ async def _stream_research(request: ResearchRequest) -> AsyncGenerator[str, None
         yield _sse(err)
         yield _sse({"type": "done"})
         return
+    finally:
+        _abandon(task, cancelled)
 
     report = result.get("report") or ""
     chunks = result.get("chunks") or []
