@@ -101,12 +101,26 @@ jobs:
           # --max-instances 1: uploaded documents live in one instance's memory
           # (see /api/upload); a second instance would randomly miss them. Also
           # caps the worst-case bill. Scale-to-zero still applies.
+          #
+          # --cpu 8: the cross-encoder is the wall clock, not the LLM.
+          # bge-reranker-v2-m3 costs 1,414 ms/pair on 2 vCPU
+          # (results/reranker_bench.json), and one narrative question reranks
+          # ~180 pairs across its sub-queries + the rewrite loop — ~275 s of
+          # pure torch. That forward pass is a dense matmul that scales with
+          # cores, so the torch half is ~4x faster for ~the same vCPU-seconds.
+          #
+          # It is NOT free overall: ~165 s per question is spent waiting on
+          # Groq, which does not scale with cores and now bills at 4x the rate.
+          # Net ~8 min -> ~4.4 min for ~+70% per question (~+$0.023). A latency
+          # purchase, not a capacity one — drop to 4 for roughly half the
+          # increase and ~1 min more latency.
+          # (8 vCPU requires >=4 GiB; we already ask for 8 GiB.)
           gcloud run deploy "${SERVICE}" \
             --source . \
             --project "${PROJECT_ID}" \
             --region "${REGION}" \
             --memory 8Gi \
-            --cpu 2 \
+            --cpu 8 \
             --cpu-boost \
             --max-instances 1 \
             --timeout 3600 \
