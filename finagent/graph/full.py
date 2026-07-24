@@ -31,7 +31,7 @@ Usage as a library
 ------------------
     from finagent.graph.full import AgenticRAGv3
 
-    agent = AgenticRAGv3(collection_name="us_filings")
+    agent = AgenticRAGv3()  # collection defaults to settings.us_collection
     state = agent.run("What was JPMorgan's net interest margin in FY23?")
     print(state["final_answer"])
     print(state["query_routes"])
@@ -62,6 +62,7 @@ from finagent.graph.table_agent import TableAgent
 
 from finagent.prompts.planner import ROUTER_PROMPT, ROUTER_SYSTEM  # noqa: F401
 from finagent.vectorstore import DEFAULT_EMBED_MODEL
+from finagent.config import settings
 
 # Fused planner+router: ONE structured call both decomposes the question into
 # sub-queries AND routes each to its lane. This replaces two sequential LLM
@@ -631,7 +632,7 @@ class AgenticRAGv3(AgenticRAGv2):
 
 def _build_cli() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Run the table-augmented RAG (v3) graph.")
-    p.add_argument("--collection", default="us_filings")
+    p.add_argument("--collection", default=settings.us_collection)
     p.add_argument("--table-collection", default="tables")
     p.add_argument("--provider", choices=["groq", "gemini", "openai", "anthropic"],
                    default="groq")

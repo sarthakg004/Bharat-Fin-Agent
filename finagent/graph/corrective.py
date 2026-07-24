@@ -34,7 +34,7 @@ Usage as a library
 ------------------
     from finagent.graph.corrective import AgenticRAGv2
 
-    agent = AgenticRAGv2(collection_name="us_filings")
+    agent = AgenticRAGv2()  # collection defaults to settings.us_collection
     state = agent.run("Compare Microsoft and Apple revenue in FY23.")
     print(state["final_answer"])
     print("avg_grade:", state["avg_grade"], "low_conf:", state.get("low_confidence"))
@@ -60,6 +60,7 @@ from finagent.graph.state import (
     RewrittenQuery,
 )
 from finagent.vectorstore import DEFAULT_EMBED_MODEL
+from finagent.config import settings
 
 
 # --------------------------------------------------------------------------- #
@@ -529,7 +530,7 @@ class AgenticRAGv2(AgenticRAG):
 
 def _build_cli() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Run the Corrective-RAG (v2) graph.")
-    p.add_argument("--collection", default="us_filings")
+    p.add_argument("--collection", default=settings.us_collection)
     p.add_argument("--provider", choices=["groq", "gemini", "openai", "anthropic"],
                    default="groq")
     p.add_argument("--planner-model", default=None)

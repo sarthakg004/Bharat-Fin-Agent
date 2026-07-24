@@ -78,7 +78,7 @@ class Settings(BaseModel):
     qdrant_url: str = Field(default="", description="QDRANT_URL / QDRANT_CLUSTER_ENDPOINT")
     qdrant_api_key: str = Field(default="", description="QDRANT_API_KEY")
     static_dir: str = Field(default="static", description="STATIC_DIR")
-    us_collection: str = Field(default="us_filings", description="US filings collection")
+    us_collection: str = Field(default="us_filings_v3", description="US filings collection")
     financebench_collection: str = Field(default="financebench_eval", description="eval collection")
 
     @classmethod
@@ -100,7 +100,7 @@ class Settings(BaseModel):
                         or os.getenv("QDRANT_CLUSTER_ENDPOINT") or "").strip(),
             qdrant_api_key=(os.getenv("QDRANT_API_KEY") or "").strip(),
             static_dir=os.getenv("STATIC_DIR", "static"),
-            us_collection=os.getenv("US_COLLECTION", "us_filings"),
+            us_collection=os.getenv("US_COLLECTION", "us_filings_v3"),
             financebench_collection=os.getenv("FINANCEBENCH_COLLECTION", "financebench_eval"),
         )
 

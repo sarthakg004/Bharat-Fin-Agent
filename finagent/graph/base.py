@@ -28,7 +28,7 @@ Usage as a library
 ------------------
     from finagent.graph.base import AgenticRAG
 
-    agent = AgenticRAG(collection_name="us_filings")
+    agent = AgenticRAG()  # collection defaults to settings.us_collection
     result = agent.run("Compare Microsoft and Apple revenue growth in FY23.")
     print(result["final_answer"])
     print(result["citations"])
@@ -62,6 +62,7 @@ from finagent.graph.state import AgentState, CriticReport, SubQueries
 from finagent.runtime import DEFAULTS as RUNTIME_DEFAULTS
 from finagent.runtime import RuntimeContext, create_llm, current_context
 from finagent.vectorstore import DEFAULT_EMBED_MODEL
+from finagent.config import settings
 
 load_dotenv()
 
@@ -84,7 +85,7 @@ class AgenticRAG:
     Parameters
     ----------
     collection_name : str
-        Qdrant collection (e.g. "us_filings").
+        Qdrant collection (defaults to settings.us_collection).
     embedding_model : str
         MUST match the model used at ingestion.
     top_k : int
@@ -106,7 +107,7 @@ class AgenticRAG:
 
     def __init__(
         self,
-        collection_name: str = "us_filings",
+        collection_name: str = settings.us_collection,
         embedding_model: str = DEFAULT_EMBED_MODEL,
         top_k: int = 5,
         collections: Optional[list[str]] = None,
@@ -452,7 +453,7 @@ def append_comparison_row(
 
 def _build_cli() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Run the Week-2 agentic RAG graph.")
-    p.add_argument("--collection", default="us_filings")
+    p.add_argument("--collection", default=settings.us_collection)
     p.add_argument(
         "--provider",
         choices=["groq", "gemini", "openai", "anthropic"],

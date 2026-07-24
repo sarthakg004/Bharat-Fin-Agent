@@ -14,7 +14,7 @@ Usage as a library
 
     ing = CorpusIngester(
         corpus_dir="data/us/pdfs",
-        collection_name="us_filings",
+        collection_name="us_filings_v3",
         market="us",
     )
     stats = ing.ingest_all(manifest_path="data/us/pdfs/sec_manifest.json")
@@ -173,7 +173,7 @@ class CorpusIngester:
         Args:
             corpus_dir: Where the source files live (output_dir from fetch_pdfs.py).
             state_dir: Where the ingestion-stats JSON is written.
-            collection_name: Qdrant collection to write into (e.g. "us_filings").
+            collection_name: Qdrant collection to write into (e.g. "us_filings_v3").
             market: stored as document metadata (default "us").
             embedding_model: Model name. For HuggingFace: any sentence-transformers
                 model. For OpenAI: "text-embedding-3-small" or similar.

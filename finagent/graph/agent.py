@@ -51,6 +51,7 @@ from finagent.graph.nodes import (
     FetchNodes, NumericNodes, ExternalNodes, SynthesisNodes, VerificationNodes,
 )
 from finagent.vectorstore import DEFAULT_EMBED_MODEL
+from finagent.config import settings
 
 
 # --------------------------------------------------------------------------- #
@@ -498,7 +499,7 @@ class AgenticRAGv4(FetchNodes, NumericNodes, ExternalNodes,
 
 def _build_cli() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Run the full agentic RAG (v4).")
-    p.add_argument("--collection", default="us_filings")
+    p.add_argument("--collection", default=settings.us_collection)
     p.add_argument("--table-collection", default="tables")
     p.add_argument("--provider", choices=["groq", "gemini", "openai", "anthropic"],
                    default="groq")
