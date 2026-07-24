@@ -78,6 +78,18 @@ import re as _re
 
 _ITEM_RE = _re.compile(r"(?im)^\s*item\s+(\d{1,2}[ab]?)\s*[.:—–-]")
 
+# Hard cap on text that is EMBEDDED, in characters: the BGE encoders take 512
+# tokens (~2048 chars) and silently drop the rest, so anything longer would be
+# indexed on content it cannot see. Applies to children, and to tables (kept
+# whole, so the table is its own child) — never to parents, which are only
+# reached through their children and are read by the reranker and the LLM.
+EMBED_CHAR_CAP = 1900
+
+# Hard cap on `parent_text`, stored on every child. The reranker scores the
+# parent at 1024 tokens (~4000 chars); beyond that the tail is invisible to
+# ranking and just costs payload storage on each of the parent's children.
+PARENT_TEXT_CAP = 4000
+
 
 def _tag_items(texts: list[str], start: str = "") -> list[str]:
     """For an in-order list of chunk/page texts, return the 10-K item each one
@@ -151,10 +163,10 @@ class CorpusIngester:
         chunk_size: int = DEFAULT_CHUNK_SIZE,
         chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
         unstructured_strategy: str = "fast",
-        html_max_chars: int = 1500,
-        html_new_after: int = 1200,
+        html_max_chars: int = PARENT_CHUNK_SIZE,
+        html_new_after: int = 2000,
         html_combine_under: int = 400,
-        html_overlap: int = 200,
+        html_overlap: int = PARENT_CHUNK_OVERLAP,
         parent_doc: bool = True,
     ):
         """
@@ -169,8 +181,8 @@ class CorpusIngester:
             chunk_size: Characters per chunk before splitting.
             chunk_overlap: Overlapping characters between adjacent chunks.
             unstructured_strategy: "fast" (default, no OCR) or "hi_res" (slow,
-                better at tables — needed later in Week 4 for the table agent).
-                For Week 1 baseline, "fast" is correct.
+                better at tables — that is the strategy the offline table
+                pipeline uses). "fast" is correct for the main text corpus.
         """
         self.corpus_dir = Path(corpus_dir)
         self.state_dir = Path(state_dir)
@@ -181,9 +193,12 @@ class CorpusIngester:
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self.unstructured_strategy = unstructured_strategy
-        # HTML (US SEC filings) section-aware chunking. Sizes are in characters;
-        # html_max_chars stays well under the bge-small 512-token (~2048 char)
-        # window so chunks are never silently truncated at embed time.
+        # HTML (US SEC filings) section-aware chunking. Sizes are in characters.
+        # A section chunk is the PARENT under parent-document retrieval, so it is
+        # sized from PARENT_CHUNK_SIZE — the two paths drifted apart once already
+        # (HTML capped at 1500 while the PDF path moved to 2500), which quietly
+        # kept the served corpus on the losing geometry. Only the text actually
+        # embedded has to fit the embedder's window; parents do not.
         self.html_max_chars = html_max_chars
         self.html_new_after = html_new_after
         self.html_combine_under = html_combine_under
@@ -383,13 +398,13 @@ class CorpusIngester:
         child_split = self._get_child_splitter()
         docs: list = []
         for pid, ((ptext, extra), item) in enumerate(zip(parents, items)):
-            stored_parent = ptext[:4000]
+            stored_parent = ptext[:PARENT_TEXT_CAP]
             children = [c.strip() for c in child_split.split_text(ptext) if c.strip()]
             for child in children or [ptext.strip()]:
                 if not child:
                     continue
                 docs.append(Document(
-                    page_content=child[:1900],
+                    page_content=child[:EMBED_CHAR_CAP],
                     metadata={**base_meta, **extra, "item": item,
                               "parent_id": pid, "parent_text": stored_parent},
                 ))
@@ -454,10 +469,6 @@ class CorpusIngester:
             content = content.strip()
             if not content:
                 continue
-            # Stay within the embedder's 512-token (~2048 char) window so a long
-            # rendered table is never silently truncated mid-content.
-            content = content[:1900]
-
             meta = {**base_meta, "element_type": element_type, "element_index": idx}
             if is_table and table_html:
                 meta["text_as_html"] = table_html[:6000]
@@ -465,7 +476,10 @@ class CorpusIngester:
 
         items = _tag_items([c for c, _, _ in prepared])
         if not parent_doc:
-            return [Document(page_content=c, metadata={**m, "item": item})
+            # Flat path: the chunk itself is what gets embedded, so it must stay
+            # inside the embedder's 512-token (~2048 char) window.
+            return [Document(page_content=c[:EMBED_CHAR_CAP],
+                             metadata={**m, "item": item})
                     for (c, m, _), item in zip(prepared, items)]
 
         # Parent-document: the section chunk is the parent; split text sections
@@ -474,14 +488,17 @@ class CorpusIngester:
         docs: list = []
         for pid, ((content, meta, is_table), item) in enumerate(zip(prepared, items)):
             pmeta = {**meta, "item": item, "parent_id": pid,
-                     "parent_text": content[:4000]}
+                     "parent_text": content[:PARENT_TEXT_CAP]}
             if is_table:
-                children = [content]
+                # A table is never split, so the child IS the embedded text and
+                # has to fit the embed window — unlike a text parent, which is
+                # only ever reached through its (small) children.
+                children = [content[:EMBED_CHAR_CAP]]
             else:
                 children = [c.strip() for c in child_split.split_text(content)
-                            if c.strip()] or [content]
+                            if c.strip()] or [content[:EMBED_CHAR_CAP]]
             for child in children:
-                docs.append(Document(page_content=child[:1900], metadata=dict(pmeta)))
+                docs.append(Document(page_content=child, metadata=dict(pmeta)))
         return docs
 
     @staticmethod

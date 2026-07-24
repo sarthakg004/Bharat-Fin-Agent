@@ -1,28 +1,34 @@
-"""Build the next-generation served index alongside the live one (blue/green).
+"""Build a fresh served index alongside the live one (blue/green).
 
-Writes a NEW collection (default `us_filings_v2`) with the measured-best
-geometry and embedder, while production keeps serving the old collection from
-the old code. Nothing is mutated in place, so there is never a window where a
-384-dim service queries a 1024-dim collection.
+Writes a NEW collection with the CURRENT production chunk geometry and embedder
+(taken straight from `CorpusIngester` / `vectorstore.DEFAULT_EMBED_MODEL` — the
+single source of truth, so this script never carries its own copy that can drift
+from what the code actually ships). Production keeps serving the old collection
+throughout; nothing is mutated in place.
 
-    embedder  BAAI/bge-large-en-v1.5   (1024-dim)  +0.042 cov@8
-    parent    2500 / 300                           +0.070 cov@8
-    child      600 / 100               (unchanged — no measurable effect)
+Run this whenever the chunk geometry or embedder changes, since deterministic
+point ids are keyed on the chunker — a geometry change needs a rebuild, not a
+re-ingest into the existing collection (see `vectorstore.chunk_point_id`).
 
-See results/RETRIEVAL_EXPERIMENTS.md §6b for the numbers and §7 for the storage
-arithmetic that makes this fit the 1 GB free tier.
+    --source       the collection currently served (for status display + the
+                   cutover reminder). Default: US_COLLECTION env, else us_filings_v2.
+    --collection   the NEW collection to build. MUST be a fresh name — this is
+                   the guard against writing into the live one. No default.
 
 Cutover after this finishes:
-    1. push the constants (DEFAULT_EMBED_MODEL / DENSE_DIM / PARENT_CHUNK_SIZE)
-    2. gcloud run services update finagent --set-env-vars US_COLLECTION=us_filings_v2
-    3. verify, then delete the old collection
+    1. gcloud run services update finagent --region <region> \\
+           --set-env-vars US_COLLECTION=<new collection>
+    2. verify, then delete the old collection
 
-Rollback is the same env var pointed back at `us_filings`.
+Rollback is the same env var pointed back at the old collection.
+
+See results/RETRIEVAL_EXPERIMENTS.md for the geometry/embedder numbers and the
+storage arithmetic that keeps two collections inside the free tier at once.
 
 Usage
 -----
-    python scripts/reindex_us_filings.py                 # build
-    python scripts/reindex_us_filings.py --status        # progress / counts
+    python scripts/reindex_us_filings.py --collection us_filings_v3   # build
+    python scripts/reindex_us_filings.py --status                     # counts
 """
 from __future__ import annotations
 
@@ -38,19 +44,18 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-TARGET = os.getenv("REINDEX_COLLECTION", "us_filings_v2")
-SOURCE = "us_filings"
-EMBED = "BAAI/bge-large-en-v1.5"
-PARENT, PARENT_OVERLAP = 2500, 300
-CHILD, CHILD_OVERLAP = 600, 100
+# The collection currently served — status/cutover text only, never written to.
+SOURCE = os.getenv("US_COLLECTION", "us_filings_v2")
 # Dynamic-fetch downloads live here; they are not part of the corpus.
 EXCLUDE = "sec-edgar-filings"
 
 
-def status() -> None:
+def status(target: str | None = None) -> None:
     from finagent.vectorstore import get_client
     c = get_client()
-    for name in (SOURCE, TARGET):
+    for name in (SOURCE, target):
+        if not name:
+            continue
         if c.collection_exists(name):
             info = c.get_collection(name)
             dim = list(info.config.params.vectors.values())[0].size
@@ -63,12 +68,24 @@ def status() -> None:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--status", action="store_true")
-    ap.add_argument("--collection", default=TARGET)
+    ap.add_argument("--collection",
+                    help="NEW collection to build (must not already exist)")
     args = ap.parse_args()
 
     if args.status:
-        status()
+        status(args.collection)
         return
+
+    if not args.collection:
+        raise SystemExit("--collection is required: name the NEW collection to "
+                         "build. It must not be the live one.")
+
+    from finagent.vectorstore import get_client as _gc
+    if _gc().collection_exists(args.collection):
+        raise SystemExit(
+            f"{args.collection!r} already exists. Blue/green needs a FRESH "
+            f"target so the live collection is never touched — pick a new name "
+            f"or delete this one first if it is a failed build.")
 
     # The eval corpus must be off the managed cluster first, or the old and new
     # served collections cannot both fit in the free tier during the swap.
@@ -79,18 +96,18 @@ def main() -> None:
             "scripts/move_eval_to_local.py (then --drop-source) first; the old "
             "and new served collections need the room during cutover.")
 
+    from finagent.vectorstore import DEFAULT_EMBED_MODEL
     from finagent.ingestion.ingest import CorpusIngester
 
-    # Override the class-level chunk geometry for this run only. These are the
-    # values that will be committed to ingest.py at cutover; setting them here
-    # keeps the running production code untouched while the new index builds.
-    CorpusIngester.PARENT_CHUNK_SIZE = PARENT
-    CorpusIngester.PARENT_CHUNK_OVERLAP = PARENT_OVERLAP
-    CorpusIngester.CHILD_CHUNK_SIZE = CHILD
-    CorpusIngester.CHILD_CHUNK_OVERLAP = CHILD_OVERLAP
-
-    print(f"building {args.collection}: {EMBED} · parent {PARENT}/{PARENT_OVERLAP} "
-          f"· child {CHILD}/{CHILD_OVERLAP}")
+    # No geometry overrides here: the build uses whatever CorpusIngester and
+    # DEFAULT_EMBED_MODEL currently ship, so the new index is exactly what
+    # production would write. (This is why ingest.py must be the single source of
+    # truth — a private copy of the constants here is how the paths drift apart.)
+    print(f"building {args.collection}: {DEFAULT_EMBED_MODEL} · "
+          f"parent {CorpusIngester.PARENT_CHUNK_SIZE}/"
+          f"{CorpusIngester.PARENT_CHUNK_OVERLAP} · "
+          f"child {CorpusIngester.CHILD_CHUNK_SIZE}/"
+          f"{CorpusIngester.CHILD_CHUNK_OVERLAP}")
     print("production keeps serving", SOURCE, "throughout\n")
 
     # data/us/pdfs, NOT data/us: the parent also holds
@@ -99,19 +116,17 @@ def main() -> None:
     ing = CorpusIngester(
         corpus_dir="data/us/pdfs",
         collection_name=args.collection,
-        embedding_model=EMBED,
         market="us",
         parent_doc=True,
     )
     # data/us/pdfs holds TWO layouts and only one of them is the corpus:
-    #   TICKER/YEAR_ACCESSION.htm                     the curated 84 documents
+    #   TICKER/YEAR_ACCESSION.htm                     the curated documents
     #   sec-edgar-filings/TICKER/10-K/.../*.html      dynamic-fetch scratch
-    # The live us_filings contains ONLY the curated set (verified: 71,127/71,127
-    # points, 84 distinct local_paths, zero sec-edgar-filings). Including the
-    # scratch would (a) change the corpus, so a v1-vs-v2 comparison would no
-    # longer isolate the geometry/embedder change, and (b) take the index from
-    # ~407 MB to ~921 MB against a 1 GB free tier. Dynamically fetched filings
-    # are re-fetched on demand at runtime; they are not corpus.
+    # The served collection contains ONLY the curated set. Including the scratch
+    # would change the corpus (so a version-to-version comparison would no longer
+    # isolate the geometry/embedder change) and inflate the index past the free
+    # tier. Dynamically fetched filings are re-fetched on demand at runtime; they
+    # are not corpus.
     _load = ing._load_records
     ing._load_records = lambda mp: [r for r in _load(mp)
                                     if EXCLUDE not in str(r.get("local_path", ""))]
@@ -119,7 +134,7 @@ def main() -> None:
     t0 = time.time()
     stats = ing.ingest_all(manifest_path=None, skip_if_already_indexed=True)
     print(f"\ndone in {(time.time()-t0)/60:.1f} min: {stats}")
-    status()
+    status(args.collection)
 
 
 if __name__ == "__main__":
