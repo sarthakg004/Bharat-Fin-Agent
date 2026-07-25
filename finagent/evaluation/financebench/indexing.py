@@ -2,15 +2,18 @@
 indexing.py  ·  finagent/evaluation/financebench/indexing.py
 
 Index the FinanceBench filings into a dedicated `financebench_eval` Qdrant
-collection using the *exact* production ingestion pipeline (same chunking, same
-BGE embeddings as `CorpusIngester`). Keeping the pipeline identical is the whole
-point: the eval then measures the retrieval the user actually gets, while the
-dedicated collection keeps these eval docs out of the live corpus.
+collection using the *exact* production ingestion pipeline — the same
+`CorpusIngester` (parent-document chunking, BGE-large) over the same original
+SEC **HTML** production serves (fetched by `html_source.py`, not the FinanceBench
+PDFs). Keeping BOTH the parser and the chunker identical to production is the
+whole point: the eval measures the retrieval the user actually gets. The
+dedicated collection (and a separate eval Qdrant, `QDRANT_EVAL_URL`) keeps these
+docs off the live cluster.
 
-Scope: we index only the filings referenced by the open-source question set
-(the evidence `doc_name`s — 84 documents). That is the representative corpus for
-this eval; indexing the full FinanceBench PDF dump would add hundreds of 10-Ks
-that no question touches.
+Scope: only the filings referenced by the open-source question set, restricted
+to 10-K/10-Q — the docs that map to a single served HTML filing. 8-K / earnings
+docs are excluded (evidence lives in exhibits, not the primary document), which
+drops ~23 of 150 questions; see `html_source.py`.
 """
 
 from __future__ import annotations
@@ -22,11 +25,22 @@ from typing import Union
 from finagent.ingestion.ingest import CorpusIngester
 
 from .dataset import load_questions
+from .html_source import HTML_DIR, fetch_html_for_docs
 
-DEFAULT_PDF_DIR = "data/us/eval/financebench/pdfs"
+# The eval corpus is the ORIGINAL SEC HTML (what production serves), fetched on
+# demand from EDGAR — not the FinanceBench PDFs. See `html_source.py`. 8-K /
+# earnings docs are excluded there (evidence lives in exhibits, not the primary
+# filing), so the eval covers the 10-K / 10-Q questions.
+DEFAULT_CORPUS_DIR = HTML_DIR
 DEFAULT_DOC_INFO = "data/us/eval/financebench/data/financebench_document_information.jsonl"
 DEFAULT_MANIFEST = "data/us/eval/financebench/eval_manifest.json"
 EVAL_COLLECTION = "financebench_eval"
+
+
+def corpus_path(doc_name: str, corpus_dir: Union[str, Path] = DEFAULT_CORPUS_DIR) -> Path:
+    """On-disk path of one filing's HTML. Its stem == the FinanceBench doc_name,
+    which is how gold-chunk mapping filters payloads to a single filing."""
+    return Path(corpus_dir) / f"{doc_name}.htm"
 
 
 def _referenced_doc_names(questions) -> set:
@@ -43,20 +57,33 @@ def _referenced_doc_names(questions) -> set:
 
 def build_manifest(
     questions_path: Union[str, Path] = None,
-    pdf_dir: Union[str, Path] = DEFAULT_PDF_DIR,
+    corpus_dir: Union[str, Path] = DEFAULT_CORPUS_DIR,
     doc_info_path: Union[str, Path] = DEFAULT_DOC_INFO,
     manifest_path: Union[str, Path] = DEFAULT_MANIFEST,
+    fetch: bool = True,
 ) -> list[dict]:
     """Build (and persist) an ingestion manifest for the referenced filings.
 
-    Each record carries the metadata `CorpusIngester` propagates into the payload —
-    crucially `local_path`, whose stem equals the FinanceBench `doc_name`, so the
-    gold-chunk mapper can filter chunks to a single filing.
+    Fetches each referenced 10-K/10-Q's SEC HTML from EDGAR (idempotent — cached
+    files are reused), then writes one manifest record per filing that landed on
+    disk. Docs that can't be represented as a single served HTML (8-K / earnings,
+    or an EDGAR miss) are simply absent, so the eval runs on what production can
+    actually serve. Each record's `local_path` stem == the FinanceBench doc_name,
+    which is how the gold-chunk mapper filters chunks to one filing.
     """
     questions = (
         load_questions(questions_path) if questions_path else load_questions()
     )
     wanted = _referenced_doc_names(questions)
+
+    if fetch:
+        fetched = fetch_html_for_docs(wanted, html_dir=corpus_dir,
+                                      doc_info_path=doc_info_path)
+        n_ok = sum(1 for v in fetched.values() if v["status"] == "ok")
+        n_skip = sum(1 for v in fetched.values() if v["status"] == "skipped")
+        n_err = sum(1 for v in fetched.values() if v["status"] == "error")
+        print(f"HTML acquisition: {n_ok} ok, {n_skip} skipped (8-K/earnings), "
+              f"{n_err} error")
 
     # doc_name -> company / sector / period, for richer point metadata.
     doc_info = {}
@@ -65,17 +92,16 @@ def build_manifest(
             rec = json.loads(line)
             doc_info[rec["doc_name"]] = rec
 
-    pdf_dir = Path(pdf_dir)
     records, missing = [], []
     for doc_name in sorted(wanted):
-        pdf = pdf_dir / f"{doc_name}.pdf"
-        if not pdf.exists():
+        html = corpus_path(doc_name, corpus_dir)
+        if not html.exists():
             missing.append(doc_name)
             continue
         info = doc_info.get(doc_name, {})
         records.append({
-            "local_path": str(pdf),
-            "source_url": info.get("doc_link", str(pdf)),
+            "local_path": str(html),
+            "source_url": info.get("doc_link", str(html)),
             "company": info.get("company", doc_name.split("_")[0]),
             "ticker": info.get("company", doc_name.split("_")[0]),
             "year": str(info.get("doc_period", "")),
@@ -89,7 +115,7 @@ def build_manifest(
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path.write_text(json.dumps(records, indent=2))
     print(f"Manifest: {len(records)} filings -> {manifest_path}"
-          + (f"  ({len(missing)} missing PDFs: {missing[:5]})" if missing else ""))
+          + (f"  ({len(missing)} not on disk: {missing[:5]})" if missing else ""))
     return records
 
 
@@ -108,7 +134,7 @@ def index_eval_corpus(
         build_manifest(manifest_path=manifest_path)
 
     ing = CorpusIngester(
-        corpus_dir=DEFAULT_PDF_DIR,
+        corpus_dir=DEFAULT_CORPUS_DIR,
         collection_name=collection_name,
         market="us",
     )

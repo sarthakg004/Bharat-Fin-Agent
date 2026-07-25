@@ -1,0 +1,1569 @@
+{
+  "docs": {
+    "3M_2018_10K": {
+      "company": "3M",
+      "period": 2018,
+      "doc_type": "10k",
+      "cik": "0000066740",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 278,
+      "n_evidence": 2,
+      "containment": 0.913,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0001558370-19-000470",
+      "url": "https://www.sec.gov/Archives/edgar/data/66740/000155837019000470/mmm-20181231x10k.htm",
+      "ev_recalls": [
+        0.92,
+        0.91
+      ]
+    },
+    "3M_2022_10K": {
+      "company": "3M",
+      "period": 2022,
+      "doc_type": "10k",
+      "cik": "0000066740",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 512,
+      "n_evidence": 5,
+      "containment": 1.0,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0000066740-23-000014",
+      "url": "https://www.sec.gov/Archives/edgar/data/66740/000006674023000014/mmm-20221231.htm",
+      "ev_recalls": [
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    "3M_2023Q2_10Q": {
+      "company": "3M",
+      "period": 2023,
+      "doc_type": "10q",
+      "cik": "0000066740",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 346,
+      "n_evidence": 3,
+      "containment": 1.0,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0000066740-23-000058",
+      "url": "https://www.sec.gov/Archives/edgar/data/66740/000006674023000058/mmm-20230630.htm",
+      "ev_recalls": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    "ACTIVISIONBLIZZARD_2019_10K": {
+      "company": "Activision Blizzard",
+      "period": 2019,
+      "doc_type": "10k",
+      "cik": "0000718877",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 849,
+      "n_evidence": 4,
+      "containment": 0.957,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0000718877-20-000003",
+      "url": "https://www.sec.gov/Archives/edgar/data/718877/000071887720000003/atvi-12312019x10xk.htm",
+      "ev_recalls": [
+        1.0,
+        0.91,
+        0.91,
+        1.0
+      ]
+    },
+    "ADOBE_2015_10K": {
+      "company": "Adobe",
+      "period": 2015,
+      "doc_type": "10k",
+      "cik": "0000796343",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 225,
+      "n_evidence": 2,
+      "containment": 0.956,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0000796343-16-000224",
+      "url": "https://www.sec.gov/Archives/edgar/data/796343/000079634316000224/adbe10kfy15.htm",
+      "ev_recalls": [
+        0.94,
+        0.97
+      ]
+    },
+    "ADOBE_2016_10K": {
+      "company": "Adobe",
+      "period": 2016,
+      "doc_type": "10k",
+      "cik": "0000796343",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 214,
+      "n_evidence": 1,
+      "containment": 0.923,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0000796343-17-000031",
+      "url": "https://www.sec.gov/Archives/edgar/data/796343/000079634317000031/adbe10kfy16.htm",
+      "ev_recalls": [
+        0.92
+      ]
+    },
+    "ADOBE_2017_10K": {
+      "company": "Adobe",
+      "period": 2017,
+      "doc_type": "10k",
+      "cik": "0000796343",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 203,
+      "n_evidence": 2,
+      "containment": 0.946,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0000796343-18-000015",
+      "url": "https://www.sec.gov/Archives/edgar/data/796343/000079634318000015/adbe10kfy17.htm",
+      "ev_recalls": [
+        0.93,
+        0.96
+      ]
+    },
+    "ADOBE_2022_10K": {
+      "company": "Adobe",
+      "period": 2022,
+      "doc_type": "10k",
+      "cik": "0000796343",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 669,
+      "n_evidence": 2,
+      "containment": 1.0,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0000796343-23-000007",
+      "url": "https://www.sec.gov/Archives/edgar/data/796343/000079634323000007/adbe-20221202.htm",
+      "ev_recalls": [
+        1.0,
+        1.0
+      ]
+    },
+    "AES_2022_10K": {
+      "company": "AES Corporation",
+      "period": 2022,
+      "doc_type": "10k",
+      "cik": "0000874761",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 1593,
+      "n_evidence": 5,
+      "containment": 1.0,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0000874761-23-000010",
+      "url": "https://www.sec.gov/Archives/edgar/data/874761/000087476123000010/aes-20221231.htm",
+      "ev_recalls": [
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    "AMAZON_2017_10K": {
+      "company": "Amazon",
+      "period": 2017,
+      "doc_type": "10k",
+      "cik": "0001018724",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 204,
+      "n_evidence": 3,
+      "containment": 0.89,
+      "error": null,
+      "match": "name_prefix",
+      "accession": "0001018724-18-000005",
+      "url": "https://www.sec.gov/Archives/edgar/data/1018724/000101872418000005/amzn-20171231x10k.htm",
+      "ev_recalls": [
+        0.89,
+        0.89,
+        0.89
+      ]
+    },
+    "AMAZON_2019_10K": {
+      "company": "Amazon",
+      "period": 2019,
+      "doc_type": "10k",
+      "cik": "0001018724",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 510,
+      "n_evidence": 1,
+      "containment": 1.0,
+      "error": null,
+      "match": "name_prefix",
+      "accession": "0001018724-20-000004",
+      "url": "https://www.sec.gov/Archives/edgar/data/1018724/000101872420000004/amzn-20191231x10k.htm",
+      "ev_recalls": [
+        1.0
+      ]
+    },
+    "AMCOR_2020_10K": {
+      "company": "Amcor",
+      "period": 2020,
+      "doc_type": "10k",
+      "cik": "0001748790",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 508,
+      "n_evidence": 1,
+      "containment": 1.0,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0001748790-20-000025",
+      "url": "https://www.sec.gov/Archives/edgar/data/1748790/000174879020000025/amcr-20200630.htm",
+      "ev_recalls": [
+        1.0
+      ]
+    },
+    "AMCOR_2022_8K_dated-2022-07-01": {
+      "company": "Amcor",
+      "period": 2022,
+      "doc_type": "8k",
+      "cik": "0001748790",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 16,
+      "n_evidence": 1,
+      "containment": 0.0,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0001104659-22-117119",
+      "url": "https://www.sec.gov/Archives/edgar/data/1748790/000110465922117119/tm2229550d1_8k.htm",
+      "ev_recalls": [
+        0.0
+      ]
+    },
+    "AMCOR_2023Q2_10Q": {
+      "company": "Amcor",
+      "period": 2023,
+      "doc_type": "10q",
+      "cik": "0001748790",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 169,
+      "n_evidence": 1,
+      "containment": 0.0,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0001748790-24-000006",
+      "url": "https://www.sec.gov/Archives/edgar/data/1748790/000174879024000006/amcr-20231231.htm",
+      "ev_recalls": [
+        0.0
+      ]
+    },
+    "AMCOR_2023Q4_EARNINGS": {
+      "company": "Amcor",
+      "period": 2023,
+      "doc_type": "Earnings",
+      "cik": null,
+      "found": false,
+      "fetched": false,
+      "n_chunks": 0,
+      "n_evidence": 2,
+      "containment": null,
+      "error": "non-SEC type Earnings"
+    },
+    "AMCOR_2023_10K": {
+      "company": "Amcor",
+      "period": 2023,
+      "doc_type": "10k",
+      "cik": "0001748790",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 506,
+      "n_evidence": 4,
+      "containment": 0.75,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0001748790-23-000030",
+      "url": "https://www.sec.gov/Archives/edgar/data/1748790/000174879023000030/amcr-20230630.htm",
+      "ev_recalls": [
+        1.0,
+        0.0,
+        1.0,
+        1.0
+      ]
+    },
+    "AMD_2015_10K": {
+      "company": "AMD",
+      "period": 2015,
+      "doc_type": "10k",
+      "cik": "0000002488",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 215,
+      "n_evidence": 2,
+      "containment": 0.902,
+      "error": null,
+      "match": "ticker",
+      "accession": "0000002488-16-000111",
+      "url": "https://www.sec.gov/Archives/edgar/data/2488/000000248816000111/amd-12262015x10k.htm",
+      "ev_recalls": [
+        0.86,
+        0.95
+      ]
+    },
+    "AMD_2022_10K": {
+      "company": "AMD",
+      "period": 2022,
+      "doc_type": "10k",
+      "cik": "0000002488",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 694,
+      "n_evidence": 7,
+      "containment": 0.98,
+      "error": null,
+      "match": "ticker",
+      "accession": "0000002488-23-000047",
+      "url": "https://www.sec.gov/Archives/edgar/data/2488/000000248823000047/amd-20221231.htm",
+      "ev_recalls": [
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        0.86
+      ]
+    },
+    "AMERICANEXPRESS_2022_10K": {
+      "company": "American Express",
+      "period": 2022,
+      "doc_type": "10k",
+      "cik": "0000004962",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 1013,
+      "n_evidence": 7,
+      "containment": 0.803,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0000004962-23-000006",
+      "url": "https://www.sec.gov/Archives/edgar/data/4962/000000496223000006/axp-20221231.htm",
+      "ev_recalls": [
+        0.81,
+        0.0,
+        0.97,
+        0.97,
+        0.89,
+        0.98,
+        1.0
+      ]
+    },
+    "AMERICANWATERWORKS_2020_10K": {
+      "company": "American Water Works",
+      "period": 2020,
+      "doc_type": "10k",
+      "cik": "0001410636",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 1007,
+      "n_evidence": 1,
+      "containment": 1.0,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0001410636-21-000101",
+      "url": "https://www.sec.gov/Archives/edgar/data/1410636/000141063621000101/awk-20201231.htm",
+      "ev_recalls": [
+        1.0
+      ]
+    },
+    "AMERICANWATERWORKS_2021_10K": {
+      "company": "American Water Works",
+      "period": 2021,
+      "doc_type": "10k",
+      "cik": "0001410636",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 1058,
+      "n_evidence": 2,
+      "containment": 0.961,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0001410636-22-000048",
+      "url": "https://www.sec.gov/Archives/edgar/data/1410636/000141063622000048/awk-20211231.htm",
+      "ev_recalls": [
+        0.92,
+        1.0
+      ]
+    },
+    "AMERICANWATERWORKS_2022_10K": {
+      "company": "American Water Works",
+      "period": 2022,
+      "doc_type": "10k",
+      "cik": "0001410636",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 1036,
+      "n_evidence": 2,
+      "containment": 1.0,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0001410636-23-000020",
+      "url": "https://www.sec.gov/Archives/edgar/data/1410636/000141063623000020/awk-20221231.htm",
+      "ev_recalls": [
+        1.0,
+        1.0
+      ]
+    },
+    "BESTBUY_2017_10K": {
+      "company": "Best Buy",
+      "period": 2017,
+      "doc_type": "10k",
+      "cik": "0000764478",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 312,
+      "n_evidence": 1,
+      "containment": 0.08,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0000764478-17-000008",
+      "url": "https://www.sec.gov/Archives/edgar/data/764478/000076447817000008/bby-2017x10k.htm",
+      "ev_recalls": [
+        0.08
+      ]
+    },
+    "BESTBUY_2019_10K": {
+      "company": "Best Buy",
+      "period": 2019,
+      "doc_type": "10k",
+      "cik": "0000764478",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 295,
+      "n_evidence": 1,
+      "containment": 0.15,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0000764478-19-000009",
+      "url": "https://www.sec.gov/Archives/edgar/data/764478/000076447819000009/bby-2019x10k.htm",
+      "ev_recalls": [
+        0.15
+      ]
+    },
+    "BESTBUY_2023_10K": {
+      "company": "Best Buy",
+      "period": 2023,
+      "doc_type": "10k",
+      "cik": "0000764478",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 500,
+      "n_evidence": 3,
+      "containment": 0.685,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0000764478-23-000006",
+      "url": "https://www.sec.gov/Archives/edgar/data/764478/000076447823000006/bby-20230128x10k.htm",
+      "ev_recalls": [
+        1.0,
+        0.06,
+        1.0
+      ]
+    },
+    "BESTBUY_2024Q2_10Q": {
+      "company": "Best Buy",
+      "period": 2024,
+      "doc_type": "10q",
+      "cik": "0000764478",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 155,
+      "n_evidence": 3,
+      "containment": 0.12,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0000764478-24-000041",
+      "url": "https://www.sec.gov/Archives/edgar/data/764478/000076447824000041/bby-20241102x10q.htm",
+      "ev_recalls": [
+        0.34,
+        0.0,
+        0.02
+      ]
+    },
+    "BLOCK_2016_10K": {
+      "company": "Block",
+      "period": 2016,
+      "doc_type": "10k",
+      "cik": "0001512673",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 197,
+      "n_evidence": 1,
+      "containment": 0.005,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0001628280-17-001754",
+      "url": "https://www.sec.gov/Archives/edgar/data/1512673/000162828017001754/a10-kfilingsquareinc2016.htm",
+      "ev_recalls": [
+        0.0
+      ]
+    },
+    "BLOCK_2020_10K": {
+      "company": "Block",
+      "period": 2020,
+      "doc_type": "10k",
+      "cik": "0001512673",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 879,
+      "n_evidence": 2,
+      "containment": 0.069,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0001512673-21-000008",
+      "url": "https://www.sec.gov/Archives/edgar/data/1512673/000151267321000008/sq-20201231.htm",
+      "ev_recalls": [
+        0.09,
+        0.05
+      ]
+    },
+    "BOEING_2018_10K": {
+      "company": "Boeing",
+      "period": 2018,
+      "doc_type": "10k",
+      "cik": "0000012927",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 514,
+      "n_evidence": 1,
+      "containment": 0.963,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0000012927-19-000010",
+      "url": "https://www.sec.gov/Archives/edgar/data/12927/000001292719000010/a201812dec3110k.htm",
+      "ev_recalls": [
+        0.96
+      ]
+    },
+    "BOEING_2022_10K": {
+      "company": "Boeing",
+      "period": 2022,
+      "doc_type": "10k",
+      "cik": "0000012927",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 569,
+      "n_evidence": 9,
+      "containment": 0.892,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0000012927-23-000007",
+      "url": "https://www.sec.gov/Archives/edgar/data/12927/000001292723000007/ba-20221231.htm",
+      "ev_recalls": [
+        0.53,
+        0.5,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    "COCACOLA_2017_10K": {
+      "company": "Coca-Cola",
+      "period": 2017,
+      "doc_type": "10k",
+      "cik": "0000021344",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 489,
+      "n_evidence": 2,
+      "containment": 0.888,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0000021344-18-000008",
+      "url": "https://www.sec.gov/Archives/edgar/data/21344/000002134418000008/a2017123110-k.htm",
+      "ev_recalls": [
+        0.83,
+        0.95
+      ]
+    },
+    "COCACOLA_2021_10K": {
+      "company": "Coca-Cola",
+      "period": 2021,
+      "doc_type": "10k",
+      "cik": "0000021344",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 905,
+      "n_evidence": 1,
+      "containment": 0.86,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0000021344-22-000009",
+      "url": "https://www.sec.gov/Archives/edgar/data/21344/000002134422000009/ko-20211231.htm",
+      "ev_recalls": [
+        0.86
+      ]
+    },
+    "COCACOLA_2022_10K": {
+      "company": "Coca-Cola",
+      "period": 2022,
+      "doc_type": "10k",
+      "cik": "0000021344",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 921,
+      "n_evidence": 2,
+      "containment": 0.93,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0000021344-23-000011",
+      "url": "https://www.sec.gov/Archives/edgar/data/21344/000002134423000011/ko-20221231.htm",
+      "ev_recalls": [
+        0.86,
+        1.0
+      ]
+    },
+    "CORNING_2020_10K": {
+      "company": "Corning",
+      "period": 2020,
+      "doc_type": "10k",
+      "cik": "0000024741",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 577,
+      "n_evidence": 2,
+      "containment": 0.017,
+      "error": null,
+      "match": "name_prefix",
+      "accession": "0001562762-21-000023",
+      "url": "https://www.sec.gov/Archives/edgar/data/24741/000156276221000023/glw-20201231x10k.htm",
+      "ev_recalls": [
+        0.0,
+        0.03
+      ]
+    },
+    "CORNING_2021_10K": {
+      "company": "Corning",
+      "period": 2021,
+      "doc_type": "10k",
+      "cik": "0000024741",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 673,
+      "n_evidence": 1,
+      "containment": 0.0,
+      "error": null,
+      "match": "name_prefix",
+      "accession": "0001437749-22-003247",
+      "url": "https://www.sec.gov/Archives/edgar/data/24741/000143774922003247/glw20211231_10k.htm",
+      "ev_recalls": [
+        0.0
+      ]
+    },
+    "CORNING_2022_10K": {
+      "company": "Corning",
+      "period": 2022,
+      "doc_type": "10k",
+      "cik": "0000024741",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 610,
+      "n_evidence": 2,
+      "containment": 1.0,
+      "error": null,
+      "match": "name_prefix",
+      "accession": "0001437749-23-003123",
+      "url": "https://www.sec.gov/Archives/edgar/data/24741/000143774923003123/glw20221231_10k.htm",
+      "ev_recalls": [
+        1.0,
+        1.0
+      ]
+    },
+    "COSTCO_2021_10K": {
+      "company": "Costco",
+      "period": 2021,
+      "doc_type": "10k",
+      "cik": "0000909832",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 359,
+      "n_evidence": 1,
+      "containment": 1.0,
+      "error": null,
+      "match": "name_prefix",
+      "accession": "0000909832-21-000014",
+      "url": "https://www.sec.gov/Archives/edgar/data/909832/000090983221000014/cost-20210829.htm",
+      "ev_recalls": [
+        1.0
+      ]
+    },
+    "CVSHEALTH_2018_10K": {
+      "company": "CVS Health",
+      "period": 2018,
+      "doc_type": "10k",
+      "cik": "0000064803",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 137,
+      "n_evidence": 2,
+      "containment": 0.0,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0000064803-19-000013",
+      "url": "https://www.sec.gov/Archives/edgar/data/64803/000006480319000013/cvs-2018231x10k.htm",
+      "ev_recalls": [
+        0.0,
+        0.0
+      ]
+    },
+    "CVSHEALTH_2022_10K": {
+      "company": "CVS Health",
+      "period": 2022,
+      "doc_type": "10k",
+      "cik": "0000064803",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 1383,
+      "n_evidence": 6,
+      "containment": 0.5,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0000064803-23-000009",
+      "url": "https://www.sec.gov/Archives/edgar/data/64803/000006480323000009/cvs-20221231.htm",
+      "ev_recalls": [
+        1.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    "FOOTLOCKER_2022_8K_dated-2022-05-20": {
+      "company": "Foot Locker",
+      "period": 2022,
+      "doc_type": "8k",
+      "cik": null,
+      "found": false,
+      "fetched": false,
+      "n_chunks": 0,
+      "n_evidence": 1,
+      "containment": null,
+      "error": "no CIK",
+      "match": "none"
+    },
+    "FOOTLOCKER_2022_8K_dated_2022-08-19": {
+      "company": "Foot Locker",
+      "period": 2022,
+      "doc_type": "8k",
+      "cik": null,
+      "found": false,
+      "fetched": false,
+      "n_chunks": 0,
+      "n_evidence": 1,
+      "containment": null,
+      "error": "no CIK",
+      "match": "none"
+    },
+    "GENERALMILLS_2019_10K": {
+      "company": "General Mills",
+      "period": 2019,
+      "doc_type": "10k",
+      "cik": "0000040704",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 1061,
+      "n_evidence": 2,
+      "containment": 1.0,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0001193125-19-184675",
+      "url": "https://www.sec.gov/Archives/edgar/data/40704/000119312519184675/d725716d10k.htm",
+      "ev_recalls": [
+        1.0,
+        1.0
+      ]
+    },
+    "GENERALMILLS_2020_10K": {
+      "company": "General Mills",
+      "period": 2020,
+      "doc_type": "10k",
+      "cik": "0000040704",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 537,
+      "n_evidence": 2,
+      "containment": 0.997,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0001193125-20-186469",
+      "url": "https://www.sec.gov/Archives/edgar/data/40704/000119312520186469/d89717d10k.htm",
+      "ev_recalls": [
+        1.0,
+        1.0
+      ]
+    },
+    "GENERALMILLS_2022_10K": {
+      "company": "General Mills",
+      "period": 2022,
+      "doc_type": "10k",
+      "cik": "0000040704",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 418,
+      "n_evidence": 2,
+      "containment": 0.172,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0001193125-22-185257",
+      "url": "https://www.sec.gov/Archives/edgar/data/40704/000119312522185257/d313744d10k.htm",
+      "ev_recalls": [
+        0.14,
+        0.21
+      ]
+    },
+    "JOHNSON_JOHNSON_2022Q4_EARNINGS": {
+      "company": "Johnson & Johnson",
+      "period": 2022,
+      "doc_type": "Earnings",
+      "cik": null,
+      "found": false,
+      "fetched": false,
+      "n_chunks": 0,
+      "n_evidence": 2,
+      "containment": null,
+      "error": "non-SEC type Earnings"
+    },
+    "JOHNSON_JOHNSON_2022_10K": {
+      "company": "Johnson & Johnson",
+      "period": 2022,
+      "doc_type": "10k",
+      "cik": "0000200406",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 710,
+      "n_evidence": 4,
+      "containment": 0.232,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0000200406-22-000022",
+      "url": "https://www.sec.gov/Archives/edgar/data/200406/000020040622000022/jnj-20220102.htm",
+      "ev_recalls": [
+        0.24,
+        0.3,
+        0.07,
+        0.31
+      ]
+    },
+    "JOHNSON_JOHNSON_2023Q2_EARNINGS": {
+      "company": "Johnson & Johnson",
+      "period": 2023,
+      "doc_type": "Earnings",
+      "cik": null,
+      "found": false,
+      "fetched": false,
+      "n_chunks": 0,
+      "n_evidence": 1,
+      "containment": null,
+      "error": "non-SEC type Earnings"
+    },
+    "JOHNSON_JOHNSON_2023_8K_dated-2023-08-30": {
+      "company": "Johnson & Johnson",
+      "period": 2023,
+      "doc_type": "8k",
+      "cik": "0000200406",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 11,
+      "n_evidence": 3,
+      "containment": 0.0,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0000200406-23-000115",
+      "url": "https://www.sec.gov/Archives/edgar/data/200406/000020040623000115/jnj-20231130.htm",
+      "ev_recalls": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "JPMORGAN_2021Q1_10Q": {
+      "company": "JPMorgan",
+      "period": 2021,
+      "doc_type": "10q",
+      "cik": "0000019617",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 832,
+      "n_evidence": 2,
+      "containment": 0.063,
+      "error": null,
+      "match": "name_prefix",
+      "accession": "0000019617-21-000458",
+      "url": "https://www.sec.gov/Archives/edgar/data/19617/000001961721000458/jpm-20210930.htm",
+      "ev_recalls": [
+        0.13,
+        0.0
+      ]
+    },
+    "JPMORGAN_2022Q2_10Q": {
+      "company": "JPMorgan",
+      "period": 2022,
+      "doc_type": "10q",
+      "cik": "0000019617",
+      "found": false,
+      "fetched": false,
+      "n_chunks": 0,
+      "n_evidence": 1,
+      "containment": null,
+      "error": "ConnectionError: HTTPSConnectionPool(host='data.sec.gov', port=443): Max retries exceeded with url: /submissions/CIK0000019617-submissions-053.json (Caused by NameResolutionError(\"HTTPSConnection(host='data.sec.gov', port=443): Failed to resolve 'data.sec.gov' ([Errno -3] Temporary failure in name resolution)\"))",
+      "match": "name_prefix"
+    },
+    "JPMORGAN_2022_10K": {
+      "company": "JPMorgan",
+      "period": 2022,
+      "doc_type": "10k",
+      "cik": "0000019617",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 1994,
+      "n_evidence": 1,
+      "containment": 0.914,
+      "error": null,
+      "match": "name_prefix",
+      "accession": "0000019617-23-000231",
+      "url": "https://www.sec.gov/Archives/edgar/data/19617/000001961723000231/jpm-20221231.htm",
+      "ev_recalls": [
+        0.91
+      ]
+    },
+    "JPMORGAN_2023Q2_10Q": {
+      "company": "JPMorgan",
+      "period": 2023,
+      "doc_type": "10q",
+      "cik": "0000019617",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 880,
+      "n_evidence": 1,
+      "containment": 0.069,
+      "error": null,
+      "match": "name_prefix",
+      "accession": "0000019617-23-000524",
+      "url": "https://www.sec.gov/Archives/edgar/data/19617/000001961723000524/jpm-20230930.htm",
+      "ev_recalls": [
+        0.07
+      ]
+    },
+    "KRAFTHEINZ_2019_10K": {
+      "company": "Kraft Heinz",
+      "period": 2019,
+      "doc_type": "10k",
+      "cik": "0001637459",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 712,
+      "n_evidence": 2,
+      "containment": 1.0,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0001637459-20-000027",
+      "url": "https://www.sec.gov/Archives/edgar/data/1637459/000163745920000027/form10-k2019.htm",
+      "ev_recalls": [
+        1.0,
+        1.0
+      ]
+    },
+    "LOCKHEEDMARTIN_2020_10K": {
+      "company": "Lockheed Martin",
+      "period": 2020,
+      "doc_type": "10k",
+      "cik": "0000936468",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 843,
+      "n_evidence": 2,
+      "containment": 1.0,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0000936468-21-000013",
+      "url": "https://www.sec.gov/Archives/edgar/data/936468/000093646821000013/lmt-20201231.htm",
+      "ev_recalls": [
+        1.0,
+        1.0
+      ]
+    },
+    "LOCKHEEDMARTIN_2021_10K": {
+      "company": "Lockheed Martin",
+      "period": 2021,
+      "doc_type": "10k",
+      "cik": "0000936468",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 856,
+      "n_evidence": 1,
+      "containment": 1.0,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0000936468-22-000008",
+      "url": "https://www.sec.gov/Archives/edgar/data/936468/000093646822000008/lmt-20211231.htm",
+      "ev_recalls": [
+        1.0
+      ]
+    },
+    "LOCKHEEDMARTIN_2022_10K": {
+      "company": "Lockheed Martin",
+      "period": 2022,
+      "doc_type": "10k",
+      "cik": "0000936468",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 823,
+      "n_evidence": 1,
+      "containment": 0.983,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0000936468-23-000009",
+      "url": "https://www.sec.gov/Archives/edgar/data/936468/000093646823000009/lmt-20221231.htm",
+      "ev_recalls": [
+        0.98
+      ]
+    },
+    "MGMRESORTS_2018_10K": {
+      "company": "MGM Resorts",
+      "period": 2018,
+      "doc_type": "10k",
+      "cik": "0000789570",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 963,
+      "n_evidence": 1,
+      "containment": 0.732,
+      "error": null,
+      "match": "name_prefix",
+      "accession": "0001564590-19-004807",
+      "url": "https://www.sec.gov/Archives/edgar/data/789570/000156459019004807/mgm-10k_20181231.htm",
+      "ev_recalls": [
+        0.73
+      ]
+    },
+    "MGMRESORTS_2020_10K": {
+      "company": "MGM Resorts",
+      "period": 2020,
+      "doc_type": "10k",
+      "cik": "0000789570",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 974,
+      "n_evidence": 2,
+      "containment": 0.37,
+      "error": null,
+      "match": "name_prefix",
+      "accession": "0001564590-21-009205",
+      "url": "https://www.sec.gov/Archives/edgar/data/789570/000156459021009205/mgm-10k_20201231.htm",
+      "ev_recalls": [
+        0.57,
+        0.17
+      ]
+    },
+    "MGMRESORTS_2022Q4_EARNINGS": {
+      "company": "MGM Resorts",
+      "period": 2022,
+      "doc_type": "Earnings",
+      "cik": null,
+      "found": false,
+      "fetched": false,
+      "n_chunks": 0,
+      "n_evidence": 5,
+      "containment": null,
+      "error": "non-SEC type Earnings"
+    },
+    "MGMRESORTS_2022_10K": {
+      "company": "MGM Resorts",
+      "period": 2022,
+      "doc_type": "10k",
+      "cik": "0000789570",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 728,
+      "n_evidence": 1,
+      "containment": 1.0,
+      "error": null,
+      "match": "name_prefix",
+      "accession": "0000789570-23-000008",
+      "url": "https://www.sec.gov/Archives/edgar/data/789570/000078957023000008/mgm-20221231.htm",
+      "ev_recalls": [
+        1.0
+      ]
+    },
+    "MGMRESORTS_2023Q2_10Q": {
+      "company": "MGM Resorts",
+      "period": 2023,
+      "doc_type": "10q",
+      "cik": "0000789570",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 232,
+      "n_evidence": 1,
+      "containment": 0.0,
+      "error": null,
+      "match": "name_prefix",
+      "accession": "0000789570-23-000024",
+      "url": "https://www.sec.gov/Archives/edgar/data/789570/000078957023000024/mgm-20230930.htm",
+      "ev_recalls": [
+        0.0
+      ]
+    },
+    "MICROSOFT_2016_10K": {
+      "company": "Microsoft",
+      "period": 2016,
+      "doc_type": "10k",
+      "cik": "0000789019",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 288,
+      "n_evidence": 1,
+      "containment": 0.906,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0001193125-16-662209",
+      "url": "https://www.sec.gov/Archives/edgar/data/789019/000119312516662209/d187868d10k.htm",
+      "ev_recalls": [
+        0.91
+      ]
+    },
+    "MICROSOFT_2023_10K": {
+      "company": "Microsoft",
+      "period": 2023,
+      "doc_type": "10k",
+      "cik": "0000789019",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 623,
+      "n_evidence": 1,
+      "containment": 1.0,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0000950170-23-035122",
+      "url": "https://www.sec.gov/Archives/edgar/data/789019/000095017023035122/msft-20230630.htm",
+      "ev_recalls": [
+        1.0
+      ]
+    },
+    "NETFLIX_2015_10K": {
+      "company": "Netflix",
+      "period": 2015,
+      "doc_type": "10k",
+      "cik": "0001065280",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 150,
+      "n_evidence": 2,
+      "containment": 0.911,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0001065280-16-000047",
+      "url": "https://www.sec.gov/Archives/edgar/data/1065280/000106528016000047/nflx201510k.htm",
+      "ev_recalls": [
+        0.86,
+        0.96
+      ]
+    },
+    "NETFLIX_2017_10K": {
+      "company": "Netflix",
+      "period": 2017,
+      "doc_type": "10k",
+      "cik": "0001065280",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 152,
+      "n_evidence": 1,
+      "containment": 0.918,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0001065280-18-000069",
+      "url": "https://www.sec.gov/Archives/edgar/data/1065280/000106528018000069/q4nflx201710k.htm",
+      "ev_recalls": [
+        0.92
+      ]
+    },
+    "NIKE_2018_10K": {
+      "company": "Nike",
+      "period": 2018,
+      "doc_type": "10k",
+      "cik": "0000320187",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 207,
+      "n_evidence": 1,
+      "containment": 0.873,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0000320187-18-000142",
+      "url": "https://www.sec.gov/Archives/edgar/data/320187/000032018718000142/nke-5312018x10k.htm",
+      "ev_recalls": [
+        0.87
+      ]
+    },
+    "NIKE_2019_10K": {
+      "company": "Nike",
+      "period": 2019,
+      "doc_type": "10k",
+      "cik": "0000320187",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 170,
+      "n_evidence": 1,
+      "containment": 0.889,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0000320187-19-000051",
+      "url": "https://www.sec.gov/Archives/edgar/data/320187/000032018719000051/nke-531201910k.htm",
+      "ev_recalls": [
+        0.89
+      ]
+    },
+    "NIKE_2021_10K": {
+      "company": "Nike",
+      "period": 2021,
+      "doc_type": "10k",
+      "cik": "0000320187",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 712,
+      "n_evidence": 2,
+      "containment": 1.0,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0000320187-21-000028",
+      "url": "https://www.sec.gov/Archives/edgar/data/320187/000032018721000028/nke-20210531.htm",
+      "ev_recalls": [
+        1.0,
+        1.0
+      ]
+    },
+    "NIKE_2023_10K": {
+      "company": "Nike",
+      "period": 2023,
+      "doc_type": "10k",
+      "cik": "0000320187",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 665,
+      "n_evidence": 1,
+      "containment": 1.0,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0000320187-23-000039",
+      "url": "https://www.sec.gov/Archives/edgar/data/320187/000032018723000039/nke-20230531.htm",
+      "ev_recalls": [
+        1.0
+      ]
+    },
+    "PAYPAL_2022_10K": {
+      "company": "Paypal",
+      "period": 2022,
+      "doc_type": "10k",
+      "cik": "0001633917",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 927,
+      "n_evidence": 1,
+      "containment": 1.0,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0001633917-23-000033",
+      "url": "https://www.sec.gov/Archives/edgar/data/1633917/000163391723000033/pypl-20221231.htm",
+      "ev_recalls": [
+        1.0
+      ]
+    },
+    "PEPSICO_2021_10K": {
+      "company": "PepsiCo",
+      "period": 2021,
+      "doc_type": "10k",
+      "cik": "0000077476",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 694,
+      "n_evidence": 1,
+      "containment": 1.0,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0000077476-22-000010",
+      "url": "https://www.sec.gov/Archives/edgar/data/77476/000007747622000010/pep-20211225.htm",
+      "ev_recalls": [
+        1.0
+      ]
+    },
+    "PEPSICO_2022_10K": {
+      "company": "PepsiCo",
+      "period": 2022,
+      "doc_type": "10k",
+      "cik": "0000077476",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 745,
+      "n_evidence": 8,
+      "containment": 0.914,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0000077476-23-000007",
+      "url": "https://www.sec.gov/Archives/edgar/data/77476/000007747623000007/pep-20221231.htm",
+      "ev_recalls": [
+        0.96,
+        1.0,
+        1.0,
+        0.35,
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    "PEPSICO_2023Q1_EARNINGS": {
+      "company": "PepsiCo",
+      "period": 2023,
+      "doc_type": "Earnings",
+      "cik": null,
+      "found": false,
+      "fetched": false,
+      "n_chunks": 0,
+      "n_evidence": 2,
+      "containment": null,
+      "error": "non-SEC type Earnings"
+    },
+    "PEPSICO_2023_8K_dated-2023-05-05": {
+      "company": "PepsiCo",
+      "period": 2023,
+      "doc_type": "8k",
+      "cik": "0000077476",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 34,
+      "n_evidence": 1,
+      "containment": 0.0,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0001104659-23-117278",
+      "url": "https://www.sec.gov/Archives/edgar/data/77476/000110465923117278/tm2328675d3_8k.htm",
+      "ev_recalls": [
+        0.0
+      ]
+    },
+    "PEPSICO_2023_8K_dated-2023-05-30": {
+      "company": "PepsiCo",
+      "period": 2023,
+      "doc_type": "8k",
+      "cik": "0000077476",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 34,
+      "n_evidence": 2,
+      "containment": 0.0,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0001104659-23-117278",
+      "url": "https://www.sec.gov/Archives/edgar/data/77476/000110465923117278/tm2328675d3_8k.htm",
+      "ev_recalls": [
+        0.0,
+        0.0
+      ]
+    },
+    "PFIZER_2021_10K": {
+      "company": "Pfizer",
+      "period": 2021,
+      "doc_type": "10k",
+      "cik": "0000078003",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 1024,
+      "n_evidence": 4,
+      "containment": 0.434,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0000078003-22-000027",
+      "url": "https://www.sec.gov/Archives/edgar/data/78003/000007800322000027/pfe-20211231.htm",
+      "ev_recalls": [
+        1.0,
+        0.74,
+        0.0,
+        0.0
+      ]
+    },
+    "Pfizer_2023Q2_10Q": {
+      "company": "Pfizer",
+      "period": 2023,
+      "doc_type": "10q",
+      "cik": "0000078003",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 306,
+      "n_evidence": 3,
+      "containment": 0.13,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0000078003-23-000115",
+      "url": "https://www.sec.gov/Archives/edgar/data/78003/000007800323000115/pfe-20231001.htm",
+      "ev_recalls": [
+        0.19,
+        0.0,
+        0.19
+      ]
+    },
+    "ULTABEAUTY_2023Q4_EARNINGS": {
+      "company": "Ulta Beauty",
+      "period": 2023,
+      "doc_type": "Earnings",
+      "cik": null,
+      "found": false,
+      "fetched": false,
+      "n_chunks": 0,
+      "n_evidence": 4,
+      "containment": null,
+      "error": "non-SEC type Earnings"
+    },
+    "ULTABEAUTY_2023_10K": {
+      "company": "Ulta Beauty",
+      "period": 2023,
+      "doc_type": "10k",
+      "cik": "0001403568",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 615,
+      "n_evidence": 2,
+      "containment": 0.824,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0001558370-23-004581",
+      "url": "https://www.sec.gov/Archives/edgar/data/1403568/000155837023004581/ulta-20230128x10k.htm",
+      "ev_recalls": [
+        0.65,
+        1.0
+      ]
+    },
+    "VERIZON_2021_10K": {
+      "company": "Verizon",
+      "period": 2021,
+      "doc_type": "10k",
+      "cik": "0000732712",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 757,
+      "n_evidence": 3,
+      "containment": 0.034,
+      "error": null,
+      "match": "name_prefix",
+      "accession": "0000732712-22-000008",
+      "url": "https://www.sec.gov/Archives/edgar/data/732712/000073271222000008/vz-20211231.htm",
+      "ev_recalls": [
+        0.1,
+        0.0,
+        0.0
+      ]
+    },
+    "VERIZON_2022_10K": {
+      "company": "Verizon",
+      "period": 2022,
+      "doc_type": "10k",
+      "cik": "0000732712",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 760,
+      "n_evidence": 4,
+      "containment": 0.75,
+      "error": null,
+      "match": "name_prefix",
+      "accession": "0000732712-23-000012",
+      "url": "https://www.sec.gov/Archives/edgar/data/732712/000073271223000012/vz-20221231.htm",
+      "ev_recalls": [
+        1.0,
+        1.0,
+        1.0,
+        0.0
+      ]
+    },
+    "WALMART_2018_10K": {
+      "company": "Walmart",
+      "period": 2018,
+      "doc_type": "10k",
+      "cik": "0000104169",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 262,
+      "n_evidence": 2,
+      "containment": 0.961,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0000104169-18-000028",
+      "url": "https://www.sec.gov/Archives/edgar/data/104169/000010416918000028/wmtform10-kx1312018.htm",
+      "ev_recalls": [
+        0.96,
+        0.97
+      ]
+    },
+    "WALMART_2019_10K": {
+      "company": "Walmart",
+      "period": 2019,
+      "doc_type": "10k",
+      "cik": "0000104169",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 264,
+      "n_evidence": 1,
+      "containment": 0.508,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0000104169-19-000016",
+      "url": "https://www.sec.gov/Archives/edgar/data/104169/000010416919000016/wmtform10-kx1312019.htm",
+      "ev_recalls": [
+        0.51
+      ]
+    },
+    "WALMART_2020_10K": {
+      "company": "Walmart",
+      "period": 2020,
+      "doc_type": "10k",
+      "cik": "0000104169",
+      "found": true,
+      "fetched": true,
+      "n_chunks": 706,
+      "n_evidence": 2,
+      "containment": 1.0,
+      "error": null,
+      "match": "name_exact",
+      "accession": "0000104169-20-000011",
+      "url": "https://www.sec.gov/Archives/edgar/data/104169/000010416920000011/wmtform10-kx1312020.htm",
+      "ev_recalls": [
+        1.0,
+        1.0
+      ]
+    }
+  },
+  "summary": {
+    "n_docs": 84,
+    "resolved_cik": 76,
+    "filing_found": 75,
+    "html_fetched": 75,
+    "mean_containment": 0.676,
+    "docs_containment_ge_0.8": 47,
+    "docs_containment_ge_0.5": 53
+  }
+}

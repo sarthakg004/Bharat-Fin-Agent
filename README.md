@@ -193,20 +193,16 @@ the same command resumes where it stopped (the RAGAS scorer is also
 resumable: already-scored rows are skipped on the next run). The UI surfaces
 the same condition as "Limit exhausted" within seconds instead of hanging.
 
-### Parsing evaluation (upload pipeline)
+### Parsing choice (upload pipeline)
 
-The document-upload parser (Docling) is benchmarked against the production
-pypdf baseline on FinanceBench PDFs, using the human-annotated gold evidence
-passages as free ground truth:
-
-```bash
-python -m finagent.evaluation.parsing.compare --sample 10
-```
-
-→ `results/parsing_eval.{json,md}`: **evidence recall** (fraction of each gold
-passage's 10-word shingles found verbatim in the parsed text — judge-free
-fidelity), extraction yield (chars/page), page coverage, chunk-size stats under
-the production splitter, tables detected, and parse time per document.
+The document-upload parser (Docling) was benchmarked against the pypdf baseline
+on FinanceBench PDFs, scored by **evidence recall** against the human-annotated
+gold passages (judge-free fidelity). pypdf won — 1.0 recall at ~14 s/doc vs
+Docling's 0.92 at ~89 s/doc — so the batch corpus stays on pypdf; Docling is
+used only for user uploads, where its table reconstruction is worth the latency
+on a single document. The numbers live in `results/parsing_eval.md`. (The
+throwaway comparison harness that produced them was retired with the PDF eval
+corpus; the retrieval eval now runs on the served SEC **HTML**, see below.)
 
 ### Why not a "true" multi-agent system?
 

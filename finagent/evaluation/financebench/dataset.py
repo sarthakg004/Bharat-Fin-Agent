@@ -93,6 +93,28 @@ def tag_question_types(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def restrict_to_served_docs(df: pd.DataFrame, corpus_dir=None) -> pd.DataFrame:
+    """Keep only questions whose evidence docs are ALL available as served HTML.
+
+    The eval corpus is the original SEC HTML (what production serves); 8-K /
+    earnings docs are excluded (their evidence is in exhibits, not the primary
+    filing), so their questions have no gold chunk. Dropping them here keeps the
+    eval honest — a question with no retrievable evidence would otherwise count
+    as a retrieval failure that isn't one. A question survives only if every
+    evidence doc has an HTML file on disk.
+    """
+    from .indexing import corpus_path
+
+    def served(row) -> bool:
+        docs = _evidence_docs(row.get("evidence")) or {row.get("doc_name", "")}
+        docs.discard("")
+        return bool(docs) and all(corpus_path(d, corpus_dir).exists()
+                                  if corpus_dir else corpus_path(d).exists()
+                                  for d in docs)
+
+    return df[df.apply(served, axis=1)].reset_index(drop=True)
+
+
 def split_heldout(
     df: pd.DataFrame,
     n_heldout: int = 50,

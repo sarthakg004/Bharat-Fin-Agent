@@ -29,7 +29,7 @@ import pandas as pd
 from finagent.vectorstore import build_store
 
 from .dataset import load_questions, tag_question_types
-from .indexing import DEFAULT_PDF_DIR, EVAL_COLLECTION
+from .indexing import DEFAULT_CORPUS_DIR, EVAL_COLLECTION, corpus_path
 
 DEFAULT_GOLD_PATH = "results/financebench_gold.json"
 
@@ -48,7 +48,7 @@ def _one_filing_filter(local_path: str):
 def build_gold_map(
     questions: Optional[pd.DataFrame] = None,
     collection_name: str = EVAL_COLLECTION,
-    pdf_dir: Union[str, Path] = DEFAULT_PDF_DIR,
+    corpus_dir: Union[str, Path] = DEFAULT_CORPUS_DIR,
     gold_path: Union[str, Path] = DEFAULT_GOLD_PATH,
     reuse: bool = True,
 ) -> dict:
@@ -74,8 +74,18 @@ def build_gold_map(
     elif "qtype" not in questions.columns:
         questions = tag_question_types(questions)
 
+    # Only questions whose evidence is a served HTML filing (10-K/10-Q). 8-K /
+    # earnings docs have no served HTML, so their questions are dropped rather
+    # than counted as retrieval misses they aren't.
+    from .dataset import restrict_to_served_docs
+    before = len(questions)
+    questions = restrict_to_served_docs(questions, corpus_dir)
+    dropped = before - len(questions)
+    if dropped:
+        print(f"gold map: {len(questions)} served-doc questions "
+              f"({dropped} dropped — 8-K/earnings not served as HTML)")
+
     store = build_store(collection_name)
-    pdf_dir = Path(pdf_dir)
 
     gold: dict = {}
     n_unmatched = 0
@@ -91,7 +101,7 @@ def build_gold_map(
             )
             if not doc_name or not evidence_text:
                 continue
-            local_path = str(pdf_dir / f"{doc_name}.pdf")
+            local_path = str(corpus_path(doc_name, corpus_dir))
             # Restrict the search to the chunks of this one filing.
             hits = store.similarity_search_with_relevance_scores(
                 evidence_text[:2000],
