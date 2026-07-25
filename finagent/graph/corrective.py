@@ -198,11 +198,9 @@ class AgenticRAGv2(AgenticRAG):
         Retrieving over several collections and letting the grader/reranker sort
         it out keeps every collection searchable without a toggle."""
         if self._hybrids is None:
-            from finagent.vectorstore import build_store
-
             self._hybrids = [
-                HybridRetriever(
-                    build_store(c, self.embedding_model),
+                HybridRetriever.from_collection(
+                    c, self.embedding_model,
                     reranker_model=self.reranker_model,
                     pool_top_k=self.pool_top_k,
                     final_top_k=self.final_top_k,

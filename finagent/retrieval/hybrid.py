@@ -88,21 +88,24 @@ class HybridRetriever:
     # ------------------------------------------------------------------ #
 
     def search(self, query: str) -> list[tuple[str, dict]]:
-        """Return up to `final_top_k` (text, metadata) pairs for the query."""
+        """Return up to `final_top_k` (text, metadata) pairs for the query.
+
+        This is `retrieve()` plus the query→filter inference and the relax
+        fallback; the actual pool→collapse→rerank engine lives in `retrieve`.
+        """
         flt = self.infer_filter(query) if self.auto_filter else None
-        pool = self._pool(query, flt)
-        if not pool and flt and (flt.get("years") or flt.get("items")):
+        hits = self.retrieve(query, self.final_top_k, flt)
+        if not hits and flt and (flt.get("years") or flt.get("items")):
             # The YEAR (fiscal-calendar labelling) or the ITEM clause (a
             # collection ingested before section tagging) can over-narrow —
             # relax both back to company-only. The COMPANY clause is never
             # relaxed: chunks from a different company are noise that misleads
             # the synthesizer, and an empty result correctly hands off to the
-            # fetch/web fallbacks.
-            pool = self._pool(query, {"companies": flt["companies"]})
-        if not pool:
-            return []
-        pool = self._collapse_to_parents(pool)
-        return self._rerank(query, pool)[: self.final_top_k]
+            # fetch/web fallbacks. (retrieve() returns [] iff the pool is empty,
+            # so this fires on exactly the over-narrowed case the old code did.)
+            hits = self.retrieve(query, self.final_top_k,
+                                 {"companies": flt["companies"]})
+        return hits
 
     def infer_filter(self, query: str) -> Optional[dict]:
         """Company/year filter inferred from the query against the collection's
@@ -115,9 +118,11 @@ class HybridRetriever:
         return infer_filter(query, self._company_vocab, self._years_by_co)
 
     # ------------------------------------------------------------------ #
-    # Demonstration / inspection API (used by the reference notebook).
-    # These expose each retrieval stage separately so a reader can see what
-    # each contributes. They reuse the same internals as `search()`.
+    # Retrieval stages, exposed as named steps. `search()` composes them
+    # (get_pool → collapse → rerank); a notebook can also call each one
+    # standalone to see what each contributes. `flt` defaults to off, so a
+    # bare `get_pool(query)` / `retrieve(query)` gives the raw, unfiltered
+    # view while `search()` passes the inferred company/year filter through.
     # ------------------------------------------------------------------ #
 
     @classmethod
@@ -132,9 +137,10 @@ class HybridRetriever:
 
         return cls(build_store(collection, embedding_model), **kwargs)
 
-    def get_pool(self, query: str) -> list[tuple[str, dict]]:
-        """The fused candidate pool, before reranking."""
-        return self._pool(query)
+    def get_pool(self, query: str,
+                 flt: Optional[dict] = None) -> list[tuple[str, dict]]:
+        """The fused (sparse+dense, RRF) candidate pool, before reranking."""
+        return self._pool(query, flt)
 
     def rerank(
         self, query: str, candidates: list[tuple[str, dict]], top_k: int = 5
@@ -142,13 +148,15 @@ class HybridRetriever:
         """Cross-encoder rerank a candidate pool; return the top_k."""
         return self._rerank(query, candidates)[:top_k]
 
-    def retrieve(self, query: str, k: int = 5) -> list[tuple[str, dict]]:
-        """Full hybrid retrieval (pool → rerank) returning the top-k."""
-        pool = self._pool(query)
+    def retrieve(self, query: str, k: int = 5,
+                 flt: Optional[dict] = None) -> list[tuple[str, dict]]:
+        """The retrieval engine: pool → collapse-to-parents → rerank → top-k.
+        `search()` wraps this with filter inference and the relax fallback."""
+        pool = self.get_pool(query, flt)
         if not pool:
             return []
         pool = self._collapse_to_parents(pool)
-        return self._rerank(query, pool)[:k]
+        return self.rerank(query, pool, k)
 
     # ------------------------------------------------------------------ #
     # Internals
