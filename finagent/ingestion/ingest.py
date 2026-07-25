@@ -159,7 +159,6 @@ class CorpusIngester:
         collection_name: str = "financial_filings",
         market: str = "us",
         embedding_model: str = DEFAULT_EMBED_MODEL,
-        embedding_provider: str = "huggingface",
         chunk_size: int = DEFAULT_CHUNK_SIZE,
         chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
         unstructured_strategy: str = "fast",
@@ -175,9 +174,8 @@ class CorpusIngester:
             state_dir: Where the ingestion-stats JSON is written.
             collection_name: Qdrant collection to write into (e.g. "us_filings_v3").
             market: stored as document metadata (default "us").
-            embedding_model: Model name. For HuggingFace: any sentence-transformers
-                model. For OpenAI: "text-embedding-3-small" or similar.
-            embedding_provider: "huggingface" (free, local) or "openai" (faster, paid).
+            embedding_model: sentence-transformers model name (the vector store
+                builds the shared HuggingFace embedder from it).
             chunk_size: Characters per chunk before splitting.
             chunk_overlap: Overlapping characters between adjacent chunks.
             unstructured_strategy: "fast" (default, no OCR) or "hi_res" (slow,
@@ -189,7 +187,6 @@ class CorpusIngester:
         self.collection_name = collection_name
         self.market = market
         self.embedding_model = embedding_model
-        self.embedding_provider = embedding_provider
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self.unstructured_strategy = unstructured_strategy
@@ -210,7 +207,6 @@ class CorpusIngester:
         self.state_dir.mkdir(parents=True, exist_ok=True)
 
         # Resources initialized lazily on first use.
-        self._embeddings = None
         self._splitter = None
         self._parent_splitter = None
         self._child_splitter = None
@@ -656,19 +652,6 @@ class CorpusIngester:
             )
         return self._child_splitter
 
-    def _get_embeddings(self):
-        if self._embeddings is None:
-            if self.embedding_provider == "openai":
-                from langchain_openai import OpenAIEmbeddings
-                self._embeddings = OpenAIEmbeddings(model=self.embedding_model)
-            else:
-                # Reuse the process-wide, lru_cached HuggingFace embedder so a
-                # dynamic fetch (Phase 5) ingesting inside the running agent does
-                # NOT load a second ~130MB copy of the BGE model. Same config
-                # (normalized, device-aware) as the retrieval path.
-                from finagent.vectorstore import get_embeddings
-                self._embeddings = get_embeddings(self.embedding_model)
-        return self._embeddings
 
     def _get_vector_store(self):
         if self._vector_store is None:
@@ -736,13 +719,7 @@ def _build_cli() -> argparse.ArgumentParser:
     parser.add_argument(
         "--embedding-model",
         default=DEFAULT_EMBED_MODEL,
-        help="HuggingFace ST model or OpenAI model name",
-    )
-    parser.add_argument(
-        "--embedding-provider",
-        choices=["huggingface", "openai"],
-        default="huggingface",
-        help="huggingface = free local; openai = paid + faster",
+        help="sentence-transformers model name",
     )
     parser.add_argument(
         "--chunk-size",
@@ -775,7 +752,6 @@ def main():
         collection_name=args.collection,
         market=args.market,
         embedding_model=args.embedding_model,
-        embedding_provider=args.embedding_provider,
         chunk_size=args.chunk_size,
         chunk_overlap=args.chunk_overlap,
     )

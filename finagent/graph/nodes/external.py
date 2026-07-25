@@ -387,18 +387,6 @@ class ExternalNodes:
         return {"edgar_results": results}
 
     @staticmethod
-    def _format_web_results(web_res: list[dict]) -> str:
-        parts: list[str] = []
-        for h in web_res:
-            tier = h.get("tier", "web")
-            label = "Trusted" if tier == "trusted" else "Web"
-            tag = f"<News: {h.get('title', '?')[:90]} — {h.get('source', 'web')}>"
-            url = h.get("url", "")
-            body = (h.get("content") or "")[:1000]
-            parts.append(f"[{label}] {tag} {url}\n{body}")
-        return "\n\n".join(parts)
-
-    @staticmethod
     def _format_edgar_result(r: dict) -> str:
         """A readable cross-document result: the matching companies + filing links."""
         lines = [

@@ -67,15 +67,8 @@ class SecFilingFetcher(BaseTool):
         self.corpus_dir = Path(corpus_dir)
         self.embedding_model = embedding_model
         self.market = market
-        self._store = None
 
     # --- membership gate -----------------------------------------------------
-
-    def _get_store(self):
-        if self._store is None:
-            from finagent.vectorstore import build_store
-            self._store = build_store(self.collection_name, self.embedding_model)
-        return self._store
 
     def is_indexed(self, ticker: str) -> bool:
         """Cheap metadata check: is any chunk tagged with this ticker?"""

@@ -416,37 +416,6 @@ class AgenticRAG:
 
 
 # --------------------------------------------------------------------------- #
-# Comparison table helper (Day 7)
-# --------------------------------------------------------------------------- #
-
-def append_comparison_row(
-    config_name: str,
-    metrics: dict,
-    csv_path: Union[str, Path] = "results/comparison.csv",
-) -> None:
-    """Append/update one configuration's mean metrics in results/comparison.csv.
-
-    `metrics` keys are metric names (faithfulness, answer_relevancy, ...).
-    Re-running with the same config_name overwrites that row.
-    """
-    import pandas as pd
-
-    csv_path = Path(csv_path)
-    csv_path.parent.mkdir(parents=True, exist_ok=True)
-    row = {"configuration": config_name, **{k: round(float(v), 4) for k, v in metrics.items()}}
-
-    if csv_path.exists():
-        df = pd.read_csv(csv_path)
-        df = df[df["configuration"] != config_name]
-        df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
-    else:
-        df = pd.DataFrame([row])
-
-    df.to_csv(csv_path, index=False)
-    print(f"Updated {csv_path} with row '{config_name}'")
-
-
-# --------------------------------------------------------------------------- #
 # CLI
 # --------------------------------------------------------------------------- #
 

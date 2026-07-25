@@ -18,12 +18,12 @@ Cross-document tools:
     EdgarFullTextSearch (Phase 6) — full-text search across many companies' filings.
 
 Infrastructure:
-    BaseTool, ToolRegistry — interface + name→tool registry.
+    BaseTool — abstract tool interface.
 
 Depends on: config, llm, retrieval (some tools).
 """
 
-from finagent.tools.base import BaseTool, ToolRegistry
+from finagent.tools.base import BaseTool
 
 # Live tools
 from finagent.tools.market import call_tool, get_quote, get_company_info
@@ -37,7 +37,7 @@ from finagent.tools.sec_fetch import SecFilingFetcher
 from finagent.tools.edgar_search import EdgarFullTextSearch
 
 __all__ = [
-    "BaseTool", "ToolRegistry",
+    "BaseTool",
     "call_tool", "get_quote", "get_company_info", "WebSearcher",
     "TickerCIKResolver", "XBRLClient", "FinancialCalculator",
     "SecFilingFetcher", "EdgarFullTextSearch",

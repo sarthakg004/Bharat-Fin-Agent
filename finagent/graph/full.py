@@ -507,7 +507,6 @@ class AgenticRAGv3(AgenticRAGv2):
             {"retrieve": "retrieve", "end": END},
         )
         return g.compile()
-        return "\n\n".join(parts)
 
 
 # --------------------------------------------------------------------------- #
