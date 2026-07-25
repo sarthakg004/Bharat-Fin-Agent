@@ -143,7 +143,6 @@ class AgenticRAG:
             "question": question,
             "iteration_count": 0,
             "errors": [],
-            "table_results": [],
             "web_results": [],
         }
         return self.graph.invoke(

@@ -6,9 +6,8 @@ Full agentic RAG (v4) — the deployed agent. Adds to v3:
   * **Fused plan+route** (inherited from v3) feeding a query-type dispatcher:
     purely numeric/market/cross-document/external questions skip retrieval
     and go straight to the tool chain.
-  * **Structured numeric lanes** — XBRL facts (exact filed figures), a
-    deterministic calculator over them (margins/ratios/growth/CAGR), and the
-    table agent as a fallback.
+  * **Structured numeric lanes** — XBRL facts (exact filed figures) and a
+    deterministic calculator over them (margins/ratios/growth/CAGR).
   * **Web search** — `web_search_node` covers questions the corpus can't (post
     cut-off events, latest news) via Tavily (`TAVILY_API_KEY`). Escalates
     automatically when retrieval comes back empty/weak or the draft admits it
@@ -22,13 +21,13 @@ Full agentic RAG (v4) — the deployed agent. Adds to v3:
 Graph:
 
     START → planner(+routes) → router → {fetch_filing → retrieve → grader → rewrite↺ | xbrl}
-          → xbrl → calculator → table_agent → (market_data ∥ web_search ∥ edgar_search)
+          → xbrl → calculator → (market_data ∥ web_search ∥ edgar_search)
           → evidence_builder → synthesize → critic → verify_numbers
           → confidence → {answer | answer_with_warning | low_confidence} → END
                        ↘ refuse → END
 
 The node implementations live in `finagent/graph/nodes/` as topical mixins —
-fetch (SEC fetch + retrieval), numeric (XBRL/calculator/table), external
+fetch (SEC fetch + retrieval), numeric (XBRL/calculator), external
 (market/web/EDGAR), synthesis (evidence + drafting + critic), verification
 (figure grounding + confidence gate). This module owns the constructor, the
 lane resources, the routing functions, and the graph wiring.
@@ -372,7 +371,6 @@ class AgenticRAGv4(FetchNodes, NumericNodes, ExternalNodes,
         g.add_node("rewrite", self.rewrite_node)
         g.add_node("xbrl", self.xbrl_node)
         g.add_node("calculator", self.calculator_node)
-        g.add_node("table_agent", self.table_agent_node)
         g.add_node("market_data", self.market_data_node)
         g.add_node("web_search", self.web_search_node)
         g.add_node("edgar_search", self.edgar_search_node)
@@ -399,32 +397,29 @@ class AgenticRAGv4(FetchNodes, NumericNodes, ExternalNodes,
         g.add_edge("fetch_filing", "retrieve")
         g.add_edge("retrieve", "grader")
         # Phase 3-4: numeric sub-queries hit XBRL first (exact structured facts),
-        # then the calculator (derived metrics over those facts), then the table
-        # agent supplements. `_grade_router` still returns "table_agent" as its
-        # proceed verdict; we send that to `xbrl` and chain
-        # xbrl → calculator → table_agent so all three run.
+        # then the calculator (derived metrics over those facts). `_grade_router`
+        # returns "proceed" once retrieval is good enough (or rewriting won't
+        # help); we send that to `xbrl` and chain xbrl → calculator.
         g.add_conditional_edges(
             "grader", self._grade_router,
-            {"rewrite": "rewrite", "table_agent": "xbrl"},
+            {"rewrite": "rewrite", "proceed": "xbrl"},
         )
         # Re-route after a rewrite: the rewritten query replaces sub_queries, so
         # it must be re-classified or query_routes goes stale (which silently
         # dropped the table/market lanes on the retry pass).
         g.add_edge("rewrite", "router")
-        # Numeric chain stays SEQUENTIAL: xbrl→calculator→table_agent share the
-        # XBRL client (facts + resolver cache) and table_agent reads the
-        # `tables` collection. Keeping them ordered avoids the concurrent-client
-        # segfault class this codebase already hit once (commit 71e6bda).
+        # Numeric chain stays SEQUENTIAL: xbrl→calculator share the XBRL client
+        # (facts + resolver cache). Keeping them ordered avoids the concurrent-
+        # client segfault class this codebase already hit once (commit 71e6bda).
         g.add_edge("xbrl", "calculator")
-        g.add_edge("calculator", "table_agent")
         # #2: the three NETWORK-bound lanes are mutually independent (distinct
         # state keys, different services) and dominate tool latency, so fan them
         # out to run in PARALLEL after the numeric chain. Only web_search's
-        # news-fallback touches the store, and it can't race table_agent (which
-        # has already finished) — so no two store readers ever overlap.
-        g.add_edge("table_agent", "market_data")
-        g.add_edge("table_agent", "web_search")
-        g.add_edge("table_agent", "edgar_search")
+        # news-fallback touches the store, and by here the sequential numeric
+        # chain has finished, so no two store readers ever overlap.
+        g.add_edge("calculator", "market_data")
+        g.add_edge("calculator", "web_search")
+        g.add_edge("calculator", "edgar_search")
         # Fan-in: evidence_builder runs once, after all three parallel lanes land,
         # and normalises every lane's output into one `evidence` list before synth.
         g.add_edge("market_data", "evidence_builder")
@@ -500,7 +495,6 @@ class AgenticRAGv4(FetchNodes, NumericNodes, ExternalNodes,
 def _build_cli() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Run the full agentic RAG (v4).")
     p.add_argument("--collection", default=settings.us_collection)
-    p.add_argument("--table-collection", default="tables")
     p.add_argument("--provider", choices=["groq", "gemini", "openai", "anthropic"],
                    default="groq")
     p.add_argument("--planner-model", default=None)
@@ -508,13 +502,11 @@ def _build_cli() -> argparse.ArgumentParser:
     p.add_argument("--critic-model", default=None)
     p.add_argument("--grader-model", default=None)
     p.add_argument("--router-model", default=None)
-    p.add_argument("--code-model", default=None)
     p.add_argument("--verifier-model", default=None)
     p.add_argument("--embedding-model", default=DEFAULT_EMBED_MODEL)
     p.add_argument("--reranker-model", default="BAAI/bge-reranker-large")
     p.add_argument("--pool-top-k", type=int, default=48)
     p.add_argument("--final-top-k", type=int, default=5)
-    p.add_argument("--table-top-k", type=int, default=3)
     p.add_argument("--web-top-k", type=int, default=3)
     p.add_argument("--grade-threshold", type=float, default=3.0)
     p.add_argument("--max-rewrites", type=int, default=3)
@@ -556,8 +548,6 @@ def main():
         reranker_model=args.reranker_model,
         pool_top_k=args.pool_top_k,
         final_top_k=args.final_top_k,
-        table_collection=args.table_collection,
-        table_top_k=args.table_top_k,
         web_top_k=args.web_top_k,
         grade_threshold=args.grade_threshold,
         max_rewrites=args.max_rewrites,
@@ -603,10 +593,6 @@ def main():
     )
     print(f"\nAnswer:\n{state.get('final_answer')}")
     print(f"\nCitations:        {state.get('citations')}")
-    if state.get("table_results"):
-        print(f"\nTable computations ({len(state['table_results'])}):")
-        for t in state["table_results"]:
-            print(f"  - {t['sub_query']}: {t.get('answer', '')[:120]}")
     if state.get("web_results"):
         print(f"\nWeb hits ({len(state['web_results'])}):")
         for h in state["web_results"]:

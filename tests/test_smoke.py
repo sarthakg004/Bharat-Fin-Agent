@@ -82,12 +82,11 @@ def _build_agent():
     from finagent.graph import AgenticRAGv4
 
     return AgenticRAGv4(
-        collection_name="us_filings",
+        collection_name="us_filings_v3",
         reranker_model="BAAI/bge-reranker-base",
         pool_top_k=16, final_top_k=5,
         max_rewrites=2, max_critic_retries=1,
-        table_collection="tables",
-        web_top_k=10, table_top_k=3,
+        web_top_k=10,
     )
 
 
@@ -95,7 +94,7 @@ def test_agent_graph_has_expected_nodes():
     agent = _build_agent()
     nodes = {n for n in agent.graph.get_graph().nodes if not n.startswith("__")}
     expected = {
-        "planner", "router", "retrieve", "grader", "rewrite", "table_agent",
+        "planner", "router", "retrieve", "grader", "rewrite",
         "market_data", "web_search", "evidence_builder", "synthesize", "critic",
         "verify_numbers", "refuse",
     }
@@ -272,12 +271,10 @@ def test_observability_summaries():
     th = _tool_health({
         "xbrl_facts": [{"ok": True}, {"ok": False}],
         "market_data": [{"ok": True}],
-        "table_results": [{"error": "boom"}, {"answer": "x"}],
         "web_results": [{"title": "a"}],
     })
     assert th["xbrl"] == {"calls": 2, "ok": 1, "failed": 1}
     assert th["market"]["ok"] == 1
-    assert th["table"] == {"calls": 2, "ok": 1, "failed": 1}
     assert th["web"]["ok"] == 1
 
 
@@ -508,7 +505,7 @@ def test_tools_lane_corpus_fallback_is_wired():
     empty_tools_state = {
         "question": "q", "query_routes": ["numeric"],
         "retrieved_chunks": [], "xbrl_facts": [], "calc_results": [],
-        "table_results": [], "web_results": [], "market_data": [],
+        "web_results": [], "market_data": [],
         "edgar_results": [],
     }
     out = agent.evidence_builder_node(dict(empty_tools_state))

@@ -53,9 +53,7 @@ at this path; imports only config-level concerns.
 SEC HTML) write the corpus into Qdrant via the low-level `runtime.py` /
 `vectorstore.py` helpers — the single source of "where Qdrant lives".
 `upload.parse_upload` (Docling) parses user-uploaded documents into ephemeral
-in-memory chunks for the API. `table_ingest.py` / `table_embed.py` are offline
-run-once CLIs that built the `tables` collection consumed by
-`graph/table_agent.py`; they are not on the serve path.
+in-memory chunks for the API.
 
 **`retrieval/`** — `HybridRetriever` (BM25 ∪ dense + cross-encoder rerank — the
 retriever the agent uses) plus the shared cross-encoder loader
@@ -82,7 +80,7 @@ MRO, so overrides win):
 | module | mixin | holds |
 |---|---|---|
 | `nodes/fetch.py` | `FetchNodes` | dynamic SEC fetch gate + v4 hybrid retrieval |
-| `nodes/numeric.py` | `NumericNodes` | XBRL facts, derived-metric calculator, table agent |
+| `nodes/numeric.py` | `NumericNodes` | XBRL facts, derived-metric calculator |
 | `nodes/external.py` | `ExternalNodes` | yfinance market data, Tavily web search, EDGAR FTS |
 | `nodes/synthesis.py` | `SynthesisNodes` | evidence builder, analyst synthesis, critic |
 | `nodes/verification.py` | `VerificationNodes` | figure grounding, refusal/abstention, confidence gate |
@@ -133,9 +131,9 @@ built in `api/rag_service._build_agent`). Its LangGraph (`agent._build_graph`):
 planner → router ─┬─ narrative/default ─→ fetch_filing → retrieve → grader ─┬─ rewrite ↺
                   │                                                          └─→ ┐
                   └─ purely numeric/market/external ───────────────────────────→ xbrl
-xbrl → calculator → table_agent ─┬─ market_data ┐
-                                 ├─ web_search   ├─→ evidence_builder → synthesize
-                                 └─ edgar_search ┘                          │
+xbrl → calculator ─┬─ market_data ┐
+                   ├─ web_search   ├─→ evidence_builder → synthesize
+                   └─ edgar_search ┘                          │
 synthesize → critic ─┬─ resynthesize ↺ (over-claimed, re-draft on same evidence)
                      ├─ websearch (insufficient draft → gather web, re-draft)
                      └─ verify_numbers ─┬─ retrieve ↺ (re-ground a figure)
@@ -149,8 +147,8 @@ synthesize → critic ─┬─ resynthesize ↺ (over-claimed, re-draft on same
 Key roles: **planner** decomposes into sub-queries (enumerating comparisons and
 *superlative narrative* breakdowns); **router** tags each sub-query
 narrative/numeric/market/external; **retrieve** is the hybrid stack (below);
-**grader** scores 1-5 and drops off-entity chunks; the **xbrl → calculator →
-table_agent** chain is the deterministic numeric path; **verify_numbers**
+**grader** scores 1-5 and drops off-entity chunks; the **xbrl → calculator**
+chain is the deterministic numeric path; **verify_numbers**
 deterministically grounds every figure in the draft; the **confidence** gate
 blends retrieval/verification/citation/critic sub-scores into one score and bands
 it answer / warn / low.

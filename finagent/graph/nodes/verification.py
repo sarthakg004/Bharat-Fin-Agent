@@ -324,7 +324,7 @@ class VerificationNodes:
         if not answer.strip():
             return None
         has_evidence = any(state.get(k) for k in (
-            "retrieved_chunks", "xbrl_facts", "calc_results", "table_results",
+            "retrieved_chunks", "xbrl_facts", "calc_results",
             "web_results", "market_data", "edgar_results",
         ))
         if not has_evidence:
@@ -575,7 +575,7 @@ class VerificationNodes:
     def _derivation_base(cls, by_kind: dict[str, list[float]]) -> list[float]:
         """Deduped, capped pool of evidence magnitudes for `_derivable`.
         Exact structured lanes first so they survive the cap."""
-        order = ("xbrl", "calc", "table", "filing", "market", "web", "const")
+        order = ("xbrl", "calc", "filing", "market", "web", "const")
         seen: set[str] = set()
         base: list[float] = []
         for kind in order + tuple(k for k in by_kind if k not in order):
@@ -661,8 +661,6 @@ class VerificationNodes:
         # Free-text lanes — face value.
         for c in state.get("retrieved_chunks", []) or []:
             add_text("filing", c.get("text", ""))
-        for t in state.get("table_results", []) or []:
-            add_text("table", str(t.get("answer", "")) + " " + str(t.get("stdout", "")))
         for mkt in state.get("market_data", []) or []:
             add_text("market", str(mkt.get("data", "")))
         for h in state.get("web_results", []) or []:

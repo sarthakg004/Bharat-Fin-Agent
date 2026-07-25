@@ -197,7 +197,6 @@ _STEP_LABELS = {
     "rewrite":        "Refining the search…",
     "xbrl":           "Looking up exact figures…",
     "calculator":     "Computing the metrics…",
-    "table_agent":    "Crunching the numbers…",
     "market_data":    "Pulling market data…",
     "web_search":     "Searching the web…",
     "edgar_search":   "Searching EDGAR across companies…",

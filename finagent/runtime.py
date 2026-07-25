@@ -64,7 +64,6 @@ _DERIVED = {
     "grader":         "planner",
     "market_planner": "planner",
     "router":         "synth",
-    "code":           "synth",
     "verifier":       "critic",
 }
 

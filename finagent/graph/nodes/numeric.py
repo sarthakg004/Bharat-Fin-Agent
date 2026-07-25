@@ -446,28 +446,4 @@ class NumericNodes:
             self._log(state, f"formula planner failed for {metric!r}: {e}")
             return None
 
-    def table_agent_node(self, state: AgentState) -> dict:
-        """Phase 7: the table agent is the numeric *fallback*, not a duplicate.
-
-        Skip any numeric sub-query the XBRL facts node or the calculator already
-        answered — that trims an embedding search over the tables collection plus
-        a code-generation LLM call for each already-answered sub-query. The table
-        agent still runs for numeric sub-queries XBRL/calc couldn't serve.
-        """
-        answered = {f.get("sub_query") for f in state.get("xbrl_facts", []) or []}
-        answered |= {r.get("sub_query") for r in state.get("calc_results", []) or []}
-        if not answered:
-            return super().table_agent_node(state)
-
-        sub_queries = state.get("sub_queries") or [state["question"]]
-        routes = state.get("query_routes") or ["narrative"] * len(sub_queries)
-        remaining = [s for s, r in zip(sub_queries, routes)
-                     if r == "numeric" and s not in answered]
-        if not remaining:
-            return {"table_results": []}
-        # Restrict the table agent to the still-unanswered numeric sub-queries.
-        proxy = dict(state)
-        proxy["sub_queries"] = remaining
-        proxy["query_routes"] = ["numeric"] * len(remaining)
-        return super().table_agent_node(proxy)
 

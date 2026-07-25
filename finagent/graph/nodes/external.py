@@ -268,8 +268,6 @@ class ExternalNodes:
         # whose lanes DID answer is expected to have no chunks — not escalated.
         tools_answered = bool(
             state.get("xbrl_facts") or state.get("calc_results")
-            or any(t.get("answer") and not t.get("error")
-                   for t in state.get("table_results") or [])
         )
         corpus_attempted = (
             (not routes)

@@ -8,9 +8,8 @@ for structured LLM outputs (planner sub-queries, critic verdict).
 reads it and returns a partial dict that LangGraph merges back in. Each field
 is written by exactly one node, so no custom reducers are needed.
 
-Fields that aren't used yet (table_results, web_results) are placeholders for
-later weeks (the table agent and web-search agent). They default to empty lists
-so downstream nodes can treat them uniformly.
+Optional lanes (web_results, market_data, …) default to empty lists so
+downstream nodes can treat them uniformly whether or not a lane ran.
 """
 
 from __future__ import annotations
@@ -26,8 +25,7 @@ class AgentState(TypedDict, total=False):
     question: str                      # the user's original question
     sub_queries: list[str]             # planner's decomposition (1-3 queries)
     retrieved_chunks: list[dict]       # [{text, company, year, page, source, sub_query}]
-    table_results: list[Any]           # placeholder — future table agent
-    web_results: list[Any]             # placeholder — future web-search agent
+    web_results: list[Any]             # filled by web_search_node
     draft_answer: str                  # synthesizer output (pre-critique)
     final_answer: str                  # answer returned to the caller
     citations: list[str]               # citation tags used, e.g. "[TCS AR FY23, p. 102]"
@@ -45,13 +43,10 @@ class AgentState(TypedDict, total=False):
     critic_feedback: list[str]         # unsupported claims, fed to an active re-draft
     low_confidence: bool               # synth flag when grader stayed below threshold
 
-    # --- Table-agent additions (v3) ---------------------------------------- #
-    # `table_results` is already declared above; the v3 graph fills it with
-    # one entry per numeric sub-query.
+    # --- Router (v3) ------------------------------------------------------- #
     query_routes: list[str]            # one of "narrative" | "numeric" | "external" per sub-query
 
     # --- v4 additions: i18n, web search, numeric verification, refusal ----- #
-    web_results: list[Any]             # already declared above; filled by web_search_node
     numeric_verification: dict         # {"claims": [...], "unverified": [...], "score": 0..1}
     verification_report: dict          # #5: {numeric, cross_source, units, sources}
     verify_iterations: int             # how many times verify_numbers has run (bounds re-route)
@@ -189,7 +184,7 @@ class RewrittenQuery(BaseModel):
 
 
 # --------------------------------------------------------------------------- #
-# Router schemas (table-augmented RAG)
+# Router schemas
 # --------------------------------------------------------------------------- #
 
 from typing import Literal
@@ -202,8 +197,9 @@ class QueryRoute(BaseModel):
     route: Literal["narrative", "numeric", "market", "external", "cross_document"] = Field(
         description=(
             "narrative = text retrieval over filings (default for prose-y questions); "
-            "numeric   = table agent over extracted filing tables (ratios from 10-Ks, "
-            "segment breakdowns, multi-year financial comparisons IN the filings); "
+            "numeric   = exact figures / ratios from the filings via SEC XBRL + a "
+            "deterministic calculator (ratios from 10-Ks, segment breakdowns, "
+            "multi-year financial comparisons IN the filings); "
             "market    = live market data via yfinance (current price, intraday move, "
             "premarket, historical OHLC, charts, news headlines — anything about a "
             "listed company's market behaviour, not about its filings); "
@@ -234,7 +230,7 @@ class PlannedQuery(BaseModel):
     route: Literal["narrative", "numeric", "market", "external", "cross_document"] = Field(
         description=(
             "narrative = text retrieval over filings; numeric = exact figures / "
-            "ratios from filings (XBRL + tables); market = live market data "
+            "ratios from filings (SEC XBRL + calculator); market = live market data "
             "(yfinance); cross_document = EDGAR full-text search across many "
             "companies; external = general web search."
         )
@@ -251,19 +247,6 @@ class QueryPlan(BaseModel):
             "(entity × period × metric) combination."
         )
     )
-
-
-class TableTitle(BaseModel):
-    """LLM-extracted title for a single table."""
-
-    title: str = Field(description="Concise table title (≤ 120 chars).")
-
-
-class PandasCode(BaseModel):
-    """Pandas code emitted by the table agent to compute an answer."""
-
-    code: str = Field(description="Python code; assigns the final answer to `result`.")
-    explanation: str = Field(description="One sentence explaining what the code does.")
 
 
 # --------------------------------------------------------------------------- #
