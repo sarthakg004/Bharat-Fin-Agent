@@ -85,3 +85,38 @@ def test_identical_text_in_one_parent_collapses():
     # Same text under a different parent is a different point.
     assert chunk_point_id(meta, "Services") != chunk_point_id(
         {**meta, "parent_id": 2}, "Services")
+
+
+def test_facet_index_matches_a_full_scroll(store):
+    """The metadata-filter vocabulary is built from `company_year_index` (facet
+    API) instead of scrolling every point's full payload — the old cold-start
+    cost. This asserts the facet index produces the exact same company→years map
+    (and therefore the same vocab) as a full-payload scroll, so the speedup is
+    free of behaviour change."""
+    from langchain_core.documents import Document
+
+    from finagent.vectorstore import (company_year_index, scroll_payloads)
+    from finagent.retrieval.filters import build_company_vocab
+
+    docs, ids = [], []
+    plan = {"AAPL": ["2022", "2023"], "MSFT": ["2023"], "3M": ["2021", "2022"]}
+    i = 0
+    for company, years in plan.items():
+        for y in years:
+            m = {"source_url": f"http://x/{company}/{y}", "parent_id": i,
+                 "company": company, "year": y}
+            docs.append(Document(page_content=f"{company} {y} revenue", metadata=m))
+            i += 1
+    from finagent.vectorstore import chunk_point_id
+    ids = [chunk_point_id(d.metadata, d.page_content) for d in docs]
+    store.add_documents(docs, ids=ids)
+
+    idx = company_year_index(COLLECTION)
+    assert {c: set(ys) for c, ys in idx.items()} == {c: set(ys) for c, ys in plan.items()}
+
+    # Same vocabulary as the full-scroll path it replaces.
+    synth = [{"company": c, "year": y} for c, ys in idx.items() for y in ys]
+    v_facet, y_facet = build_company_vocab(synth)
+    v_scroll, y_scroll = build_company_vocab(scroll_payloads(COLLECTION))
+    assert v_facet == v_scroll
+    assert {k: set(v) for k, v in y_facet.items()} == {k: set(v) for k, v in y_scroll.items()}
