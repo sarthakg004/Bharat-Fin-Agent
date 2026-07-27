@@ -1,17 +1,26 @@
-"""Build a fresh served index alongside the live one (blue/green).
+"""Build a fresh served index.
 
 Writes a NEW collection with the CURRENT production chunk geometry and embedder
 (taken straight from `CorpusIngester` / `vectorstore.DEFAULT_EMBED_MODEL` — the
 single source of truth, so this script never carries its own copy that can drift
-from what the code actually ships). Production keeps serving the old collection
-throughout; nothing is mutated in place.
+from what the code actually ships). Nothing is mutated in place.
+
+BLUE/GREEN NO LONGER FITS. One collection is ~534 MB (80k points: ~329 MB of
+1024-d vectors + ~205 MB of payload, since parent-doc retrieval stores
+`parent_text` on every child) and the Qdrant free tier is 1024 MB. Two served
+collections do not fit, so the old one must be DELETED BEFORE the new one is
+built, and there is a window with no index at all. The real backup is
+`data/us/pdfs` on disk — the corpus is always rebuildable from it.
+
+If the tier is ever upgraded past ~1.1 GB, go back to build-then-cut-over: it
+is strictly safer.
 
 Run this whenever the chunk geometry or embedder changes, since deterministic
 point ids are keyed on the chunker — a geometry change needs a rebuild, not a
 re-ingest into the existing collection (see `vectorstore.chunk_point_id`).
 
     --source       the collection currently served (for status display + the
-                   cutover reminder). Default: US_COLLECTION env, else us_filings_v2.
+                   cutover reminder). Default: US_COLLECTION env, else us_filings_v4.
     --collection   the NEW collection to build. MUST be a fresh name — this is
                    the guard against writing into the live one. No default.
 
@@ -45,7 +54,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # The collection currently served — status/cutover text only, never written to.
-SOURCE = os.getenv("US_COLLECTION", "us_filings_v2")
+SOURCE = os.getenv("US_COLLECTION", "us_filings_v4")
 # Dynamic-fetch downloads live here; they are not part of the corpus.
 EXCLUDE = "sec-edgar-filings"
 
