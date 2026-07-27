@@ -1,0 +1,782 @@
+{
+  "meta": {
+    "n": 99,
+    "config": "parent 2500 / child 600 / bge-large-en-v1.5 / bge-reranker-v2-m3",
+    "corpus": "72 SEC 10-K/10-Q filings, one Qdrant collection",
+    "note": "1 question = 0.0101; deltas under ~0.02 are noise",
+    "ceilings": {
+      "oracle@8, any parent in the filing": "99/99",
+      "oracle@2, any parent in the filing": "98/99",
+      "best k parents selectable from the retrieved pool": "70/99",
+      "same, if each pooled parent could pull its neighbours": "94/99",
+      "pool union covers >=0.5": "71/99"
+    }
+  },
+  "rows": [
+    {
+      "round": "1",
+      "varied": "budget, per-sub depth, blind neighbours",
+      "strategy": "baseline (production)",
+      "hit@5": 0.3434,
+      "hit@top": 0.3737,
+      "hits": "37/99",
+      "cov@top": 0.3785,
+      "ctx_chars": 11167,
+      "by_type": {
+        "comparison": "5/12",
+        "narrative": "12/27",
+        "numeric": "20/60"
+      }
+    },
+    {
+      "round": "1",
+      "varied": "budget, per-sub depth, blind neighbours",
+      "strategy": "no per-sub floor",
+      "hit@5": 0.3434,
+      "hit@top": 0.3737,
+      "hits": "37/99",
+      "cov@top": 0.3827,
+      "ctx_chars": 11239,
+      "by_type": {
+        "comparison": "5/12",
+        "narrative": "12/27",
+        "numeric": "20/60"
+      }
+    },
+    {
+      "round": "1",
+      "varied": "budget, per-sub depth, blind neighbours",
+      "strategy": "cap 12",
+      "hit@5": 0.3434,
+      "hit@top": 0.404,
+      "hits": "40/99",
+      "cov@top": 0.4114,
+      "ctx_chars": 12471,
+      "by_type": {
+        "comparison": "5/12",
+        "narrative": "14/27",
+        "numeric": "21/60"
+      }
+    },
+    {
+      "round": "1",
+      "varied": "budget, per-sub depth, blind neighbours",
+      "strategy": "cap 16",
+      "hit@5": 0.3636,
+      "hit@top": 0.4242,
+      "hits": "42/99",
+      "cov@top": 0.431,
+      "ctx_chars": 12738,
+      "by_type": {
+        "comparison": "5/12",
+        "narrative": "15/27",
+        "numeric": "22/60"
+      }
+    },
+    {
+      "round": "1",
+      "varied": "budget, per-sub depth, blind neighbours",
+      "strategy": "per_sub 8",
+      "hit@5": 0.3131,
+      "hit@top": 0.404,
+      "hits": "40/99",
+      "cov@top": 0.4088,
+      "ctx_chars": 14409,
+      "by_type": {
+        "comparison": "4/12",
+        "narrative": "11/27",
+        "numeric": "25/60"
+      }
+    },
+    {
+      "round": "1",
+      "varied": "budget, per-sub depth, blind neighbours",
+      "strategy": "no sub-rerank (RRF order)",
+      "hit@5": 0.2424,
+      "hit@top": 0.2727,
+      "hits": "27/99",
+      "cov@top": 0.3005,
+      "ctx_chars": 9800,
+      "by_type": {
+        "comparison": "3/12",
+        "narrative": "10/27",
+        "numeric": "14/60"
+      }
+    },
+    {
+      "round": "1",
+      "varied": "budget, per-sub depth, blind neighbours",
+      "strategy": "neighbours r=1 (cap 8)",
+      "hit@5": 0.1313,
+      "hit@top": 0.2525,
+      "hits": "25/99",
+      "cov@top": 0.2599,
+      "ctx_chars": 10374,
+      "by_type": {
+        "comparison": "1/12",
+        "narrative": "11/27",
+        "numeric": "13/60"
+      }
+    },
+    {
+      "round": "1",
+      "varied": "budget, per-sub depth, blind neighbours",
+      "strategy": "neighbours r=1, no floor",
+      "hit@5": 0.1313,
+      "hit@top": 0.2525,
+      "hits": "25/99",
+      "cov@top": 0.2599,
+      "ctx_chars": 10374,
+      "by_type": {
+        "comparison": "1/12",
+        "narrative": "11/27",
+        "numeric": "13/60"
+      }
+    },
+    {
+      "round": "1",
+      "varied": "budget, per-sub depth, blind neighbours",
+      "strategy": "neighbours r=2 (cap 8)",
+      "hit@5": 0.1414,
+      "hit@top": 0.2424,
+      "hits": "24/99",
+      "cov@top": 0.253,
+      "ctx_chars": 9966,
+      "by_type": {
+        "comparison": "1/12",
+        "narrative": "10/27",
+        "numeric": "13/60"
+      }
+    },
+    {
+      "round": "1",
+      "varied": "budget, per-sub depth, blind neighbours",
+      "strategy": "neighbours r=1 (cap 12)",
+      "hit@5": 0.1515,
+      "hit@top": 0.3636,
+      "hits": "36/99",
+      "cov@top": 0.3701,
+      "ctx_chars": 15016,
+      "by_type": {
+        "comparison": "2/12",
+        "narrative": "13/27",
+        "numeric": "21/60"
+      }
+    },
+    {
+      "round": "1",
+      "varied": "budget, per-sub depth, blind neighbours",
+      "strategy": "neighbours r=1 (cap 16)",
+      "hit@5": 0.1414,
+      "hit@top": 0.4444,
+      "hits": "44/99",
+      "cov@top": 0.4423,
+      "ctx_chars": 18839,
+      "by_type": {
+        "comparison": "4/12",
+        "narrative": "15/27",
+        "numeric": "25/60"
+      }
+    },
+    {
+      "round": "2",
+      "varied": "what orders the merged pool",
+      "strategy": "baseline (production)",
+      "hit@5": 0.3434,
+      "hit@top": 0.3737,
+      "hits": "37/99",
+      "cov@top": 0.3785,
+      "ctx_chars": 11167,
+      "by_type": {
+        "comparison": "5/12",
+        "narrative": "12/27",
+        "numeric": "20/60"
+      }
+    },
+    {
+      "round": "2",
+      "varied": "what orders the merged pool",
+      "strategy": "per-sub score, no global rescore",
+      "hit@5": 0.3636,
+      "hit@top": 0.4141,
+      "hits": "41/99",
+      "cov@top": 0.4217,
+      "ctx_chars": 11015,
+      "by_type": {
+        "comparison": "4/12",
+        "narrative": "15/27",
+        "numeric": "22/60"
+      }
+    },
+    {
+      "round": "2",
+      "varied": "what orders the merged pool",
+      "strategy": "per-sub score + floor",
+      "hit@5": 0.3636,
+      "hit@top": 0.4141,
+      "hits": "41/99",
+      "cov@top": 0.4133,
+      "ctx_chars": 11050,
+      "by_type": {
+        "comparison": "4/12",
+        "narrative": "15/27",
+        "numeric": "22/60"
+      }
+    },
+    {
+      "round": "2",
+      "varied": "what orders the merged pool",
+      "strategy": "round-robin by sub",
+      "hit@5": 0.3535,
+      "hit@top": 0.404,
+      "hits": "40/99",
+      "cov@top": 0.4099,
+      "ctx_chars": 11101,
+      "by_type": {
+        "comparison": "4/12",
+        "narrative": "14/27",
+        "numeric": "22/60"
+      }
+    },
+    {
+      "round": "2",
+      "varied": "what orders the merged pool",
+      "strategy": "baseline + expand r1 top2",
+      "hit@5": 0.1919,
+      "hit@top": 0.303,
+      "hits": "30/99",
+      "cov@top": 0.3111,
+      "ctx_chars": 11266,
+      "by_type": {
+        "comparison": "2/12",
+        "narrative": "12/27",
+        "numeric": "16/60"
+      }
+    },
+    {
+      "round": "2",
+      "varied": "what orders the merged pool",
+      "strategy": "baseline + expand r1 top1",
+      "hit@5": 0.2323,
+      "hit@top": 0.3535,
+      "hits": "35/99",
+      "cov@top": 0.3664,
+      "ctx_chars": 11844,
+      "by_type": {
+        "comparison": "3/12",
+        "narrative": "12/27",
+        "numeric": "20/60"
+      }
+    },
+    {
+      "round": "2",
+      "varied": "what orders the merged pool",
+      "strategy": "per-sub + expand r1 top2",
+      "hit@5": 0.2121,
+      "hit@top": 0.3636,
+      "hits": "36/99",
+      "cov@top": 0.3709,
+      "ctx_chars": 10956,
+      "by_type": {
+        "comparison": "3/12",
+        "narrative": "12/27",
+        "numeric": "21/60"
+      }
+    },
+    {
+      "round": "2",
+      "varied": "what orders the merged pool",
+      "strategy": "round-robin + expand r1 top2",
+      "hit@5": 0.1919,
+      "hit@top": 0.3434,
+      "hits": "34/99",
+      "cov@top": 0.3553,
+      "ctx_chars": 11070,
+      "by_type": {
+        "comparison": "2/12",
+        "narrative": "13/27",
+        "numeric": "19/60"
+      }
+    },
+    {
+      "round": "2",
+      "varied": "what orders the merged pool",
+      "strategy": "per-sub, per_sub=10",
+      "hit@5": 0.3636,
+      "hit@top": 0.4545,
+      "hits": "45/99",
+      "cov@top": 0.4556,
+      "ctx_chars": 13893,
+      "by_type": {
+        "comparison": "4/12",
+        "narrative": "15/27",
+        "numeric": "26/60"
+      }
+    },
+    {
+      "round": "2",
+      "varied": "what orders the merged pool",
+      "strategy": "per-sub, per_sub=10, cap 12",
+      "hit@5": 0.3636,
+      "hit@top": 0.4747,
+      "hits": "47/99",
+      "cov@top": 0.4814,
+      "ctx_chars": 18784,
+      "by_type": {
+        "comparison": "4/12",
+        "narrative": "15/27",
+        "numeric": "28/60"
+      }
+    },
+    {
+      "round": "2",
+      "varied": "what orders the merged pool",
+      "strategy": "per-sub + expand r1 top2, cap 12",
+      "hit@5": 0.2121,
+      "hit@top": 0.4242,
+      "hits": "42/99",
+      "cov@top": 0.4308,
+      "ctx_chars": 14625,
+      "by_type": {
+        "comparison": "4/12",
+        "narrative": "15/27",
+        "numeric": "23/60"
+      }
+    },
+    {
+      "round": "3",
+      "varied": "what text the cross-encoder scores",
+      "strategy": "parent-scored + global rescore (production)",
+      "hit@5": 0.3434,
+      "hit@top": 0.3737,
+      "hits": "37/99",
+      "cov@top": 0.3827,
+      "ctx_chars": 11250,
+      "by_type": {
+        "comparison": "5/12",
+        "narrative": "12/27",
+        "numeric": "20/60"
+      }
+    },
+    {
+      "round": "3",
+      "varied": "what text the cross-encoder scores",
+      "strategy": "parent-scored, no rescore (round2 best)",
+      "hit@5": 0.3636,
+      "hit@top": 0.4141,
+      "hits": "41/99",
+      "cov@top": 0.4217,
+      "ctx_chars": 11021,
+      "by_type": {
+        "comparison": "4/12",
+        "narrative": "15/27",
+        "numeric": "22/60"
+      }
+    },
+    {
+      "round": "3",
+      "varied": "what text the cross-encoder scores",
+      "strategy": "CHILD-scored, no rescore",
+      "hit@5": 0.3333,
+      "hit@top": 0.4141,
+      "hits": "41/99",
+      "cov@top": 0.4271,
+      "ctx_chars": 10089,
+      "by_type": {
+        "comparison": "5/12",
+        "narrative": "12/27",
+        "numeric": "24/60"
+      }
+    },
+    {
+      "round": "3",
+      "varied": "what text the cross-encoder scores",
+      "strategy": "CHILD-scored + global rescore",
+      "hit@5": 0.3333,
+      "hit@top": 0.3636,
+      "hits": "36/99",
+      "cov@top": 0.3804,
+      "ctx_chars": 10380,
+      "by_type": {
+        "comparison": "5/12",
+        "narrative": "9/27",
+        "numeric": "22/60"
+      }
+    },
+    {
+      "round": "3",
+      "varied": "what text the cross-encoder scores",
+      "strategy": "both max(child,parent)",
+      "hit@5": 0.3535,
+      "hit@top": 0.404,
+      "hits": "40/99",
+      "cov@top": 0.4096,
+      "ctx_chars": 10974,
+      "by_type": {
+        "comparison": "4/12",
+        "narrative": "15/27",
+        "numeric": "21/60"
+      }
+    },
+    {
+      "round": "3",
+      "varied": "what text the cross-encoder scores",
+      "strategy": "both mean(child,parent)",
+      "hit@5": 0.3535,
+      "hit@top": 0.4242,
+      "hits": "42/99",
+      "cov@top": 0.4256,
+      "ctx_chars": 10517,
+      "by_type": {
+        "comparison": "5/12",
+        "narrative": "14/27",
+        "numeric": "23/60"
+      }
+    },
+    {
+      "round": "3",
+      "varied": "what text the cross-encoder scores",
+      "strategy": "CHILD-scored, per_sub=10",
+      "hit@5": 0.3333,
+      "hit@top": 0.4343,
+      "hits": "43/99",
+      "cov@top": 0.4528,
+      "ctx_chars": 12804,
+      "by_type": {
+        "comparison": "5/12",
+        "narrative": "12/27",
+        "numeric": "26/60"
+      }
+    },
+    {
+      "round": "3",
+      "varied": "what text the cross-encoder scores",
+      "strategy": "CHILD-scored, per_sub=10, cap 12",
+      "hit@5": 0.3333,
+      "hit@top": 0.4949,
+      "hits": "49/99",
+      "cov@top": 0.5016,
+      "ctx_chars": 17217,
+      "by_type": {
+        "comparison": "5/12",
+        "narrative": "13/27",
+        "numeric": "31/60"
+      }
+    },
+    {
+      "round": "3",
+      "varied": "what text the cross-encoder scores",
+      "strategy": "parent-scored, per_sub=10",
+      "hit@5": 0.3636,
+      "hit@top": 0.4545,
+      "hits": "45/99",
+      "cov@top": 0.4556,
+      "ctx_chars": 13902,
+      "by_type": {
+        "comparison": "4/12",
+        "narrative": "15/27",
+        "numeric": "26/60"
+      }
+    },
+    {
+      "round": "4",
+      "varied": "a table prior on the reranker score",
+      "strategy": "production (parent + global rescore)",
+      "hit@5": 0.3434,
+      "hit@top": 0.3737,
+      "hits": "37/99",
+      "cov@top": 0.3827,
+      "ctx_chars": 11250,
+      "by_type": {
+        "comparison": "5/12",
+        "narrative": "12/27",
+        "numeric": "20/60"
+      }
+    },
+    {
+      "round": "4",
+      "varied": "a table prior on the reranker score",
+      "strategy": "drop global rescore  [round2 best]",
+      "hit@5": 0.3636,
+      "hit@top": 0.4141,
+      "hits": "41/99",
+      "cov@top": 0.4217,
+      "ctx_chars": 11021,
+      "by_type": {
+        "comparison": "4/12",
+        "narrative": "15/27",
+        "numeric": "22/60"
+      }
+    },
+    {
+      "round": "4",
+      "varied": "a table prior on the reranker score",
+      "strategy": "+ table boost 0.5",
+      "hit@5": 0.3535,
+      "hit@top": 0.3939,
+      "hits": "39/99",
+      "cov@top": 0.4023,
+      "ctx_chars": 9819,
+      "by_type": {
+        "comparison": "4/12",
+        "narrative": "10/27",
+        "numeric": "25/60"
+      }
+    },
+    {
+      "round": "4",
+      "varied": "a table prior on the reranker score",
+      "strategy": "+ table boost 1.0",
+      "hit@5": 0.3131,
+      "hit@top": 0.3636,
+      "hits": "36/99",
+      "cov@top": 0.3781,
+      "ctx_chars": 9408,
+      "by_type": {
+        "comparison": "4/12",
+        "narrative": "7/27",
+        "numeric": "25/60"
+      }
+    },
+    {
+      "round": "4",
+      "varied": "a table prior on the reranker score",
+      "strategy": "+ table boost 2.0",
+      "hit@5": 0.3131,
+      "hit@top": 0.3636,
+      "hits": "36/99",
+      "cov@top": 0.3781,
+      "ctx_chars": 9408,
+      "by_type": {
+        "comparison": "4/12",
+        "narrative": "7/27",
+        "numeric": "25/60"
+      }
+    },
+    {
+      "round": "4",
+      "varied": "a table prior on the reranker score",
+      "strategy": "+ table boost 5.0",
+      "hit@5": 0.3131,
+      "hit@top": 0.3636,
+      "hits": "36/99",
+      "cov@top": 0.3781,
+      "ctx_chars": 9408,
+      "by_type": {
+        "comparison": "4/12",
+        "narrative": "7/27",
+        "numeric": "25/60"
+      }
+    },
+    {
+      "round": "4",
+      "varied": "a table prior on the reranker score",
+      "strategy": "+ table boost 2.0, numeric subs only",
+      "hit@5": 0.3737,
+      "hit@top": 0.4242,
+      "hits": "42/99",
+      "cov@top": 0.4326,
+      "ctx_chars": 9969,
+      "by_type": {
+        "comparison": "4/12",
+        "narrative": "12/27",
+        "numeric": "26/60"
+      }
+    },
+    {
+      "round": "4",
+      "varied": "a table prior on the reranker score",
+      "strategy": "+ table boost 1.0, child-scored",
+      "hit@5": 0.2828,
+      "hit@top": 0.3434,
+      "hits": "34/99",
+      "cov@top": 0.3626,
+      "ctx_chars": 9029,
+      "by_type": {
+        "comparison": "4/12",
+        "narrative": "6/27",
+        "numeric": "24/60"
+      }
+    },
+    {
+      "round": "4",
+      "varied": "a table prior on the reranker score",
+      "strategy": "+ table boost 2.0, child-scored",
+      "hit@5": 0.2828,
+      "hit@top": 0.3434,
+      "hits": "34/99",
+      "cov@top": 0.3626,
+      "ctx_chars": 9029,
+      "by_type": {
+        "comparison": "4/12",
+        "narrative": "6/27",
+        "numeric": "24/60"
+      }
+    },
+    {
+      "round": "4",
+      "varied": "a table prior on the reranker score",
+      "strategy": "+ table boost 2.0, per_sub=10",
+      "hit@5": 0.3131,
+      "hit@top": 0.3737,
+      "hits": "37/99",
+      "cov@top": 0.3906,
+      "ctx_chars": 12292,
+      "by_type": {
+        "comparison": "4/12",
+        "narrative": "6/27",
+        "numeric": "27/60"
+      }
+    },
+    {
+      "round": "4",
+      "varied": "a table prior on the reranker score",
+      "strategy": "+ table boost 2.0, cap 12",
+      "hit@5": 0.3131,
+      "hit@top": 0.3636,
+      "hits": "36/99",
+      "cov@top": 0.3781,
+      "ctx_chars": 10424,
+      "by_type": {
+        "comparison": "4/12",
+        "narrative": "7/27",
+        "numeric": "25/60"
+      }
+    },
+    {
+      "round": "5",
+      "varied": "split-table stitching",
+      "strategy": "production today",
+      "hit@5": 0.3434,
+      "hit@top": 0.3737,
+      "hits": "37/99",
+      "cov@top": 0.3827,
+      "ctx_chars": 11250,
+      "by_type": {
+        "comparison": "5/12",
+        "narrative": "12/27",
+        "numeric": "20/60"
+      }
+    },
+    {
+      "round": "5",
+      "varied": "split-table stitching",
+      "strategy": "A: drop global rescore",
+      "hit@5": 0.3636,
+      "hit@top": 0.4141,
+      "hits": "41/99",
+      "cov@top": 0.4217,
+      "ctx_chars": 11021,
+      "by_type": {
+        "comparison": "4/12",
+        "narrative": "15/27",
+        "numeric": "22/60"
+      }
+    },
+    {
+      "round": "5",
+      "varied": "split-table stitching",
+      "strategy": "B: A + table boost (numeric subs)",
+      "hit@5": 0.3737,
+      "hit@top": 0.4242,
+      "hits": "42/99",
+      "cov@top": 0.4326,
+      "ctx_chars": 9969,
+      "by_type": {
+        "comparison": "4/12",
+        "narrative": "12/27",
+        "numeric": "26/60"
+      }
+    },
+    {
+      "round": "5",
+      "varied": "split-table stitching",
+      "strategy": "C: A + stitch 1",
+      "hit@5": 0.3131,
+      "hit@top": 0.3838,
+      "hits": "38/99",
+      "cov@top": 0.4025,
+      "ctx_chars": 11376,
+      "by_type": {
+        "comparison": "3/12",
+        "narrative": "15/27",
+        "numeric": "20/60"
+      }
+    },
+    {
+      "round": "5",
+      "varied": "split-table stitching",
+      "strategy": "D: A + stitch 2",
+      "hit@5": 0.3131,
+      "hit@top": 0.3939,
+      "hits": "39/99",
+      "cov@top": 0.4062,
+      "ctx_chars": 11413,
+      "by_type": {
+        "comparison": "3/12",
+        "narrative": "15/27",
+        "numeric": "21/60"
+      }
+    },
+    {
+      "round": "5",
+      "varied": "split-table stitching",
+      "strategy": "E: B + stitch 1",
+      "hit@5": 0.3333,
+      "hit@top": 0.3838,
+      "hits": "38/99",
+      "cov@top": 0.4078,
+      "ctx_chars": 10364,
+      "by_type": {
+        "comparison": "3/12",
+        "narrative": "11/27",
+        "numeric": "24/60"
+      }
+    },
+    {
+      "round": "5",
+      "varied": "split-table stitching",
+      "strategy": "F: B + stitch 2",
+      "hit@5": 0.3333,
+      "hit@top": 0.3838,
+      "hits": "38/99",
+      "cov@top": 0.4024,
+      "ctx_chars": 10474,
+      "by_type": {
+        "comparison": "3/12",
+        "narrative": "11/27",
+        "numeric": "24/60"
+      }
+    },
+    {
+      "round": "5",
+      "varied": "split-table stitching",
+      "strategy": "G: E, cap 10",
+      "hit@5": 0.3333,
+      "hit@top": 0.404,
+      "hits": "40/99",
+      "cov@top": 0.4226,
+      "ctx_chars": 11646,
+      "by_type": {
+        "comparison": "3/12",
+        "narrative": "12/27",
+        "numeric": "25/60"
+      }
+    },
+    {
+      "round": "5",
+      "varied": "split-table stitching",
+      "strategy": "H: E, per_sub=8",
+      "hit@5": 0.3333,
+      "hit@top": 0.404,
+      "hits": "40/99",
+      "cov@top": 0.4284,
+      "ctx_chars": 12155,
+      "by_type": {
+        "comparison": "3/12",
+        "narrative": "11/27",
+        "numeric": "26/60"
+      }
+    }
+  ]
+}
