@@ -32,7 +32,10 @@ _LOAD_LOCK = threading.Lock()
 # parents, which is why base was never truncating today. v2-m3 allows 8192; we
 # cap it at 1024 because that already covers a 2500-char parent and a larger
 # window costs memory and time for nothing.
-_MAX_LENGTH = {"BAAI/bge-reranker-v2-m3": 1024}
+_MAX_LENGTH = {"BAAI/bge-reranker-v2-m3": 1024,
+               # Same 1024 as v2-m3 so the two are compared on identical text
+               # rather than on how much of the parent each one can see.
+               "mixedbread-ai/mxbai-rerank-base-v2": 1024}
 _DEFAULT_MAX_LENGTH = 512
 
 
@@ -49,8 +52,11 @@ def _get_shared_reranker(model_name: str):
 
                 from finagent.device import get_device
 
+                # trust_remote_code: several current rerankers (mxbai-v2)
+                # ship a custom head. It executes code from the model repo, so
+                # keep the set of models we actually load explicit.
                 reranker = CrossEncoder(
-                    model_name, device=get_device(),
+                    model_name, device=get_device(), trust_remote_code=True,
                     max_length=_MAX_LENGTH.get(model_name, _DEFAULT_MAX_LENGTH))
                 _SHARED_RERANKERS[model_name] = reranker
     return reranker

@@ -123,6 +123,20 @@ def chunk_point_id(meta: dict, text: str) -> str:
                     meta.get("parent_id", ""), digest)
 
 
+# Models trained with an ASYMMETRIC query/document prefix, as (query, document).
+# These are not decoration: e5 and nomic were contrastively trained with the
+# prefix in every pair, and scoring a bare query against a bare passage puts
+# them near random — a benchmark that omits them measures the prefix, not the
+# model. BGE-family models take no document prefix, so the incumbent is
+# unaffected (empty pair = behave exactly as before).
+_EMBED_PROMPTS = {
+    "intfloat/e5-large-v2": ("query: ", "passage: "),
+    "intfloat/e5-base-v2": ("query: ", "passage: "),
+    "nomic-ai/nomic-embed-text-v1.5": ("search_query: ", "search_document: "),
+    "Snowflake/snowflake-arctic-embed-l-v2.0": ("query: ", ""),
+}
+
+
 @lru_cache(maxsize=4)
 def get_embeddings(model_name: str = DEFAULT_EMBED_MODEL):
     """Shared dense embedding function (GPU when available, else CPU)."""
@@ -130,10 +144,23 @@ def get_embeddings(model_name: str = DEFAULT_EMBED_MODEL):
 
     from finagent.device import get_device
 
+    q_prompt, d_prompt = _EMBED_PROMPTS.get(model_name, ("", ""))
+    doc_kwargs = {"normalize_embeddings": True}
+    if d_prompt:
+        doc_kwargs["prompt"] = d_prompt
+    # `query_encode_kwargs` REPLACES `encode_kwargs` for queries rather than
+    # merging with it, so it has to carry normalize_embeddings itself or
+    # queries come back un-normalised against normalised documents.
+    query_kwargs = dict(doc_kwargs)
+    query_kwargs.pop("prompt", None)
+    if q_prompt:
+        query_kwargs["prompt"] = q_prompt
+
     return HuggingFaceEmbeddings(
         model_name=model_name,
-        model_kwargs={"device": get_device()},
-        encode_kwargs={"normalize_embeddings": True},
+        model_kwargs={"device": get_device(), "trust_remote_code": True},
+        encode_kwargs=doc_kwargs,
+        query_encode_kwargs=query_kwargs,
     )
 
 
