@@ -55,6 +55,10 @@ class HybridRetriever:
         use_mmr: bool = False,
         auto_filter: bool = True,
         parent_doc: bool = True,
+        # Append the underlying statement line items when the query names a
+        # derived metric ("quick ratio" -> "total current assets ..."). See
+        # `finagent.retrieval.expansion`; measured in §13.
+        expand_queries: bool = True,
     ):
         self.store = store
         self.reranker_model = reranker_model
@@ -78,6 +82,7 @@ class HybridRetriever:
         # rerank the parents. Degrades gracefully — a chunk with no `parent_text`
         # is kept as-is.
         self.parent_doc = parent_doc
+        self.expand_queries = expand_queries
 
         self._reranker = None
         self._company_vocab: Optional[dict] = None
@@ -87,14 +92,24 @@ class HybridRetriever:
     # Public
     # ------------------------------------------------------------------ #
 
-    def search(self, query: str) -> list[tuple[str, dict]]:
-        """Return up to `final_top_k` (text, metadata) pairs for the query.
+    def search(self, query: str,
+               top_k: Optional[int] = None) -> list[tuple[str, dict]]:
+        """Return up to `top_k` (default `final_top_k`) (text, metadata) pairs.
 
         This is `retrieve()` plus the query→filter inference and the relax
         fallback; the actual pool→collapse→rerank engine lives in `retrieve`.
+
+        The derived-metric expansion happens HERE rather than inside `_pool`,
+        so the filter inference, the candidate pool and the cross-encoder all
+        see the same query text — that is the combination §13 measured.
         """
+        if self.expand_queries:
+            from finagent.retrieval.expansion import expand_query
+
+            query = expand_query(query)
+        top_k = self.final_top_k if top_k is None else top_k
         flt = self.infer_filter(query) if self.auto_filter else None
-        hits = self.retrieve(query, self.final_top_k, flt)
+        hits = self.retrieve(query, top_k, flt)
         if not hits and flt and (flt.get("years") or flt.get("items")):
             # The YEAR (fiscal-calendar labelling) or the ITEM clause (a
             # collection ingested before section tagging) can over-narrow —
@@ -103,8 +118,7 @@ class HybridRetriever:
             # the synthesizer, and an empty result correctly hands off to the
             # fetch/web fallbacks. (retrieve() returns [] iff the pool is empty,
             # so this fires on exactly the over-narrowed case the old code did.)
-            hits = self.retrieve(query, self.final_top_k,
-                                 {"companies": flt["companies"]})
+            hits = self.retrieve(query, top_k, {"companies": flt["companies"]})
         return hits
 
     def infer_filter(self, query: str) -> Optional[dict]:
@@ -240,6 +254,10 @@ class HybridRetriever:
         pairs = [(query, text) for text, _ in candidates]
         scores = reranker.predict(pairs)
         ranked = sorted(zip(candidates, scores), key=lambda x: -x[1])
+        # The score is deliberately NOT attached to the chunk. §11 propagated it
+        # so the graph's global cap could rank on it instead of re-scoring the
+        # merged pool against the question; §13 measured that the re-score is
+        # the better rule (58 -> 61 of 99), so nothing downstream reads it.
         return [c for c, _ in ranked]
 
     def _ensure_reranker(self):
