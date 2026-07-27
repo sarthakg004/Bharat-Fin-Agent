@@ -38,7 +38,6 @@ NODE_REFERENCE = [
     ("rewrite", "question, avg_grade", "Reformulates the query when retrieval graded poorly (loops back to router)", "sub_queries, rewrite_history", "grader (qwen3.6-27b)"),
     ("xbrl", "numeric sub-queries", "Looks up the exact reported figure from SEC XBRL company-facts", "xbrl_facts", "router tier (gpt-oss-120b, batched extraction)"),
     ("calculator", "numeric sub-queries", "Deterministically computes derived metrics (margins/ratios/growth/CAGR) over XBRL inputs", "calc_results", "router tier (gpt-oss-120b, batched extraction)"),
-    ("table_agent", "unanswered numeric sub-queries", "Retrieves tables and runs generated pandas code (numeric fallback)", "table_results", "code (gpt-oss-120b)"),
     ("market_data", "market sub-queries", "Calls yfinance tools for live price/history/news (parallel lane)", "market_data, charts", "planner tier"),
     ("web_search", "external sub-queries + escalations", "Tavily web search; fires on news intent, empty retrieval, or an 'I can't answer' draft (parallel lane)", "web_results", "—"),
     ("edgar_search", "cross_document sub-queries", "EDGAR full-text search across all filers (parallel lane)", "edgar_results", "router tier (gpt-oss-120b)"),

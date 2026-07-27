@@ -136,8 +136,10 @@ _DEFINES_RE = re.compile(r"\b(?:defined|calculated|computed|measured)\s+as\b", r
 # single-period formula planner doesn't handle these.
 _MULTIPERIOD_RE = re.compile(r"\b(growth|cagr|trend|compound annual)\b", re.I)
 
-# 4-digit years, for the extraction guard below.
-_YEAR_RE = re.compile(r"(?:19|20)\d{2}")
+# Year parsing is shared with the retrieval filter (`retrieval.filters`): both
+# read the SAME planner-written sub-query, so they have to agree on what counts
+# as a named year — a local 4-digit-only regex here read "FY22" as no year and
+# dropped every extracted period as a guess.
 
 # The sub-query asks for a period-over-period comparison of the metric
 # ("year-over-year", "vs prior year", "improve/decline", "change").
@@ -156,8 +158,10 @@ def _named_periods_only(sub_q: str, periods: list[str]) -> list[str]:
     year" has NO named year, so every extracted period is a stale-training-data
     guess and gets dropped (the calculator then resolves the newest filed
     periods itself)."""
-    named = set(_YEAR_RE.findall(sub_q))
-    return [p for p in (periods or []) if set(_YEAR_RE.findall(p)) & named]
+    from finagent.retrieval.filters import parse_years
+
+    named = set(parse_years(sub_q))
+    return [p for p in (periods or []) if set(parse_years(p)) & named]
 
 
 class NumericNodes:
@@ -446,28 +450,4 @@ class NumericNodes:
             self._log(state, f"formula planner failed for {metric!r}: {e}")
             return None
 
-    def table_agent_node(self, state: AgentState) -> dict:
-        """Phase 7: the table agent is the numeric *fallback*, not a duplicate.
-
-        Skip any numeric sub-query the XBRL facts node or the calculator already
-        answered — that trims an embedding search over the tables collection plus
-        a code-generation LLM call for each already-answered sub-query. The table
-        agent still runs for numeric sub-queries XBRL/calc couldn't serve.
-        """
-        answered = {f.get("sub_query") for f in state.get("xbrl_facts", []) or []}
-        answered |= {r.get("sub_query") for r in state.get("calc_results", []) or []}
-        if not answered:
-            return super().table_agent_node(state)
-
-        sub_queries = state.get("sub_queries") or [state["question"]]
-        routes = state.get("query_routes") or ["narrative"] * len(sub_queries)
-        remaining = [s for s, r in zip(sub_queries, routes)
-                     if r == "numeric" and s not in answered]
-        if not remaining:
-            return {"table_results": []}
-        # Restrict the table agent to the still-unanswered numeric sub-queries.
-        proxy = dict(state)
-        proxy["sub_queries"] = remaining
-        proxy["query_routes"] = ["numeric"] * len(remaining)
-        return super().table_agent_node(proxy)
 

@@ -28,7 +28,7 @@ Usage as a library
 ------------------
     from finagent.graph.base import AgenticRAG
 
-    agent = AgenticRAG(collection_name="us_filings")
+    agent = AgenticRAG()  # collection defaults to settings.us_collection
     result = agent.run("Compare Microsoft and Apple revenue growth in FY23.")
     print(result["final_answer"])
     print(result["citations"])
@@ -62,6 +62,7 @@ from finagent.graph.state import AgentState, CriticReport, SubQueries
 from finagent.runtime import DEFAULTS as RUNTIME_DEFAULTS
 from finagent.runtime import RuntimeContext, create_llm, current_context
 from finagent.vectorstore import DEFAULT_EMBED_MODEL
+from finagent.config import settings
 
 load_dotenv()
 
@@ -84,7 +85,7 @@ class AgenticRAG:
     Parameters
     ----------
     collection_name : str
-        Qdrant collection (e.g. "us_filings").
+        Qdrant collection (defaults to settings.us_collection).
     embedding_model : str
         MUST match the model used at ingestion.
     top_k : int
@@ -106,7 +107,7 @@ class AgenticRAG:
 
     def __init__(
         self,
-        collection_name: str = "us_filings",
+        collection_name: str = settings.us_collection,
         embedding_model: str = DEFAULT_EMBED_MODEL,
         top_k: int = 5,
         collections: Optional[list[str]] = None,
@@ -142,7 +143,6 @@ class AgenticRAG:
             "question": question,
             "iteration_count": 0,
             "errors": [],
-            "table_results": [],
             "web_results": [],
         }
         return self.graph.invoke(
@@ -416,43 +416,12 @@ class AgenticRAG:
 
 
 # --------------------------------------------------------------------------- #
-# Comparison table helper (Day 7)
-# --------------------------------------------------------------------------- #
-
-def append_comparison_row(
-    config_name: str,
-    metrics: dict,
-    csv_path: Union[str, Path] = "results/comparison.csv",
-) -> None:
-    """Append/update one configuration's mean metrics in results/comparison.csv.
-
-    `metrics` keys are metric names (faithfulness, answer_relevancy, ...).
-    Re-running with the same config_name overwrites that row.
-    """
-    import pandas as pd
-
-    csv_path = Path(csv_path)
-    csv_path.parent.mkdir(parents=True, exist_ok=True)
-    row = {"configuration": config_name, **{k: round(float(v), 4) for k, v in metrics.items()}}
-
-    if csv_path.exists():
-        df = pd.read_csv(csv_path)
-        df = df[df["configuration"] != config_name]
-        df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
-    else:
-        df = pd.DataFrame([row])
-
-    df.to_csv(csv_path, index=False)
-    print(f"Updated {csv_path} with row '{config_name}'")
-
-
-# --------------------------------------------------------------------------- #
 # CLI
 # --------------------------------------------------------------------------- #
 
 def _build_cli() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Run the Week-2 agentic RAG graph.")
-    p.add_argument("--collection", default="us_filings")
+    p.add_argument("--collection", default=settings.us_collection)
     p.add_argument(
         "--provider",
         choices=["groq", "gemini", "openai", "anthropic"],

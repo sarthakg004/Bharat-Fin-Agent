@@ -32,6 +32,7 @@ from typing import Optional
 from finagent.tools.base import BaseTool
 from finagent.tools.resolver import TickerCIKResolver
 from finagent.vectorstore import DEFAULT_EMBED_MODEL
+from finagent.config import settings
 
 
 def _sec_identity() -> tuple[str, str]:
@@ -45,7 +46,7 @@ class SecFilingFetcher(BaseTool):
     """Fetch + ingest a company's latest SEC 10-K on demand (self-expanding corpus).
 
     Usage:
-        f = SecFilingFetcher(collection_name="us_filings")
+        f = SecFilingFetcher()  # collection defaults to settings.us_collection
         f.gate("AAPL")      # -> "already_indexed" | "fetch" | "not_us_listed"
         f.run("CRM")        # resolve -> fetch latest 10-K -> ingest -> report
     """
@@ -56,7 +57,7 @@ class SecFilingFetcher(BaseTool):
     def __init__(
         self,
         resolver: Optional[TickerCIKResolver] = None,
-        collection_name: str = "us_filings",
+        collection_name: str = settings.us_collection,
         corpus_dir: str | Path = "data/us/pdfs",
         embedding_model: str = DEFAULT_EMBED_MODEL,
         market: str = "us",
@@ -66,15 +67,8 @@ class SecFilingFetcher(BaseTool):
         self.corpus_dir = Path(corpus_dir)
         self.embedding_model = embedding_model
         self.market = market
-        self._store = None
 
     # --- membership gate -----------------------------------------------------
-
-    def _get_store(self):
-        if self._store is None:
-            from finagent.vectorstore import build_store
-            self._store = build_store(self.collection_name, self.embedding_model)
-        return self._store
 
     def is_indexed(self, ticker: str) -> bool:
         """Cheap metadata check: is any chunk tagged with this ticker?"""

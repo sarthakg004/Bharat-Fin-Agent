@@ -28,7 +28,7 @@ def run_with_trace(
     graph = build_graph(provider=provider)
     initial = {
         "question": question, "iteration_count": 0, "errors": [],
-        "table_results": [], "web_results": [],
+        "web_results": [],
     }
     steps, state = [], {}
     for mode, data in graph.stream(
@@ -96,9 +96,8 @@ def _summarize_delta(node: str, delta: dict) -> str:
     if node == "rewrite":
         rw = delta.get("sub_queries", []) or []
         return "rewritten: " + "; ".join(rw)
-    if node in ("table_agent", "market_data", "web_search"):
-        key = {"table_agent": "table_results", "market_data": "market_data",
-               "web_search": "web_results"}[node]
+    if node in ("market_data", "web_search"):
+        key = {"market_data": "market_data", "web_search": "web_results"}[node]
         return f"{len(delta.get(key, []) or [])} result(s)"
     if node == "synthesize":
         return (delta.get("draft_answer", "") or "")[:200].replace("\n", " ") + "…"

@@ -31,6 +31,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from finagent.config import settings
+
 load_dotenv()
 
 EMBED_MODEL = "BAAI/bge-small-en-v1.5"
@@ -107,7 +109,7 @@ def _gold_rank(ranked_texts: list[str], gold_text: str) -> int | None:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--n", type=int, default=60, help="chunks sampled per collection")
-    ap.add_argument("--collections", default="us_filings")
+    ap.add_argument("--collections", default=settings.us_collection)
     ap.add_argument(
         "--rerankers",
         default="BAAI/bge-reranker-base,cross-encoder/ms-marco-MiniLM-L-6-v2",

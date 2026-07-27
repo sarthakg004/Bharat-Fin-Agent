@@ -34,7 +34,26 @@ COMPANY_ALIASES: dict[str, str] = {
     "mgm": "mgm resorts",       # too short for the auto single-token alias
 }
 
-_YEAR_RE = re.compile(r"\b(?:FY\s?)?((?:19|20)\d{2})\b", re.I)
+# Fiscal years written either long ("FY2022", "2022") or short ("FY22"). The
+# planner emits BOTH, sometimes inside one plan, and the short form used to
+# parse as no year at all — which silently dropped the year clause here and
+# every extracted period in the numeric lane. A bare "22" stays a quantity: the
+# 2-digit form is only read behind an FY prefix.
+_YEAR_RE = re.compile(r"\bFY\s?(\d{2})\b|\b(?:FY\s?)?((?:19|20)\d{2})\b", re.I)
+
+
+def parse_years(text: str) -> list[int]:
+    """Every fiscal year named in `text`, in order. "FY22" -> 2022."""
+    out: list[int] = []
+    for m in _YEAR_RE.finditer(text or ""):
+        short, full = m.group(1), m.group(2)
+        if full:
+            out.append(int(full))
+        else:
+            # Pivot, so an old "FY98" filing never reads as 2098.
+            n = int(short)
+            out.append(2000 + n if n < 80 else 1900 + n)
+    return out
 
 # 10-K section intent: phrase (in _norm() form) → `item` metadata value tagged
 # at ingestion. Only unambiguous section names — a generic word must never
@@ -187,7 +206,7 @@ def infer_filter(question: str, vocab: dict, years_by_co: dict) -> Optional[dict
         flt["items"] = items
     if len(matched) == 1:
         years_avail = years_by_co.get(matched[0], set())
-        yrs = [int(y) for y in _YEAR_RE.findall(question)]
+        yrs = parse_years(question)
         if yrs and years_avail:
             target = max(yrs)
             keep = [str(y) for y in (target, target + 1) if str(y) in years_avail]

@@ -268,8 +268,6 @@ class ExternalNodes:
         # whose lanes DID answer is expected to have no chunks — not escalated.
         tools_answered = bool(
             state.get("xbrl_facts") or state.get("calc_results")
-            or any(t.get("answer") and not t.get("error")
-                   for t in state.get("table_results") or [])
         )
         corpus_attempted = (
             (not routes)
@@ -387,18 +385,6 @@ class ExternalNodes:
             res["sub_query"] = sub_q
             results.append(res)
         return {"edgar_results": results}
-
-    @staticmethod
-    def _format_web_results(web_res: list[dict]) -> str:
-        parts: list[str] = []
-        for h in web_res:
-            tier = h.get("tier", "web")
-            label = "Trusted" if tier == "trusted" else "Web"
-            tag = f"<News: {h.get('title', '?')[:90]} — {h.get('source', 'web')}>"
-            url = h.get("url", "")
-            body = (h.get("content") or "")[:1000]
-            parts.append(f"[{label}] {tag} {url}\n{body}")
-        return "\n\n".join(parts)
 
     @staticmethod
     def _format_edgar_result(r: dict) -> str:

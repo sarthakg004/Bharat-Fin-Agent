@@ -1,0 +1,11 @@
+{
+  "pool_recall@20": 0.5433,
+  "pool_recall@50": 0.685,
+  "pool_recall@100": 0.8268,
+  "hit@1": 0.1429,
+  "hit@3": 0.3238,
+  "hit@5": 0.3714,
+  "mrr": 0.2663,
+  "n_questions": 127,
+  "n_in_pool": 105
+}

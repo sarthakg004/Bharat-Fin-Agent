@@ -55,6 +55,10 @@ class HybridRetriever:
         use_mmr: bool = False,
         auto_filter: bool = True,
         parent_doc: bool = True,
+        # Append the underlying statement line items when the query names a
+        # derived metric ("quick ratio" -> "total current assets ..."). See
+        # `finagent.retrieval.expansion`; measured in §13.
+        expand_queries: bool = True,
     ):
         self.store = store
         self.reranker_model = reranker_model
@@ -78,6 +82,7 @@ class HybridRetriever:
         # rerank the parents. Degrades gracefully — a chunk with no `parent_text`
         # is kept as-is.
         self.parent_doc = parent_doc
+        self.expand_queries = expand_queries
 
         self._reranker = None
         self._company_vocab: Optional[dict] = None
@@ -87,22 +92,34 @@ class HybridRetriever:
     # Public
     # ------------------------------------------------------------------ #
 
-    def search(self, query: str) -> list[tuple[str, dict]]:
-        """Return up to `final_top_k` (text, metadata) pairs for the query."""
+    def search(self, query: str,
+               top_k: Optional[int] = None) -> list[tuple[str, dict]]:
+        """Return up to `top_k` (default `final_top_k`) (text, metadata) pairs.
+
+        This is `retrieve()` plus the query→filter inference and the relax
+        fallback; the actual pool→collapse→rerank engine lives in `retrieve`.
+
+        The derived-metric expansion happens HERE rather than inside `_pool`,
+        so the filter inference, the candidate pool and the cross-encoder all
+        see the same query text — that is the combination §13 measured.
+        """
+        if self.expand_queries:
+            from finagent.retrieval.expansion import expand_query
+
+            query = expand_query(query)
+        top_k = self.final_top_k if top_k is None else top_k
         flt = self.infer_filter(query) if self.auto_filter else None
-        pool = self._pool(query, flt)
-        if not pool and flt and (flt.get("years") or flt.get("items")):
+        hits = self.retrieve(query, top_k, flt)
+        if not hits and flt and (flt.get("years") or flt.get("items")):
             # The YEAR (fiscal-calendar labelling) or the ITEM clause (a
             # collection ingested before section tagging) can over-narrow —
             # relax both back to company-only. The COMPANY clause is never
             # relaxed: chunks from a different company are noise that misleads
             # the synthesizer, and an empty result correctly hands off to the
-            # fetch/web fallbacks.
-            pool = self._pool(query, {"companies": flt["companies"]})
-        if not pool:
-            return []
-        pool = self._collapse_to_parents(pool)
-        return self._rerank(query, pool)[: self.final_top_k]
+            # fetch/web fallbacks. (retrieve() returns [] iff the pool is empty,
+            # so this fires on exactly the over-narrowed case the old code did.)
+            hits = self.retrieve(query, top_k, {"companies": flt["companies"]})
+        return hits
 
     def infer_filter(self, query: str) -> Optional[dict]:
         """Company/year filter inferred from the query against the collection's
@@ -115,9 +132,11 @@ class HybridRetriever:
         return infer_filter(query, self._company_vocab, self._years_by_co)
 
     # ------------------------------------------------------------------ #
-    # Demonstration / inspection API (used by the reference notebook).
-    # These expose each retrieval stage separately so a reader can see what
-    # each contributes. They reuse the same internals as `search()`.
+    # Retrieval stages, exposed as named steps. `search()` composes them
+    # (get_pool → collapse → rerank); a notebook can also call each one
+    # standalone to see what each contributes. `flt` defaults to off, so a
+    # bare `get_pool(query)` / `retrieve(query)` gives the raw, unfiltered
+    # view while `search()` passes the inferred company/year filter through.
     # ------------------------------------------------------------------ #
 
     @classmethod
@@ -132,9 +151,10 @@ class HybridRetriever:
 
         return cls(build_store(collection, embedding_model), **kwargs)
 
-    def get_pool(self, query: str) -> list[tuple[str, dict]]:
-        """The fused candidate pool, before reranking."""
-        return self._pool(query)
+    def get_pool(self, query: str,
+                 flt: Optional[dict] = None) -> list[tuple[str, dict]]:
+        """The fused (sparse+dense, RRF) candidate pool, before reranking."""
+        return self._pool(query, flt)
 
     def rerank(
         self, query: str, candidates: list[tuple[str, dict]], top_k: int = 5
@@ -142,13 +162,15 @@ class HybridRetriever:
         """Cross-encoder rerank a candidate pool; return the top_k."""
         return self._rerank(query, candidates)[:top_k]
 
-    def retrieve(self, query: str, k: int = 5) -> list[tuple[str, dict]]:
-        """Full hybrid retrieval (pool → rerank) returning the top-k."""
-        pool = self._pool(query)
+    def retrieve(self, query: str, k: int = 5,
+                 flt: Optional[dict] = None) -> list[tuple[str, dict]]:
+        """The retrieval engine: pool → collapse-to-parents → rerank → top-k.
+        `search()` wraps this with filter inference and the relax fallback."""
+        pool = self.get_pool(query, flt)
         if not pool:
             return []
         pool = self._collapse_to_parents(pool)
-        return self._rerank(query, pool)[:k]
+        return self.rerank(query, pool, k)
 
     # ------------------------------------------------------------------ #
     # Internals
@@ -188,10 +210,16 @@ class HybridRetriever:
         return out
 
     def _all_metadata(self):
-        """Every point's metadata — used once to build the company vocabulary."""
-        from finagent.vectorstore import scroll_payloads
+        """Synthetic (company, year) rows for the vocabulary builder — one per
+        distinct (company, year) pair, sourced from the cheap facet index rather
+        than a full-payload scroll of every point (see
+        `vectorstore.company_year_index`). `build_company_vocab` reads only
+        `company`/`year`, so this feeds it exactly what it needs."""
+        from finagent.vectorstore import company_year_index
 
-        return scroll_payloads(self.store.collection_name)
+        idx = company_year_index(self.store.collection_name)
+        return [{"company": c, "year": y}
+                for c, years in idx.items() for y in (years or [""])]
 
     def _collapse_to_parents(
         self, hits: list[tuple[str, dict]]
@@ -226,6 +254,10 @@ class HybridRetriever:
         pairs = [(query, text) for text, _ in candidates]
         scores = reranker.predict(pairs)
         ranked = sorted(zip(candidates, scores), key=lambda x: -x[1])
+        # The score is deliberately NOT attached to the chunk. §11 propagated it
+        # so the graph's global cap could rank on it instead of re-scoring the
+        # merged pool against the question; §13 measured that the re-score is
+        # the better rule (58 -> 61 of 99), so nothing downstream reads it.
         return [c for c, _ in ranked]
 
     def _ensure_reranker(self):

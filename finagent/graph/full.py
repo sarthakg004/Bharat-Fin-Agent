@@ -1,8 +1,8 @@
 """
 full.py  ·  finagent/graph/full.py
 
-Table-augmented agentic RAG (v3). Adds a query **router** and a **table agent**
-to the corrective-RAG (v2) graph:
+Router-based agentic RAG (v3). Adds a query **router** to the corrective-RAG
+(v2) graph:
 
     START → planner → router → retrieve → grader ── conditional ──┐
                                   ▲                               │
@@ -11,27 +11,26 @@ to the corrective-RAG (v2) graph:
                                                     rewrites < cap)
                                                                   │
                                                                   ▼
-                                            table_agent → synthesize → critic ── conditional
-                                                                          │            │
-                                                                          └── retrieve ◄┘
-                                                                  (needs_retry,
-                                                                   critic_retries < cap)
-                                                                          │
-                                                                          ▼
-                                                                         END
+                                                  synthesize → critic ── conditional
+                                                                  │            │
+                                                                  └── retrieve ◄┘
+                                                          (needs_retry,
+                                                           critic_retries < cap)
+                                                                  │
+                                                                  ▼
+                                                                 END
 
 The **router** classifies every sub-query as `narrative`, `numeric`, or
-`external` (web). The narrative ones go through the hybrid retriever +
-grader/rewrite loop from v2; the numeric ones are answered by the
-**TableAgent** (retrieve relevant tables → write pandas → safe exec). The
-synthesizer merges both streams and the critic checks the final answer
-against text excerpts AND table-derived results.
+`external` (web). Retrieval feeds the hybrid retriever + grader/rewrite loop
+from v2; the synthesizer writes the answer over the retrieved excerpts and the
+critic checks it against them. (The v4 subclass adds the structured numeric
+lanes — XBRL + calculator — and web search on top of this.)
 
 Usage as a library
 ------------------
     from finagent.graph.full import AgenticRAGv3
 
-    agent = AgenticRAGv3(collection_name="us_filings")
+    agent = AgenticRAGv3()  # collection defaults to settings.us_collection
     state = agent.run("What was JPMorgan's net interest margin in FY23?")
     print(state["final_answer"])
     print(state["query_routes"])
@@ -53,7 +52,6 @@ from finagent.graph.corrective import AgenticRAGv2
 from finagent.retrieval import HybridRetriever
 from finagent.runtime import RuntimeContext
 from finagent.graph.state import AgentState, QueryPlan, RouterReport
-from finagent.graph.table_agent import TableAgent
 
 
 # --------------------------------------------------------------------------- #
@@ -62,6 +60,7 @@ from finagent.graph.table_agent import TableAgent
 
 from finagent.prompts.planner import ROUTER_PROMPT, ROUTER_SYSTEM  # noqa: F401
 from finagent.vectorstore import DEFAULT_EMBED_MODEL
+from finagent.config import settings
 
 # Fused planner+router: ONE structured call both decomposes the question into
 # sub-queries AND routes each to its lane. This replaces two sequential LLM
@@ -114,7 +113,7 @@ Routing lanes (per sub-query)
   ratio adequate?") — route them `numeric` so the calculator computes the ratio
   from XBRL; the synthesiser adds the judgement on top. Examples: "FY2016 COGS",
   "FY2021 inventory turnover", "EBITDA margin FY21→FY23", "quick ratio FY2022".
-  Answered from XBRL facts, a deterministic calculator, and extracted tables.
+  Answered from XBRL facts and a deterministic calculator (see the v4 subclass).
 - narrative: text retrieval over filings, for PURELY QUALITATIVE questions with
   no single computable metric — strategy, risks, segment/MD&A commentary,
   drivers ("what drove the margin change", "why did revenue fall"), and
@@ -217,9 +216,6 @@ Sub-queries researched:
 Text excerpts (each begins with its citation tag):
 {text_context}
 
-Numeric / table-derived results (computed answer + the source tables):
-{table_context}
-
 ---
 Write the final answer now, with an inline citation after every fact.
 """
@@ -291,47 +287,14 @@ def _heuristic_route(query: str) -> str:
 # --------------------------------------------------------------------------- #
 
 class AgenticRAGv3(AgenticRAGv2):
-    """Corrective RAG + router + table agent.
+    """Corrective RAG + query router.
 
     Only the parts that change from v2 are overridden:
       * `router_node` — new (per-sub-query classification with structured output)
       * `hybrid_retrieve_node` — filters to narrative sub-queries only
-      * `table_agent_node` — new (per numeric sub-query, via TableAgent)
-      * `synthesize_node` — merges text excerpts + table results
-      * `critic_node` — checks claims against BOTH evidence streams
-      * `_build_graph`, `_grade_router` — wire the new nodes
+      * `synthesize_node` — writes the answer over the retrieved excerpts
+      * `_build_graph`, `_grade_router` — wire the router in
     """
-
-    def __init__(
-        self,
-        *args,
-        table_collection: str = "tables",
-        table_top_k: int = 3,
-        **kwargs,
-    ):
-        super().__init__(*args, **kwargs)
-        self.table_collection = table_collection
-        self.table_top_k = table_top_k
-        # Code generation needs the strong tier.
-        # Tool selection + structured extraction (router, XBRL/calc/EDGAR/gate
-        # extractors, market planner all share this tier) is accuracy-critical:
-        # a weak model mis-routes ("acquisitions" not sent to web) and mis-maps
-        # metrics. Default it to the STRONG synth tier, not the fast planner.
-        self._table_agent: Optional[TableAgent] = None
-
-    # ------------------------------------------------------------------ #
-    # Resources
-    # ------------------------------------------------------------------ #
-
-    @property
-    def table_agent(self) -> TableAgent:
-        if self._table_agent is None:
-            self._table_agent = TableAgent(
-                collection_name=self.table_collection,
-                embedding_model=self.embedding_model,
-                top_k=self.table_top_k,
-            )
-        return self._table_agent
 
     def _get_router_llm(self):
         return self._get_llm("router")
@@ -448,46 +411,21 @@ class AgenticRAGv3(AgenticRAGv2):
     def hybrid_retrieve_node(self, state: AgentState) -> dict:
         """Always retrieve from the filings for EVERY sub-query.
 
-        Earlier this skipped 'numeric' sub-queries and left them to the table
-        agent — but the 10-K / annual-report prose contains the figures too, and
-        when the tables collection is empty that left numeric questions with no
-        grounding at all (→ "I don't have information"). The table agent now
-        supplements retrieval, it does not replace it.
+        Earlier this skipped 'numeric' sub-queries — but the 10-K / annual-report
+        prose contains the figures too, and skipping them left numeric questions
+        with no grounding at all (→ "I don't have information"). Retrieval runs
+        for every sub-query; the structured numeric lanes (v4) supplement it.
         """
         return super().hybrid_retrieve_node(state)
 
-    def table_agent_node(self, state: AgentState) -> dict:
-        """Run the table agent once per numeric sub-query."""
-        sub_queries = state.get("sub_queries") or [state["question"]]
-        routes = state.get("query_routes") or ["narrative"] * len(sub_queries)
-        numeric_subs = [s for s, r in zip(sub_queries, routes) if r == "numeric"]
-        if not numeric_subs:
-            return {"table_results": []}
-
-        results: list[dict] = []
-        for sub_q in numeric_subs:
-            try:
-                res = self.table_agent.answer(sub_q)
-                results.append({"sub_query": sub_q, **res})
-            except Exception as e:
-                results.append({
-                    "sub_query": sub_q, "answer": "", "code": "",
-                    "explanation": "", "tables_used": [], "stdout": "",
-                    "error": f"{type(e).__name__}: {e}",
-                })
-                self._log(state, f"table_agent failed for {sub_q!r}: {e}")
-        return {"table_results": results}
-
     def synthesize_node(self, state: AgentState) -> dict:
-        """Merge text excerpts + table results into the final answer."""
+        """Merge the retrieved text excerpts into the final answer."""
         from langchain_core.messages import HumanMessage, SystemMessage
 
         chunks = state.get("retrieved_chunks", [])
-        table_res = state.get("table_results", [])
         text_context = (
             "\n\n".join(f"{c['source']}\n{c['text']}" for c in chunks) or "(none)"
         )
-        table_context = self._format_table_results(table_res) or "(none)"
         sub_queries = "\n".join(f"- {q}" for q in state.get("sub_queries", []))
 
         llm = self._get_llm("synth")
@@ -495,7 +433,6 @@ class AgenticRAGv3(AgenticRAGv2):
             question=state["question"],
             sub_queries=sub_queries,
             text_context=text_context,
-            table_context=table_context,
         )
         response = llm.invoke([
             SystemMessage(content=SYNTH_V3_SYSTEM),
@@ -504,14 +441,10 @@ class AgenticRAGv3(AgenticRAGv2):
         from finagent.llm import text_of
         answer = text_of(response)
 
-        # Citation extraction: text tags [ … ] AND table tags (Table: … ).
-        citations = sorted(set(
-            re.findall(r"\[[^\]]+\]|\(Table:[^)]+\)", answer)
-        ))
+        citations = sorted(set(re.findall(r"\[[^\]]+\]", answer)))
         low_conf = (
             state.get("avg_grade", 0.0) < self.grade_threshold
             and state.get("iteration_count", 0) >= self.max_rewrites
-            and not table_res  # tables can rescue a low text-retrieval grade
         )
         return {
             "draft_answer": answer,
@@ -521,54 +454,30 @@ class AgenticRAGv3(AgenticRAGv2):
             "low_confidence": bool(low_conf),
         }
 
-    def critic_node(self, state: AgentState) -> dict:
-        """Critic checks claims against text chunks AND table-derived evidence."""
-        table_res = state.get("table_results", [])
-        augmented = list(state.get("retrieved_chunks", []))
-        for t in table_res:
-            if t.get("error") or not t.get("answer"):
-                continue
-            sources = ", ".join(
-                f"(Table: {tu.get('title', '?')}, {tu.get('company', '?')} "
-                f"{tu.get('year', '?')}, p. {tu.get('page', '?')})"
-                for tu in t.get("tables_used", [])[:3]
-            ) or "(Table)"
-            augmented.append({
-                "text": f"Computed from tables: {t.get('answer', '')}\n"
-                        f"Code: {t.get('code', '')[:300]}",
-                "source": sources,
-                "company": "?", "year": "?", "page": "?",
-                "sub_query": t.get("sub_query", ""),
-            })
-
-        proxy = dict(state)
-        proxy["retrieved_chunks"] = augmented
-        return super().critic_node(proxy)
-
     # ------------------------------------------------------------------ #
     # Graph
     # ------------------------------------------------------------------ #
 
     def _grade_router(self, state: AgentState) -> str:
-        """Route to `table_agent` when text retrieval is good enough (or there
-        is no narrative sub-query, or rewriting clearly won't help) — otherwise
-        rewrite and retry."""
+        """Return "proceed" when text retrieval is good enough (or there is no
+        narrative sub-query, or rewriting clearly won't help) — otherwise
+        "rewrite" and retry."""
         routes = state.get("query_routes") or []
         has_narrative = any(r != "numeric" for r in routes)
         avg = state.get("avg_grade", 0.0)
         kept = state.get("retrieved_chunks") or []
 
         if not has_narrative:
-            return "table_agent"
+            return "proceed"
         # Grader filtered every chunk away AND the average was very low →
-        # the entity isn't in the corpus; rewriting won't fix that. Skip ahead
-        # to table/web so any out-of-corpus evidence can still answer.
+        # the entity isn't in the corpus; rewriting won't fix that. Proceed so
+        # any out-of-corpus evidence (web) can still answer.
         if not kept and avg < self.very_poor_grade:
-            return "table_agent"
+            return "proceed"
         if avg >= self.grade_threshold:
-            return "table_agent"
+            return "proceed"
         if state.get("iteration_count", 0) >= self.max_rewrites:
-            return "table_agent"
+            return "proceed"
         return "rewrite"
 
     def _build_graph(self):
@@ -580,7 +489,6 @@ class AgenticRAGv3(AgenticRAGv2):
         g.add_node("retrieve", self.hybrid_retrieve_node)
         g.add_node("grader", self.grader_node)
         g.add_node("rewrite", self.rewrite_node)
-        g.add_node("table_agent", self.table_agent_node)
         g.add_node("synthesize", self.synthesize_node)
         g.add_node("critic", self.critic_node)
 
@@ -590,10 +498,9 @@ class AgenticRAGv3(AgenticRAGv2):
         g.add_edge("retrieve", "grader")
         g.add_conditional_edges(
             "grader", self._grade_router,
-            {"rewrite": "rewrite", "table_agent": "table_agent"},
+            {"rewrite": "rewrite", "proceed": "synthesize"},
         )
         g.add_edge("rewrite", "retrieve")
-        g.add_edge("table_agent", "synthesize")
         g.add_edge("synthesize", "critic")
         g.add_conditional_edges(
             "critic", self._critic_router,
@@ -601,38 +508,14 @@ class AgenticRAGv3(AgenticRAGv2):
         )
         return g.compile()
 
-    # ------------------------------------------------------------------ #
-    # Helpers
-    # ------------------------------------------------------------------ #
-
-    @staticmethod
-    def _format_table_results(table_res: list[dict]) -> str:
-        parts: list[str] = []
-        for t in table_res:
-            if t.get("error") and not t.get("answer"):
-                parts.append(f"- ({t['sub_query']}): error: {t['error']}")
-                continue
-            sources = ", ".join(
-                f"(Table: {tu.get('title', '?')}, {tu.get('company', '?')} "
-                f"{tu.get('year', '?')}, p. {tu.get('page', '?')})"
-                for tu in t.get("tables_used", [])[:3]
-            ) or "(no source)"
-            parts.append(
-                f"- Sub-query: {t['sub_query']}\n"
-                f"  Computed: {t.get('answer', '')[:600]}\n"
-                f"  Sources:  {sources}"
-            )
-        return "\n\n".join(parts)
-
 
 # --------------------------------------------------------------------------- #
 # CLI
 # --------------------------------------------------------------------------- #
 
 def _build_cli() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Run the table-augmented RAG (v3) graph.")
-    p.add_argument("--collection", default="us_filings")
-    p.add_argument("--table-collection", default="tables")
+    p = argparse.ArgumentParser(description="Run the router-based RAG (v3) graph.")
+    p.add_argument("--collection", default=settings.us_collection)
     p.add_argument("--provider", choices=["groq", "gemini", "openai", "anthropic"],
                    default="groq")
     p.add_argument("--planner-model", default=None)
@@ -640,12 +523,10 @@ def _build_cli() -> argparse.ArgumentParser:
     p.add_argument("--critic-model", default=None)
     p.add_argument("--grader-model", default=None)
     p.add_argument("--router-model", default=None)
-    p.add_argument("--code-model", default=None)
     p.add_argument("--embedding-model", default=DEFAULT_EMBED_MODEL)
     p.add_argument("--reranker-model", default=HybridRetriever.DEFAULT_RERANKER)
     p.add_argument("--pool-top-k", type=int, default=48)
     p.add_argument("--final-top-k", type=int, default=5)
-    p.add_argument("--table-top-k", type=int, default=3)
     p.add_argument("--grade-threshold", type=float, default=3.0)
     p.add_argument("--max-rewrites", type=int, default=3)
     p.add_argument("--max-critic-retries", type=int, default=2)
@@ -681,8 +562,6 @@ def main():
         reranker_model=args.reranker_model,
         pool_top_k=args.pool_top_k,
         final_top_k=args.final_top_k,
-        table_collection=args.table_collection,
-        table_top_k=args.table_top_k,
         grade_threshold=args.grade_threshold,
         max_rewrites=args.max_rewrites,
         max_critic_retries=args.max_critic_retries,
@@ -710,10 +589,6 @@ def main():
     print(f"\nCitations:       {state.get('citations')}")
     print(f"Critic grade:    {state.get('grading_score')}  needs_retry={state.get('needs_retry')}")
     print(f"Low confidence:  {state.get('low_confidence')}")
-    if state.get("table_results"):
-        print(f"\nTable computations: {len(state['table_results'])}")
-        for t in state["table_results"]:
-            print(f"  - {t['sub_query']}: {t.get('answer', '')[:120]}")
     if state.get("errors"):
         print(f"\nErrors:          {state['errors']}")
 

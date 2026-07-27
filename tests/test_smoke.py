@@ -82,12 +82,11 @@ def _build_agent():
     from finagent.graph import AgenticRAGv4
 
     return AgenticRAGv4(
-        collection_name="us_filings",
+        collection_name="us_filings_v3",
         reranker_model="BAAI/bge-reranker-base",
         pool_top_k=16, final_top_k=5,
         max_rewrites=2, max_critic_retries=1,
-        table_collection="tables",
-        web_top_k=10, table_top_k=3,
+        web_top_k=10,
     )
 
 
@@ -95,7 +94,7 @@ def test_agent_graph_has_expected_nodes():
     agent = _build_agent()
     nodes = {n for n in agent.graph.get_graph().nodes if not n.startswith("__")}
     expected = {
-        "planner", "router", "retrieve", "grader", "rewrite", "table_agent",
+        "planner", "router", "retrieve", "grader", "rewrite",
         "market_data", "web_search", "evidence_builder", "synthesize", "critic",
         "verify_numbers", "refuse",
     }
@@ -272,12 +271,10 @@ def test_observability_summaries():
     th = _tool_health({
         "xbrl_facts": [{"ok": True}, {"ok": False}],
         "market_data": [{"ok": True}],
-        "table_results": [{"error": "boom"}, {"answer": "x"}],
         "web_results": [{"title": "a"}],
     })
     assert th["xbrl"] == {"calls": 2, "ok": 1, "failed": 1}
     assert th["market"]["ok"] == 1
-    assert th["table"] == {"calls": 2, "ok": 1, "failed": 1}
     assert th["web"]["ok"] == 1
 
 
@@ -508,7 +505,7 @@ def test_tools_lane_corpus_fallback_is_wired():
     empty_tools_state = {
         "question": "q", "query_routes": ["numeric"],
         "retrieved_chunks": [], "xbrl_facts": [], "calc_results": [],
-        "table_results": [], "web_results": [], "market_data": [],
+        "web_results": [], "market_data": [],
         "edgar_results": [],
     }
     out = agent.evidence_builder_node(dict(empty_tools_state))
@@ -686,21 +683,6 @@ def test_explicit_abstention_detection():
     assert not _is_refusal("Revenue was $394.3 billion [1].")
 
 
-def test_shingle_recall():
-    """Evidence recall: whitespace/case-insensitive n-gram containment."""
-    from finagent.evaluation.parsing.compare import shingle_recall
-
-    gold = "net sales increased four percent to three billion dollars in fiscal 2023"
-    assert shingle_recall(gold, "Prefix text. " + gold.upper() + " suffix.") == 1.0
-    assert shingle_recall(gold, "completely unrelated text " * 20) == 0.0
-    # Short gold (< n words) falls back to substring containment.
-    assert shingle_recall("net sales", "total net  sales rose") == 1.0
-    assert shingle_recall("net sales", "gross margin fell") == 0.0
-    # Partial overlap lands strictly between.
-    half = "net sales increased four percent to three billion dollars in"
-    assert 0.0 < shingle_recall(gold, "x " + half + " y") < 1.0
-
-
 def test_count_rows_tolerates_partial_shards(tmp_path):
     """The orchestrator's progress poll counts rows across shard files and
     skips one that is mid-rewrite (unparseable) or missing."""
@@ -859,6 +841,118 @@ def test_cap_pool_keeps_every_sub_query():
     subs = {c["sub_query"] for c in kept}
     assert subs == {"A", "B"}, f"sub-query B was crowded out: {kept}"
     assert kept[0]["text"] == "a0"          # global best still first
+
+
+def test_cap_pool_rescores_the_merged_pool_against_the_question():
+    """The cap ranks by re-scoring every chunk against the ORIGINAL question.
+
+    §11 replaced this with the score each chunk carried from its own sub-query;
+    §13 re-ran the A/B after chunks gained context headers and it reversed
+    (58 vs 61 of 99 — RETRIEVAL_EXPERIMENTS.md §13). Skipping the re-score is
+    therefore a regression, not an optimisation.
+    """
+    agent = _build_agent()
+    agent.retrieve_cap = 2
+    agent._log = lambda s, m: None
+
+    import finagent.retrieval.reranker as R
+    seen = {}
+    chunks = [{"text": "low", "sub_query": "A"},
+              {"text": "high", "sub_query": "A"},
+              {"text": "mid", "sub_query": "A"}]
+    scores = {"low": 0.1, "high": 9.0, "mid": 5.0}
+
+    def fake(model):
+        return type("F", (), {"predict": staticmethod(
+            lambda pairs: [seen.setdefault("q", pairs[0][0]) and 0 or
+                           scores[t] for _, t in pairs])})()
+
+    orig = R._get_shared_reranker
+    R._get_shared_reranker = fake
+    try:
+        kept = agent._cap_pool({"question": "the question"}, chunks)
+    finally:
+        R._get_shared_reranker = orig
+    assert seen["q"] == "the question", "must score against the question, not a sub-query"
+    assert [c["text"] for c in kept] == ["high", "mid"]
+
+
+def test_derived_metric_query_gains_the_line_items_that_carry_the_numbers():
+    """A filing never says "quick ratio" — it says "Total current assets".
+    Expansion is what closes that gap (§13); without it those questions sit at
+    ~0.00 coverage no matter how deep the pool goes."""
+    from finagent.retrieval.expansion import expand_query
+
+    out = expand_query("Verizon quick ratio FY2022")
+    assert out.startswith("Verizon quick ratio FY2022"), "original query must survive"
+    assert "total current liabilities" in out
+    assert "consolidated balance sheets" in out
+    # A query naming no derived metric must be left exactly alone, or every
+    # ordinary lookup pays for padding it does not need.
+    assert expand_query("3M total revenue 2022") == "3M total revenue 2022"
+
+
+def test_question_query_is_gated_on_planner_routing():
+    """Retrieving on the original question must not override the planner: when
+    every sub-query was routed to yfinance/web/EDGAR, the filings are not the
+    source and the question must not drag them back in (§13)."""
+    agent = _build_agent()
+    agent._log = lambda s, m: None
+    searched = []
+    agent._get_hybrids = lambda: [type("H", (), {
+        "search": staticmethod(lambda q, top_k=None: searched.append(q) or []),
+        "infer_filter": staticmethod(lambda q: None)})()]
+
+    agent.hybrid_retrieve_node({
+        "question": "What is AAPL trading at today?",
+        "sub_queries": ["AAPL current share price"],
+        "query_routes": ["market"], "errors": []})
+    assert searched == [], f"routed away from filings but still searched: {searched}"
+
+    searched.clear()
+    agent.hybrid_retrieve_node({
+        "question": "What drove AMD revenue change in FY22?",
+        "sub_queries": ["AMD segment revenue FY22"],
+        "query_routes": ["numeric"], "errors": []})
+    assert "What drove AMD revenue change in FY22?" in searched, \
+        "the question itself must be retrieved on when filings are in play"
+
+
+def test_element_captions_name_a_table_that_lost_its_heading():
+    """`chunk_by_title` cuts a statement's heading away from its numbers, so the
+    chunk holding "Total assets" carries no company/year/statement name and every
+    company's balance sheet embeds to nearly the same vector. The caption walker
+    is what puts that identity back — see RETRIEVAL_EXPERIMENTS.md §12.
+    """
+    from finagent.ingestion.ingest import _element_captions, CorpusIngester
+
+    class E:
+        def __init__(self, text, kind="Text"):
+            self.text = text
+            self.__class__ = type(kind, (E,), {}) if kind != "Text" else E
+
+    def el(text, kind="Text"):
+        e = E.__new__(type(kind, (), {"text": text}))
+        return e
+
+    els = [el("49"), el("Table of Contents"), el("3M Company and Subsidiaries"),
+           el("Consolidated Balance Sheet"), el("At December 31"),
+           el("Total assets | 46,455", "Table")]
+    caps = _element_captions(els)
+    # Page number and TOC boilerplate must not become a caption.
+    assert "49" not in caps[-1] and "Table of Contents" not in caps[-1]
+    assert "Consolidated Balance Sheet" in caps[-1]
+    assert "3M Company and Subsidiaries" in caps[-1]
+
+    # Prose resets the caption: a heading must not leak onto an unrelated table.
+    els2 = els[:5] + [el("The Company operates in four business segments. " * 4),
+                      el("Some other table | 1", "Table")]
+    assert "Consolidated Balance Sheet" not in _element_captions(els2)[-1]
+
+    head = CorpusIngester._context_header(
+        {"company": "3M", "year": "2022", "doc_type": "10-K"},
+        "Consolidated Balance Sheet")
+    assert head == "3M 2022 10-K · Consolidated Balance Sheet"
 
 
 def test_behaviour_metrics_aggregate_latency_and_tokens(tmp_path):

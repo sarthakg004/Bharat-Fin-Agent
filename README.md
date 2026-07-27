@@ -3,7 +3,7 @@
 FinAgent answers questions about **SEC filings and listed companies**. A
 LangGraph agent plans and routes the query in one pass, retrieves from the
 filings, pulls **exact XBRL figures** from SEC company-facts, computes derived
-metrics **deterministically**, runs a numeric **table agent**, fetches **live
+metrics **deterministically**, fetches **live
 market data** (Yahoo Finance) and **web results** (Tavily) when needed, and
 **verifies every figure against the evidence** — refusing rather than
 fabricating when it can't ground a claim. A React UI streams the answer with
@@ -25,7 +25,8 @@ live agent progress and the source chunks shown alongside.
 - **Exact numbers, not paraphrases** — numeric questions hit SEC **XBRL
   company-facts** first (the figure as filed), then a deterministic
   **calculator** for derived metrics (margins, ratios, growth, CAGR, working-
-  capital days), then the pandas **table agent** as a fallback.
+  capital days). The 10-K prose retrieved for the same sub-query supplies any
+  figure XBRL doesn't tag.
 - **Corrective RAG** — each chunk is graded 1–5; weak ones are dropped and the
   query is rewritten + retried when retrieval is poor.
 - **Self-expanding corpus** — a company missing from the index gets its 10-K
@@ -61,7 +62,7 @@ layer adds a capability ([`finagent/graph/`](finagent/graph/)):
 |---|---|---|
 | `base.py` | `AgenticRAG` | planner → retrieve → synthesize → critic |
 | `corrective.py` | `AgenticRAGv2` | hybrid retrieval, relevance grader, rewrite loop |
-| `full.py` | `AgenticRAGv3` | fused **plan+route** call, table agent |
+| `full.py` | `AgenticRAGv3` | fused **plan+route** call, query router |
 | `agent.py` | `AgenticRAGv4` | XBRL facts, calculator, dynamic SEC fetch, EDGAR FTS, market data, web search, numeric verifier, confidence gate |
 
 `AgenticRAGv4` is the deployed agent. The runtime graph:
@@ -69,7 +70,7 @@ layer adds a capability ([`finagent/graph/`](finagent/graph/)):
 ```
 START → planner(+routes) → router ─┬─ retrieval path: fetch_filing → retrieve → grader → {rewrite ↺ | proceed}
                                    └─ tools path (no narrative sub-query): skip retrieval
-      → xbrl → calculator → table_agent → market_data ∥ web_search ∥ edgar_search   (parallel fan-out)
+      → xbrl → calculator → market_data ∥ web_search ∥ edgar_search   (parallel fan-out)
       → evidence_builder → synthesize → critic → verify_numbers
       → confidence → {answer | answer + caveat | low-confidence caveat}
                    ↘ refuse (ungrounded figures)                         → END
@@ -192,20 +193,16 @@ the same command resumes where it stopped (the RAGAS scorer is also
 resumable: already-scored rows are skipped on the next run). The UI surfaces
 the same condition as "Limit exhausted" within seconds instead of hanging.
 
-### Parsing evaluation (upload pipeline)
+### Parsing choice (upload pipeline)
 
-The document-upload parser (Docling) is benchmarked against the production
-pypdf baseline on FinanceBench PDFs, using the human-annotated gold evidence
-passages as free ground truth:
-
-```bash
-python -m finagent.evaluation.parsing.compare --sample 10
-```
-
-→ `results/parsing_eval.{json,md}`: **evidence recall** (fraction of each gold
-passage's 10-word shingles found verbatim in the parsed text — judge-free
-fidelity), extraction yield (chars/page), page coverage, chunk-size stats under
-the production splitter, tables detected, and parse time per document.
+The document-upload parser (Docling) was benchmarked against the pypdf baseline
+on FinanceBench PDFs, scored by **evidence recall** against the human-annotated
+gold passages (judge-free fidelity). pypdf won — 1.0 recall at ~14 s/doc vs
+Docling's 0.92 at ~89 s/doc — so the batch corpus stays on pypdf; Docling is
+used only for user uploads, where its table reconstruction is worth the latency
+on a single document. The numbers live in `results/parsing_eval.md`. (The
+throwaway comparison harness that produced them was retired with the PDF eval
+corpus; the retrieval eval now runs on the served SEC **HTML**, see below.)
 
 ### Why not a "true" multi-agent system?
 
@@ -250,7 +247,6 @@ Open **http://localhost:5173** and ask a question.
 pip install -e ".[ingest]"
 python -m finagent.ingestion.fetchPDFs
 python -m finagent.ingestion.ingest        # parse + chunk + embed into Qdrant
-python -m finagent.ingestion.table_ingest
 ```
 
 Ingestion is idempotent: point ids are derived from (filing, position, content),

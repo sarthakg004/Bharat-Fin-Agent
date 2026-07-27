@@ -217,17 +217,6 @@ class SynthesisNodes:
                 confidence=max(0.0, min(1.0, conf)),
                 sub_query=c.get("sub_query", ""))
 
-        # Table-agent computations.
-        for t in state.get("table_results", []) or []:
-            if t.get("error") or not t.get("answer"):
-                continue
-            srcs = ", ".join(
-                f"{tu.get('title','?')} ({tu.get('company','?')} {tu.get('year','?')})"
-                for tu in (t.get("tables_used") or [])[:3])
-            add("table", f"Computed: {str(t.get('answer',''))[:200]}",
-                source=f"<Table: {srcs}>", citation=f"<Table: {srcs}>",
-                sub_query=t.get("sub_query", ""))
-
         # Live market data (yfinance) — one item per successful tool call.
         for m in state.get("market_data", []) or []:
             if not m.get("ok"):
@@ -406,7 +395,6 @@ class SynthesisNodes:
 
         chunks = state.get("retrieved_chunks", []) or []
         web_res = state.get("web_results", []) or []
-        table_res = state.get("table_results", []) or []
         market_data = state.get("market_data", []) or []
         xbrl_facts = state.get("xbrl_facts", []) or []
         calc_res = state.get("calc_results", []) or []
@@ -527,21 +515,7 @@ class SynthesisNodes:
             )
             idx += 1
 
-        # 3. Table computations
-        for t in table_res:
-            if t.get("error") and not t.get("answer"):
-                continue
-            used = (t.get("tables_used") or [])[:1]
-            first = used[0] if used else {}
-            evidence_items.append(
-                f"[{idx}] TABLE COMPUTATION — {first.get('title','?')} "
-                f"({first.get('company','?')} {first.get('year','?')}, "
-                f"p. {first.get('page','?')})\n"
-                f"Computed: {t.get('answer','')[:600]}"
-            )
-            idx += 1
-
-        # 4. EDGAR full-text cross-document results — the set of companies whose
+        # 3. EDGAR full-text cross-document results — the set of companies whose
         # filings match, which single-company retrieval can't produce.
         for r in edgar_res:
             evidence_items.append(
@@ -634,7 +608,7 @@ single item is irrelevant."""
         low_conf = (
             state.get("avg_grade", 0.0) < self.grade_threshold
             and state.get("iteration_count", 0) >= self.max_rewrites
-            and not table_res and not web_res
+            and not web_res
         )
         return {
             "draft_answer": answer,
@@ -725,15 +699,6 @@ single item is irrelevant."""
             parts.append(f"[Calc] {SynthesisNodes._format_calc_result(r)}")
         for c in state.get("retrieved_chunks", []):
             parts.append(f"[Text] {c.get('source', '')}\n{c.get('text', '')[:1500]}")
-        for t in state.get("table_results", []):
-            if t.get("error") or not t.get("answer"):
-                continue
-            srcs = ", ".join(
-                f"{tu.get('title', '?')} ({tu.get('company', '?')} {tu.get('year', '?')})"
-                for tu in t.get("tables_used", [])[:3]
-            )
-            parts.append(f"[Table] {srcs}\nComputed: {t.get('answer', '')[:600]}\n"
-                         f"Code: {t.get('code', '')[:400]}")
         for h in state.get("web_results", []):
             parts.append(f"[Web/{h.get('source', '')}] {h.get('title', '')}\n"
                          f"{(h.get('content') or '')[:600]}")

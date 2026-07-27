@@ -14,7 +14,7 @@ Usage as a library
 
     ing = CorpusIngester(
         corpus_dir="data/us/pdfs",
-        collection_name="us_filings",
+        collection_name="us_filings_v3",
         market="us",
     )
     stats = ing.ingest_all(manifest_path="data/us/pdfs/sec_manifest.json")
@@ -77,6 +77,59 @@ from tqdm import tqdm
 import re as _re
 
 _ITEM_RE = _re.compile(r"(?im)^\s*item\s+(\d{1,2}[ab]?)\s*[.:—–-]")
+
+# Hard cap on text that is EMBEDDED, in characters: the BGE encoders take 512
+# tokens (~2048 chars) and silently drop the rest, so anything longer would be
+# indexed on content it cannot see. Applies to children, and to tables (kept
+# whole, so the table is its own child) — never to parents, which are only
+# reached through their children and are read by the reranker and the LLM.
+EMBED_CHAR_CAP = 1900
+
+# Hard cap on `parent_text`, stored on every child. The reranker scores the
+# parent at 1024 tokens (~4000 chars); beyond that the tail is invisible to
+# ranking and just costs payload storage on each of the parent's children.
+PARENT_TEXT_CAP = 4000
+
+
+# Lines that look like a heading but name nothing: page numbers, running
+# headers, the TOC link every SEC page carries.
+_NOT_A_CAPTION = _re.compile(
+    r"^(table of contents|page\s*\d+|\d{1,4}|[ivxlc]+|\W*)$", _re.I)
+# A caption line is short. Financial-statement headings ("Consolidated Balance
+# Sheet", "3M Company and Subsidiaries") sit well under this; body prose does not.
+_CAPTION_MAX_CHARS = 90
+_CAPTION_LINES = 3
+
+
+def _element_captions(elements) -> list[str]:
+    """Running caption for each element index: the recent short standalone lines
+    that name the section a chunk belongs to.
+
+    Why this is needed: `chunk_by_title` splits a financial statement's HEADING
+    away from the table holding its numbers, so the chunk that actually carries
+    "Total assets" reads `(Dollars in millions) | 2022 | 2021 | Assets | ...` —
+    no company, no year, no statement name. Every company's balance sheet then
+    embeds to nearly the same vector and "3M total assets 2022" has nothing to
+    match on. Measured on FinanceBench: 18 of 28 questions whose evidence never
+    reached the candidate pool were numeric, i.e. table-bearing.
+
+    SEC HTML has no `Title` elements — unstructured categorises every heading as
+    plain `Text` — so a heading is recognised by shape, not by category.
+    """
+    out: list[str] = []
+    recent: list[str] = []
+    for e in elements:
+        text = (e.text or "").strip()
+        if type(e).__name__ not in ("Table", "TableChunk") and text:
+            if len(text) <= _CAPTION_MAX_CHARS and not _NOT_A_CAPTION.match(text):
+                recent.append(text)
+                del recent[:-_CAPTION_LINES]
+            elif len(text) > _CAPTION_MAX_CHARS:
+                # Real prose: the previous heading no longer describes what
+                # follows, so stop carrying it forward into unrelated tables.
+                recent.clear()
+        out.append(" · ".join(recent))
+    return out
 
 
 def _tag_items(texts: list[str], start: str = "") -> list[str]:
@@ -147,43 +200,44 @@ class CorpusIngester:
         collection_name: str = "financial_filings",
         market: str = "us",
         embedding_model: str = DEFAULT_EMBED_MODEL,
-        embedding_provider: str = "huggingface",
         chunk_size: int = DEFAULT_CHUNK_SIZE,
         chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
         unstructured_strategy: str = "fast",
-        html_max_chars: int = 1500,
-        html_new_after: int = 1200,
+        html_max_chars: int = PARENT_CHUNK_SIZE,
+        html_new_after: int = 2000,
         html_combine_under: int = 400,
-        html_overlap: int = 200,
+        html_overlap: int = PARENT_CHUNK_OVERLAP,
         parent_doc: bool = True,
+        context_headers: bool = True,
     ):
         """
         Args:
             corpus_dir: Where the source files live (output_dir from fetch_pdfs.py).
             state_dir: Where the ingestion-stats JSON is written.
-            collection_name: Qdrant collection to write into (e.g. "us_filings").
+            collection_name: Qdrant collection to write into (e.g. "us_filings_v3").
             market: stored as document metadata (default "us").
-            embedding_model: Model name. For HuggingFace: any sentence-transformers
-                model. For OpenAI: "text-embedding-3-small" or similar.
-            embedding_provider: "huggingface" (free, local) or "openai" (faster, paid).
+            embedding_model: sentence-transformers model name (the vector store
+                builds the shared HuggingFace embedder from it).
             chunk_size: Characters per chunk before splitting.
             chunk_overlap: Overlapping characters between adjacent chunks.
             unstructured_strategy: "fast" (default, no OCR) or "hi_res" (slow,
-                better at tables — needed later in Week 4 for the table agent).
-                For Week 1 baseline, "fast" is correct.
+                better at tables — that is the strategy the offline table
+                pipeline uses). "fast" is correct for the main text corpus.
         """
         self.corpus_dir = Path(corpus_dir)
         self.state_dir = Path(state_dir)
         self.collection_name = collection_name
         self.market = market
         self.embedding_model = embedding_model
-        self.embedding_provider = embedding_provider
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self.unstructured_strategy = unstructured_strategy
-        # HTML (US SEC filings) section-aware chunking. Sizes are in characters;
-        # html_max_chars stays well under the bge-small 512-token (~2048 char)
-        # window so chunks are never silently truncated at embed time.
+        # HTML (US SEC filings) section-aware chunking. Sizes are in characters.
+        # A section chunk is the PARENT under parent-document retrieval, so it is
+        # sized from PARENT_CHUNK_SIZE — the two paths drifted apart once already
+        # (HTML capped at 1500 while the PDF path moved to 2500), which quietly
+        # kept the served corpus on the losing geometry. Only the text actually
+        # embedded has to fit the embedder's window; parents do not.
         self.html_max_chars = html_max_chars
         self.html_new_after = html_new_after
         self.html_combine_under = html_combine_under
@@ -191,11 +245,16 @@ class CorpusIngester:
         # Parent-document retrieval for the INDEXED path (ephemeral fetch keeps
         # flat parent-sized chunks — it ranks in memory with no parent swap).
         self.parent_doc = parent_doc
+        # Prefix every chunk with "<company> <year> <form> · <section caption>".
+        # `chunk_by_title` cuts a financial statement's heading away from its
+        # numbers, leaving the answer-bearing table with no company, year or
+        # statement name to match a query against. Kept as a flag so the
+        # measurement in RETRIEVAL_EXPERIMENTS.md §12 stays reproducible.
+        self.context_headers = context_headers
 
         self.state_dir.mkdir(parents=True, exist_ok=True)
 
         # Resources initialized lazily on first use.
-        self._embeddings = None
         self._splitter = None
         self._parent_splitter = None
         self._child_splitter = None
@@ -333,7 +392,8 @@ class CorpusIngester:
         path that ranks a freshly-fetched filing in memory without indexing it.
 
         Branch by format. HTML (US SEC filings) uses structure-aware chunking
-        that keeps tables intact; PDFs use per-page pypdf text + char chunking.
+        that gives each table its own chunk; PDFs use per-page pypdf text +
+        char chunking.
 
         `parent_doc` (indexed path): split each parent-sized unit into SMALL
         children and stash the parent on each child (`parent_id`/`parent_text`)
@@ -383,13 +443,13 @@ class CorpusIngester:
         child_split = self._get_child_splitter()
         docs: list = []
         for pid, ((ptext, extra), item) in enumerate(zip(parents, items)):
-            stored_parent = ptext[:4000]
+            stored_parent = ptext[:PARENT_TEXT_CAP]
             children = [c.strip() for c in child_split.split_text(ptext) if c.strip()]
             for child in children or [ptext.strip()]:
                 if not child:
                     continue
                 docs.append(Document(
-                    page_content=child[:1900],
+                    page_content=child[:EMBED_CHAR_CAP],
                     metadata={**base_meta, **extra, "item": item,
                               "parent_id": pid, "parent_text": stored_parent},
                 ))
@@ -414,10 +474,20 @@ class CorpusIngester:
         """Build section-aware Documents for one HTML filing.
 
         Uses unstructured's ``chunk_by_title`` so chunks respect section
-        boundaries and keep tables intact (instead of a fixed-character splitter
-        slicing through them). For table chunks we render ``text_as_html`` into
-        pipe-delimited rows so the row/column structure survives into the
-        embedded text, and stash the raw HTML in metadata for downstream use.
+        boundaries and each table gets its OWN chunk rather than being sliced
+        mid-row by a fixed-character splitter. A table is kept whole unless it
+        exceeds ``max_characters``, in which case it is divided into
+        ``TableChunk``s — measured on a 3M 10-K, 4 of 45 tables hit that, so the
+        primary statements survive intact but the claim is not absolute.
+
+        Note the cost of that isolation, which §12 of RETRIEVAL_EXPERIMENTS.md
+        measures: a table never shares a chunk with the heading that names it,
+        so the chunk holding "Total assets" carries no company, year or
+        statement title. ``context_headers`` puts that identity back.
+
+        For table chunks we render ``text_as_html`` into pipe-delimited rows so
+        the row/column structure survives into the embedded text, and stash the
+        raw HTML in metadata for downstream use.
 
         Page numbers are meaningless for a single HTML document, so each chunk
         carries ``element_index`` + ``element_type`` instead of a fake page.
@@ -439,6 +509,8 @@ class CorpusIngester:
             combine_text_under_n_chars=self.html_combine_under,
             overlap=self.html_overlap,
         )
+        captions = _element_captions(elements) if self.context_headers else []
+        at = {getattr(e, "id", None): i for i, e in enumerate(elements)}
 
         prepared: list[tuple[str, dict, bool]] = []
         for idx, ch in enumerate(chunks):
@@ -454,18 +526,34 @@ class CorpusIngester:
             content = content.strip()
             if not content:
                 continue
-            # Stay within the embedder's 512-token (~2048 char) window so a long
-            # rendered table is never silently truncated mid-content.
-            content = content[:1900]
-
             meta = {**base_meta, "element_type": element_type, "element_index": idx}
             if is_table and table_html:
                 meta["text_as_html"] = table_html[:6000]
+            if captions:
+                # The caption of the chunk's FIRST original element: that is
+                # where the heading that names this chunk was cut away.
+                orig = getattr(getattr(ch, "metadata", None), "orig_elements", None)
+                i = at.get(getattr(orig[0], "id", None)) if orig else None
+                head = self._context_header(base_meta, captions[i] if i is not None else "")
+                if head:
+                    meta["context_header"] = head
             prepared.append((content, meta, is_table))
 
         items = _tag_items([c for c, _, _ in prepared])
+
+        def headed(text: str, meta: dict, cap: int) -> str:
+            """Prefix the chunk's context header, then cap. EVERY child needs it
+            — a header on only the first child would leave the rest anonymous,
+            and it is the later children of a split statement that hold the
+            numbers."""
+            head = meta.get("context_header")
+            return (f"{head}\n{text}" if head else text)[:cap]
+
         if not parent_doc:
-            return [Document(page_content=c, metadata={**m, "item": item})
+            # Flat path: the chunk itself is what gets embedded, so it must stay
+            # inside the embedder's 512-token (~2048 char) window.
+            return [Document(page_content=headed(c, m, EMBED_CHAR_CAP),
+                             metadata={**m, "item": item})
                     for (c, m, _), item in zip(prepared, items)]
 
         # Parent-document: the section chunk is the parent; split text sections
@@ -473,16 +561,36 @@ class CorpusIngester:
         child_split = self._get_child_splitter()
         docs: list = []
         for pid, ((content, meta, is_table), item) in enumerate(zip(prepared, items)):
+            # The header goes on the parent too: the reranker and the LLM both
+            # read `parent_text`, and both were seeing an untitled table.
             pmeta = {**meta, "item": item, "parent_id": pid,
-                     "parent_text": content[:4000]}
+                     "parent_text": headed(content, meta, PARENT_TEXT_CAP)}
             if is_table:
-                children = [content]
+                # A table is never split, so the child IS the embedded text and
+                # has to fit the embed window — unlike a text parent, which is
+                # only ever reached through its (small) children.
+                children = [content[:EMBED_CHAR_CAP]]
             else:
                 children = [c.strip() for c in child_split.split_text(content)
-                            if c.strip()] or [content]
+                            if c.strip()] or [content[:EMBED_CHAR_CAP]]
             for child in children:
-                docs.append(Document(page_content=child[:1900], metadata=dict(pmeta)))
+                docs.append(Document(page_content=headed(child, meta, EMBED_CHAR_CAP),
+                                     metadata=dict(pmeta)))
         return docs
+
+    @staticmethod
+    def _context_header(base_meta: dict, caption: str) -> str:
+        """`3M 2022 10-K · Consolidated Balance Sheet · At December 31`.
+
+        Identity the chunk cannot supply itself. Company/year come from the
+        manifest and are always present; the caption is best-effort.
+        """
+        parts = [str(base_meta.get(k) or "").strip()
+                 for k in ("company", "year", "doc_type")]
+        head = " ".join(p for p in parts if p)
+        if caption:
+            head = f"{head} · {caption}" if head else caption
+        return head[:200]
 
     @staticmethod
     def _html_table_to_text(table_html: str) -> str:
@@ -639,19 +747,6 @@ class CorpusIngester:
             )
         return self._child_splitter
 
-    def _get_embeddings(self):
-        if self._embeddings is None:
-            if self.embedding_provider == "openai":
-                from langchain_openai import OpenAIEmbeddings
-                self._embeddings = OpenAIEmbeddings(model=self.embedding_model)
-            else:
-                # Reuse the process-wide, lru_cached HuggingFace embedder so a
-                # dynamic fetch (Phase 5) ingesting inside the running agent does
-                # NOT load a second ~130MB copy of the BGE model. Same config
-                # (normalized, device-aware) as the retrieval path.
-                from finagent.vectorstore import get_embeddings
-                self._embeddings = get_embeddings(self.embedding_model)
-        return self._embeddings
 
     def _get_vector_store(self):
         if self._vector_store is None:
@@ -719,13 +814,7 @@ def _build_cli() -> argparse.ArgumentParser:
     parser.add_argument(
         "--embedding-model",
         default=DEFAULT_EMBED_MODEL,
-        help="HuggingFace ST model or OpenAI model name",
-    )
-    parser.add_argument(
-        "--embedding-provider",
-        choices=["huggingface", "openai"],
-        default="huggingface",
-        help="huggingface = free local; openai = paid + faster",
+        help="sentence-transformers model name",
     )
     parser.add_argument(
         "--chunk-size",
@@ -758,7 +847,6 @@ def main():
         collection_name=args.collection,
         market=args.market,
         embedding_model=args.embedding_model,
-        embedding_provider=args.embedding_provider,
         chunk_size=args.chunk_size,
         chunk_overlap=args.chunk_overlap,
     )

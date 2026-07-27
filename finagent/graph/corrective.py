@@ -34,7 +34,7 @@ Usage as a library
 ------------------
     from finagent.graph.corrective import AgenticRAGv2
 
-    agent = AgenticRAGv2(collection_name="us_filings")
+    agent = AgenticRAGv2()  # collection defaults to settings.us_collection
     state = agent.run("Compare Microsoft and Apple revenue in FY23.")
     print(state["final_answer"])
     print("avg_grade:", state["avg_grade"], "low_conf:", state.get("low_confidence"))
@@ -60,6 +60,7 @@ from finagent.graph.state import (
     RewrittenQuery,
 )
 from finagent.vectorstore import DEFAULT_EMBED_MODEL
+from finagent.config import settings
 
 
 # --------------------------------------------------------------------------- #
@@ -146,6 +147,12 @@ class AgenticRAGv2(AgenticRAG):
       * `_build_graph` wires the conditional edges
     """
 
+    # Slots the ORIGINAL question gets in the merged pool, versus `final_top_k`
+    # for a sub-query. §13 swept it: 1 -> hit@8 64, 2 -> 66, 3 -> 66, 5 -> 67,
+    # while hit@5 falls 60 -> 55 -> 53 -> 50. Two is the only setting that beats
+    # the previous production on BOTH metrics.
+    QUESTION_SLOTS = 2
+
     def __init__(
         self,
         *args,
@@ -197,11 +204,9 @@ class AgenticRAGv2(AgenticRAG):
         Retrieving over several collections and letting the grader/reranker sort
         it out keeps every collection searchable without a toggle."""
         if self._hybrids is None:
-            from finagent.vectorstore import build_store
-
             self._hybrids = [
-                HybridRetriever(
-                    build_store(c, self.embedding_model),
+                HybridRetriever.from_collection(
+                    c, self.embedding_model,
                     reranker_model=self.reranker_model,
                     pool_top_k=self.pool_top_k,
                     final_top_k=self.final_top_k,
@@ -239,10 +244,32 @@ class AgenticRAGv2(AgenticRAG):
                              if r in ("narrative", "numeric")]
         else:
             retrieve_subs = sub_queries
-        for sub_q in retrieve_subs:
+        # Also retrieve on the question the user actually asked. Planning
+        # discards information: a sub-query is a narrow lookup key, and nothing
+        # was searching for the whole question. Adding it is worth 3 of 99
+        # FinanceBench questions (§13). It gets a SMALLER slot budget than a
+        # sub-query — at the full 5 it crowds the sub-queries out of the cap and
+        # costs 10 points of hit@5 for one extra hit@8.
+        #
+        # Gated on `retrieve_subs`: when the planner routed every sub-query to
+        # yfinance/web/EDGAR it has decided the filings are not the source, and
+        # this must not override that.
+        queries = [(sub_q, None) for sub_q in retrieve_subs]
+        if retrieve_subs and state["question"] not in retrieve_subs:
+            queries.append((state["question"], self.QUESTION_SLOTS))
+        for sub_q, top_k in queries:
             for hyb in hybrids:
-                for text, meta in hyb.search(sub_q):
-                    key = (meta.get("local_path", ""), meta.get("page", ""), text[:80])
+                for text, meta in hyb.search(sub_q, top_k=top_k):
+                    # Prefer the parent id: since §12 every chunk STARTS with
+                    # its context header, so `text[:80]` is often just
+                    # "Apple 2022 10-K · Consolidated Balance Sheet" — identical
+                    # across the several parents of one long statement, which
+                    # silently dropped 0.3% of distinct parents as duplicates.
+                    # Fall back to the text prefix only when there is no parent.
+                    pid = meta.get("parent_id")
+                    key = ((meta.get("local_path", ""), meta.get("page", ""), pid)
+                           if pid is not None else
+                           (meta.get("local_path", ""), meta.get("page", ""), text[:80]))
                     if key in seen:
                         continue
                     seen.add(key)
@@ -276,28 +303,39 @@ class AgenticRAGv2(AgenticRAG):
         return {"retrieved_chunks": chunks, "company_in_corpus": in_corpus}
 
     def _cap_pool(self, state: AgentState, chunks: list[dict]) -> list[dict]:
-        """Global second-stage rerank: score the merged sub-query pool against
-        the ORIGINAL question and keep the `retrieve_cap` best passages.
+        """Trim the merged sub-query pool to the `retrieve_cap` best passages.
 
         The per-sub-query reranker inside each `HybridRetriever` only sees one
         sub-query at a time, so a 6-sub-query comparison question arrives here
-        with up to 30 chunks. This final cross-encoder pass re-scores them all
-        against the user's actual question and trims to a tight set — fewer,
-        higher-precision passages measurably raised faithfulness in the eval.
+        with up to 30 chunks and they have to be ordered against each other.
+
+        Re-score the whole pool against the ORIGINAL question. §11 replaced this
+        with the score each chunk already carried from its own sub-query, having
+        measured that as better (37 -> 41 of 99). §13 re-ran the same A/B after
+        chunks gained context headers and it REVERSED — 58 for the sub-query
+        score versus 61 for this re-score. The §11 result was an artefact of
+        chunks with no identity: re-scoring an untitled grid of numbers against
+        a multi-hop question was hopeless, but once a chunk says
+        "3M 2022 10-K · Consolidated Balance Sheet" the question — which is the
+        only thing that knows what the user actually wants — can match it.
+
+        The cost is one extra cross-encoder pass over ~10-30 chunks per query.
         """
         cap = self.retrieve_cap
         if not cap or len(chunks) <= cap:
             return chunks
         try:
             from finagent.retrieval.reranker import _get_shared_reranker
+
             reranker = _get_shared_reranker(self.reranker_model)
-            scores = reranker.predict([(state["question"], c["text"]) for c in chunks])
+            scores = reranker.predict(
+                [(state["question"], c["text"]) for c in chunks])
             ranked = sorted(range(len(chunks)), key=lambda i: -scores[i])
-            # Per-sub-query floor: a comparison question's sub-queries each cover
-            # a different (entity × year); ranking the merged pool purely against
-            # the ORIGINAL question lets one entity's chunks crowd out the
-            # other's entirely. Reserve each sub-query's single best chunk first,
-            # then fill the remaining slots by global score.
+            # Per-sub-query floor: a comparison question's sub-queries each
+            # cover a different (entity × year), and one entity's filing can
+            # score higher across the board — ranking the merged pool purely by
+            # score lets it crowd the other out entirely. Reserve each
+            # sub-query's single best chunk first, then fill by score.
             kept_idx: list[int] = []
             seen_subs: set = set()
             for i in ranked:
@@ -529,7 +567,7 @@ class AgenticRAGv2(AgenticRAG):
 
 def _build_cli() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Run the Corrective-RAG (v2) graph.")
-    p.add_argument("--collection", default="us_filings")
+    p.add_argument("--collection", default=settings.us_collection)
     p.add_argument("--provider", choices=["groq", "gemini", "openai", "anthropic"],
                    default="groq")
     p.add_argument("--planner-model", default=None)

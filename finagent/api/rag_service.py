@@ -2,7 +2,7 @@
 RAG service singletons.
 
 Single agentic pipeline (`AgenticRAGv4`): planner(+routes) → router → hybrid
-retrieve → grader → rewrite/proceed → xbrl → calculator → table_agent →
+retrieve → grader → rewrite/proceed → xbrl → calculator →
 market_data (yfinance) ∥ web_search ∥ edgar_search → synthesize → critic →
 numeric verification → confidence gate.
 
@@ -70,9 +70,7 @@ def _build_agent(collection: Optional[str] = None) -> AgenticRAGv4:
         # duplicate write harmless. (The eval sets it false to keep
         # financebench_eval frozen; the old Chroma image had to.)
         persist_fetch=settings.persist_dynamic_fetch,
-        table_collection="tables",
         web_top_k=10,
-        table_top_k=3,
     )
 
 
@@ -129,14 +127,9 @@ def _tool_health(state: dict) -> dict:
         ok = sum(1 for x in items if isinstance(x, dict) and x.get(ok_key))
         return {"calls": len(items), "ok": ok, "failed": len(items) - ok}
 
-    tables = state.get("table_results", []) or []
     return {
         "xbrl": tally(state.get("xbrl_facts")),
         "calc": tally(state.get("calc_results")),
-        # tables carry an `error` instead of an `ok` flag.
-        "table": {"calls": len(tables),
-                  "ok": sum(1 for t in tables if not t.get("error")),
-                  "failed": sum(1 for t in tables if t.get("error"))},
         "market": tally(state.get("market_data")),
         "edgar": tally(state.get("edgar_results")),
         # web hits have no ok flag — count presence.
@@ -274,10 +267,6 @@ def _step_detail(node: str, delta: dict) -> Optional[str]:
         if node == "calculator":
             n = len(delta.get("calc_results") or [])
             return f"{n} derived metric{'s' if n != 1 else ''}" if n else None
-        if node == "table_agent":
-            n = sum(1 for t in delta.get("table_results") or []
-                    if t.get("answer") and not t.get("error"))
-            return f"{n} table computation{'s' if n != 1 else ''}" if n else None
         if node == "market_data":
             n = sum(1 for m in delta.get("market_data") or [] if m.get("ok"))
             chart = " + chart" if delta.get("charts") else ""
@@ -372,7 +361,7 @@ def run_agentic(question: str,
     initial_state: dict[str, object] = {
         "question": question,
         "iteration_count": 0, "errors": [],
-        "table_results": [], "web_results": [], "xbrl_facts": [], "calc_results": [],
+        "web_results": [], "xbrl_facts": [], "calc_results": [],
         "fetch_status": {}, "edgar_results": [],
         "fetched_chunks": list(extra_chunks) if extra_chunks else [],
     }
@@ -564,34 +553,7 @@ def run_agentic(question: str,
         })
         next_id += 1
 
-    # 3. Table-agent computations — one synthetic chunk per numeric result.
-    for t in state.get("table_results", []) or []:
-        if t.get("error") and not t.get("answer"):
-            continue
-        used = t.get("tables_used", []) or []
-        first = used[0] if used else {}
-        chunks.append({
-            "id": next_id,
-            "text": (
-                f"Computed: {t.get('answer','')[:600]}\n"
-                f"Code:\n{(t.get('code','') or '')[:600]}"
-            ),
-            "company": first.get("company", "?"),
-            "ticker": "",
-            "year": str(first.get("year", "?")),
-            "page": first.get("page", "—"),
-            "source_url": "",
-            "citation": (
-                f"(Table: {first.get('title','?')}, "
-                f"{first.get('company','?')} {first.get('year','?')}, "
-                f"p. {first.get('page','?')})"
-            ),
-            "sub_query": t.get("sub_query", ""),
-            "kind": "table",
-        })
-        next_id += 1
-
-    # 4. Live market data (yfinance tools) — one synthetic chunk per
+    # 3. Live market data (yfinance tools) — one synthetic chunk per
     # successful call so the user can inspect the raw numbers next to the
     # other evidence in the right-hand panel.
     for m in state.get("market_data", []) or []:
@@ -680,7 +642,6 @@ def run_agentic(question: str,
             "xbrl_facts": len(state.get("xbrl_facts", []) or []),
             "calc_results": len(state.get("calc_results", []) or []),
             "fetch_status": state.get("fetch_status") or {},
-            "table_computations": len(state.get("table_results", []) or []),
             "market_calls": len(state.get("market_data", []) or []),
             "citations": state.get("citations", []),
         },
