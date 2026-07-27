@@ -32,6 +32,17 @@ env:
   # changes were measured on headed chunks and the cap-ranking rule REVERSES
   # without them, so this code must never be served against a pre-v4 index.
   US_COLLECTION: us_filings_v4
+  # Re-asserted on every deploy so a hand-run `gcloud run services update
+  # --set-env-vars` can never leave them missing again. `--set-env-vars`
+  # REPLACES the whole non-secret environment: running it to change
+  # US_COLLECTION at the v3 cutover wiped QDRANT_URL and every retrieval query
+  # failed with "QDRANT_URL is not set" for several revisions before anyone
+  # noticed. Config that the service cannot start correctly without belongs
+  # here, declaratively, not in a one-off command someone types.
+  # (The cluster ENDPOINT is not a secret; QDRANT_API_KEY stays in Secret
+  # Manager and is attached to the service separately.)
+  QDRANT_URL: https://9eeb62bc-b2f8-479f-87b1-255415dac7ca.eu-west-2-0.aws.cloud.qdrant.io
+  ALLOWED_ORIGINS: https://fin-agent-498211.web.app,https://fin-agent-498211.firebaseapp.com
   DATA_BUCKET: gs://fin-agent-498211-data
   # Public Cloud Run URL — baked into the frontend bundle so the SPA calls the API.
   BACKEND_URL: https://finagent-237355589454.asia-south1.run.app
@@ -136,7 +147,7 @@ jobs:
             --cpu-boost \
             --max-instances 1 \
             --timeout 3600 \
-            --update-env-vars "US_COLLECTION=${US_COLLECTION}" \
+            --update-env-vars "^@^US_COLLECTION=${US_COLLECTION}@QDRANT_URL=${QDRANT_URL}@ALLOWED_ORIGINS=${ALLOWED_ORIGINS}" \
             --quiet
 
       - name: Set up Node

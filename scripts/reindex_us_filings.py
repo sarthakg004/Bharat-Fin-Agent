@@ -24,19 +24,30 @@ re-ingest into the existing collection (see `vectorstore.chunk_point_id`).
     --collection   the NEW collection to build. MUST be a fresh name — this is
                    the guard against writing into the live one. No default.
 
-Cutover after this finishes:
-    1. gcloud run services update finagent --region <region> \\
-           --set-env-vars US_COLLECTION=<new collection>
-    2. verify, then delete the old collection
+Cutover after this finishes: change `US_COLLECTION` in
+`.github/workflows/deploy.yml` and push. The deploy sets it with
+`--update-env-vars`, so the collection and the code that matches it land in one
+revision.
+
+    DO NOT run `gcloud run services update --set-env-vars US_COLLECTION=...`.
+
+`--set-env-vars` REPLACES the service's entire non-secret environment. This
+docstring used to recommend it, and running it at the v3 cutover silently wiped
+QDRANT_URL, ALLOWED_ORIGINS, FORCE_IPV4, LANGFUSE_* and PERSIST_DYNAMIC_FETCH
+from revision 00037 — every retrieval query then failed with "QDRANT_URL is not
+set" until it was noticed several revisions later. If you must set it by hand,
+use `--update-env-vars`, which only touches the key you name. The deploy
+workflow now also re-asserts QDRANT_URL and ALLOWED_ORIGINS on every deploy so
+the same mistake self-heals.
 
 Rollback is the same env var pointed back at the old collection.
 
 See results/RETRIEVAL_EXPERIMENTS.md for the geometry/embedder numbers and the
-storage arithmetic that keeps two collections inside the free tier at once.
+storage arithmetic.
 
 Usage
 -----
-    python scripts/reindex_us_filings.py --collection us_filings_v3   # build
+    python scripts/reindex_us_filings.py --collection us_filings_v5   # build
     python scripts/reindex_us_filings.py --status                     # counts
 """
 from __future__ import annotations
