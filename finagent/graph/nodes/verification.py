@@ -674,3 +674,4 @@ class VerificationNodes:
             mags.extend(vals)
         return mags
 
+

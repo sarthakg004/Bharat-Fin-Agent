@@ -136,8 +136,10 @@ _DEFINES_RE = re.compile(r"\b(?:defined|calculated|computed|measured)\s+as\b", r
 # single-period formula planner doesn't handle these.
 _MULTIPERIOD_RE = re.compile(r"\b(growth|cagr|trend|compound annual)\b", re.I)
 
-# 4-digit years, for the extraction guard below.
-_YEAR_RE = re.compile(r"(?:19|20)\d{2}")
+# Year parsing is shared with the retrieval filter (`retrieval.filters`): both
+# read the SAME planner-written sub-query, so they have to agree on what counts
+# as a named year — a local 4-digit-only regex here read "FY22" as no year and
+# dropped every extracted period as a guess.
 
 # The sub-query asks for a period-over-period comparison of the metric
 # ("year-over-year", "vs prior year", "improve/decline", "change").
@@ -156,8 +158,10 @@ def _named_periods_only(sub_q: str, periods: list[str]) -> list[str]:
     year" has NO named year, so every extracted period is a stale-training-data
     guess and gets dropped (the calculator then resolves the newest filed
     periods itself)."""
-    named = set(_YEAR_RE.findall(sub_q))
-    return [p for p in (periods or []) if set(_YEAR_RE.findall(p)) & named]
+    from finagent.retrieval.filters import parse_years
+
+    named = set(parse_years(sub_q))
+    return [p for p in (periods or []) if set(parse_years(p)) & named]
 
 
 class NumericNodes:

@@ -102,7 +102,6 @@ def _find_filing(subs: list[dict], form: str, fiscal_year: int,
         rm = int(rd[5:7]) if len(rd) >= 7 and rd[5:7].isdigit() else None
         fy = int(fd[:4]) if fd[:4].isdigit() else None
         # Year match: report-year == fiscal_year, or filed the next calendar year.
-        year_ok = (ry == fiscal_year) or (fy == fiscal_year + 1 and ry is None)
         year_pen = 0 if ry == fiscal_year else (1 if fy == fiscal_year + 1 else 5)
         # Quarter match (10-Q only): period-end month inside the quarter window.
         q_pen = 0

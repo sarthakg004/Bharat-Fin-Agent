@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import importlib
 import os
-import pathlib
 
 import pytest
 from fastapi.testclient import TestClient
