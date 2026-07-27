@@ -6,10 +6,25 @@ and a separate `[:1900]` truncation capped every parent below it anyway — so t
 served corpus, which is 100% HTML, kept the losing geometry while the eval corpus
 got the win. Both failure modes are asserted here.
 """
+import importlib.util
+
+import pytest
+
 from finagent.ingestion.ingest import (
     EMBED_CHAR_CAP,
     PARENT_TEXT_CAP,
     CorpusIngester,
+)
+
+# `unstructured` is an INGESTION dependency and is deliberately absent from the
+# Cloud Run image (see the header of requirements.txt — the container serves a
+# remote Qdrant collection and never chunks a filing). These tests drive the
+# chunker itself, so they only run where the ingestion extras are installed.
+# Skipping is the honest option: the alternative is forcing a heavy runtime
+# dependency into the image purely to satisfy a test of code the image never runs.
+pytestmark = pytest.mark.skipif(
+    importlib.util.find_spec("unstructured") is None,
+    reason="ingestion extra 'unstructured' not installed (not in the runtime image)",
 )
 
 
