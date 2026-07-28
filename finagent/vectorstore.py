@@ -327,18 +327,25 @@ def facet_values(collection_name: str, field: str,
     return {h.value for h in res.hits}
 
 
-def company_year_index(collection_name: str, max_workers: int = 12) -> dict:
-    """`{company -> set(years)}` for a collection, built cheaply.
+def company_facet_index(collection_name: str, max_workers: int = 12) -> dict:
+    """`{company -> {"years": set, "tickers": set}}` for a collection, cheaply.
 
-    The retriever's metadata-filter vocabulary needs only the distinct company
-    values and, per company, its filing years. Reading that by scrolling every
-    point's full payload was the dominant cold-start cost (~54s on 80k points —
-    hundreds of MB moved to learn ~40 names). The facet API returns distinct
-    values server-side; the per-company year facets run in parallel (the client
-    is thread-safe). ~16x faster, and exact.
+    The retriever's metadata-filter vocabulary needs the distinct company values
+    and, per company, its filing years and its ticker(s). Reading that by
+    scrolling every point's full payload was the dominant cold-start cost (~54s
+    on 80k points — hundreds of MB moved to learn ~40 names). The facet API
+    returns distinct values server-side; the per-company facets run in parallel
+    (the client is thread-safe). ~16x faster, and exact.
 
-    Falls back to a selective-payload scroll (company/year only) when the server
-    predates facets — still far cheaper than the old full-payload scroll.
+    `tickers` matters because `company` and `ticker` do NOT always agree: the
+    curated corpus stores the ticker in BOTH ("NVDA"/"NVDA"), while a
+    dynamically fetched filing stores the SEC registrant title in `company`
+    ("APPLIED MATERIALS INC /DE") and the ticker in `ticker`. A vocabulary built
+    from `company` alone therefore cannot resolve "AMAT", and the question falls
+    through to unfiltered retrieval. Read both; let either name the entity.
+
+    Falls back to a selective-payload scroll when the server predates facets —
+    still far cheaper than the old full-payload scroll.
 
     ponytail: parallel per-company facets are fine for a bounded corpus (tens of
     companies); a corpus with thousands of issuers would want the scroll path.
@@ -350,23 +357,29 @@ def company_year_index(collection_name: str, max_workers: int = 12) -> dict:
         companies = {c for c in facet_values(collection_name, "company",
                                              limit=5000) if c}
 
-        def _years(co):
-            return co, {y for y in facet_values(collection_name, "year",
-                                                "company", co, limit=200) if y}
+        def _facets(co):
+            return co, {
+                "years": {y for y in facet_values(collection_name, "year",
+                                                  "company", co, limit=200) if y},
+                "tickers": {t for t in facet_values(collection_name, "ticker",
+                                                    "company", co, limit=50) if t},
+            }
 
         from concurrent.futures import ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=max_workers) as ex:
-            return dict(ex.map(_years, companies))
+            return dict(ex.map(_facets, companies))
     except Exception:
         idx: dict = {}
-        for m in scroll_payloads(collection_name, select=("company", "year")):
+        for m in scroll_payloads(collection_name,
+                                 select=("company", "year", "ticker")):
             c = m.get("company") or ""
             if not c:
                 continue
-            y = str(m.get("year") or "")
-            idx.setdefault(c, set())
-            if y:
-                idx[c].add(y)
+            entry = idx.setdefault(c, {"years": set(), "tickers": set()})
+            for key, field in (("years", "year"), ("tickers", "ticker")):
+                v = str(m.get(field) or "")
+                if v:
+                    entry[key].add(v)
         return idx
 
 

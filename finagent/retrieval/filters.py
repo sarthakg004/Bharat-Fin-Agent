@@ -122,6 +122,16 @@ def build_company_vocab(metadatas) -> tuple[dict, dict]:
     Metadata `company` values range from clean names ("3M") through legal names
     ("BEST BUY CO INC") to bare tickers ("AAPL"); ticker values get their SEC
     title registered as an alias so "Apple's revenue" still matches 'AAPL'.
+
+    The `ticker` field is registered as an alias too, and this is not
+    redundant with the above: the two fields agree on the curated corpus
+    (company "NVDA", ticker "NVDA") but diverge on a dynamically fetched filing
+    (company "APPLIED MATERIALS INC /DE", ticker "AMAT"). Without it a question
+    that names the company BY TICKER matches nothing, the filter is dropped
+    entirely, and retrieval competes against every other filing in the index —
+    the exact failure that returned Walmart and Corning chunks for an Applied
+    Materials question. Whichever field carries the name the user typed, the
+    question resolves to the same canonical entity.
     """
     vocab: dict[str, str] = {}
     years: dict[str, set] = {}
@@ -135,6 +145,9 @@ def build_company_vocab(metadatas) -> tuple[dict, dict]:
                 vocab.setdefault(v, c)
             if c.isupper() and 1 < len(c) <= 5 and " " not in c:
                 tickerish.add(c)
+        t = str((m or {}).get("ticker") or "").strip()
+        if t and _norm(t):
+            vocab.setdefault(_norm(t), c)
         y = str((m or {}).get("year") or "")
         years.setdefault(c, set()).add(y) if y else years.setdefault(c, set())
 

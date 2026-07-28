@@ -210,16 +210,23 @@ class HybridRetriever:
         return out
 
     def _all_metadata(self):
-        """Synthetic (company, year) rows for the vocabulary builder — one per
-        distinct (company, year) pair, sourced from the cheap facet index rather
-        than a full-payload scroll of every point (see
-        `vectorstore.company_year_index`). `build_company_vocab` reads only
-        `company`/`year`, so this feeds it exactly what it needs."""
-        from finagent.vectorstore import company_year_index
+        """Synthetic (company, ticker, year) rows for the vocabulary builder —
+        sourced from the cheap facet index rather than a full-payload scroll of
+        every point (see `vectorstore.company_facet_index`).
+        `build_company_vocab` reads only these three fields, so this feeds it
+        exactly what a real scroll would — `tests/test_qdrant_writes` pins that
+        the two paths build an identical vocabulary."""
+        from finagent.vectorstore import company_facet_index
 
-        idx = company_year_index(self.store.collection_name)
-        return [{"company": c, "year": y}
-                for c, years in idx.items() for y in (years or [""])]
+        idx = company_facet_index(self.store.collection_name)
+        rows = []
+        for c, f in idx.items():
+            years = sorted(f.get("years") or [""]) or [""]
+            tickers = sorted(f.get("tickers") or [""]) or [""]
+            for y in years:
+                for t in tickers:
+                    rows.append({"company": c, "ticker": t, "year": y})
+        return rows
 
     def _collapse_to_parents(
         self, hits: list[tuple[str, dict]]
