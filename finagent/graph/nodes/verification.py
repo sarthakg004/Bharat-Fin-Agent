@@ -379,6 +379,15 @@ class VerificationNodes:
         elif state.get("retrieved_chunks"):
             # Chunks present but ungraded (e.g. ephemeral fetch on the tool path).
             comps["retrieval"] = 0.5
+        elif any(r in ("narrative", "numeric") for r in (state.get("query_routes") or [])):
+            # The planner said this question is answered FROM THE FILINGS and
+            # retrieval delivered nothing — every chunk was off-entity, or the
+            # filing could not be fetched. Omitting the sub-score (the old
+            # behaviour) renormalised the blend over the three that survived, so
+            # a filings question answered entirely from marketing/analyst web
+            # pages scored 0.9 and was presented with no caveat at all. An
+            # absent primary source is a zero, not a non-applicable.
+            comps["retrieval"] = 0.0
 
         # Verification — only when the answer actually made numeric claims.
         nv = state.get("numeric_verification") or {}

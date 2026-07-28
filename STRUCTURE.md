@@ -70,8 +70,8 @@ shims left behind. Stubs for roadmap tools — `resolver` (Phase 2), `xbrl`
 **`prompts/`** — System prompts grouped by role (`planner`, `synthesizer`,
 `critic`). The canonical import surface for prompt strings.
 
-**`graph/`** — The LangGraph agent: `AgentState` (`graph/state.py`), the graph
-builder/runner, and the agent class chain
+**`graph/`** — The LangGraph agent: `AgentState` (`graph/state.py`) and the
+agent class chain
 `AgenticRAG → AgenticRAGv2 → AgenticRAGv3 → AgenticRAGv4` (the deployed agent,
 aliased `FinAgent`). The v4 node implementations live in **`graph/nodes/`** as
 topical mixins composed into `AgenticRAGv4` (ahead of `AgenticRAGv3` in the

@@ -2,8 +2,10 @@
 # requirements-app.txt — RUNTIME deps for the deployed (Cloud Run) container.
 #
 # The corpus lives in a remote Qdrant cluster, so the image ships no vector
-# data and no in-process lexical index. Ingestion (unstructured, sec/nse/bse)
-# and evaluation (ragas) packages are intentionally excluded.
+# data and no in-process lexical index. Bulk-corpus fetchers (sec/nse/bse) and
+# evaluation (ragas) packages are excluded — but the SEC HTML *parser* is not:
+# the dynamic-fetch feature parses a 10-K at request time. See the note by
+# `unstructured` below.
 #
 # torch is installed CPU-only in the Dockerfile (Cloud Run has no GPU) BEFORE
 # this file, so sentence-transformers reuses it instead of pulling the ~2 GB
@@ -46,6 +48,15 @@ sentence-transformers>=3.0.0    # bge-small embeddings + bge-reranker
 # ── Document upload parsing ──────────────────────────────────────────────────
 docling>=2.0                    # user uploads: PDF/DOCX → text + tables (no OCR)
 langchain-text-splitters>=0.3   # chunking for uploads (was transitive-only)
+
+# ── Dynamic SEC fetch (self-expanding corpus) ────────────────────────────────
+# Not "ingestion-only": `fetch_filing_node` parses a freshly downloaded 10-K on
+# the SERVE path, through the same CorpusIngester the corpus was built with.
+# Leaving this out silently killed the feature in production — every fetch for
+# an un-indexed company raised ImportError and the answer fell back to web
+# noise. pypdf/sec-edgar-downloader stay out: EDGAR serves HTML and the
+# download now goes through the SEC submissions API (plain requests).
+unstructured>=0.22              # SEC HTML → section-aware chunks, tables intact
 
 # ── Tools (live data, web, bilingual) ────────────────────────────────────────
 yfinance>=0.2.40                # market data + charts

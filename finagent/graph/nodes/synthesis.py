@@ -99,6 +99,15 @@ nothing at all), answer from the MOST RECENT fiscal period in the evidence and
 name that period explicitly — never centre the answer on an older year when a
 newer one is available in the evidence.
 
+A QUARTER IS NOT A FISCAL YEAR. When the question asks about a fiscal YEAR
+("in the latest fiscal year", "FY2025", "full-year") and the evidence carries
+only an interim figure (a quarter, a half, a trailing-twelve-month or a
+guidance number), you may NOT present that figure as the answer. Report it as
+what it is — the period goes on the figure itself, "$1.7 billion (Q2 FY2026)" —
+and say in the same breath that the full-year figure is not in the evidence.
+Never put a quarterly number in a column or sentence the question framed as
+annual, and never sum or annualise quarters yourself.
+
 Thin or partial evidence
 ------------------------
 - Still give the most useful answer the evidence supports, citing each fact [N].

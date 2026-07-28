@@ -352,7 +352,19 @@ class FetchNodes:
         """Persistent-corpus retrieval, plus in-memory ranking of an ephemerally
         fetched filing (cloud path) so its chunks are usable without ever being
         indexed."""
-        out = super().hybrid_retrieve_node(state)
+        if self._corpus_lacks_company(state):
+            # The gate resolved this question's company to a CIK and confirmed
+            # the collection holds nothing for it. Searching the corpus anyway
+            # returns the nearest OTHER company's filing — an Applied Materials
+            # segment question came back with Walmart, Corning, General Mills
+            # and 3M chunks, which the grader then had to score 1/5 and throw
+            # away, after a multi-minute cross-encoder pass. Skip it: the
+            # fetched filing below is the only in-corpus-shaped source there is.
+            self._log(state, "company is not in the corpus; skipping corpus "
+                             "retrieval (other companies' filings only)")
+            out: dict = {"retrieved_chunks": [], "company_in_corpus": False}
+        else:
+            out = super().hybrid_retrieve_node(state)
         fetched = state.get("fetched_chunks") or []
         if fetched:
             ranked = self._rank_fetched_chunks(state, fetched)
@@ -360,6 +372,27 @@ class FetchNodes:
             # company → put its chunks first.
             out["retrieved_chunks"] = ranked + (out.get("retrieved_chunks") or [])
         return out
+
+    @staticmethod
+    def _corpus_lacks_company(state: AgentState) -> bool:
+        """True when the collection holds no filing for this question's company.
+
+        `decision == "fetch"` is the gate's proof of absence: the resolver
+        mapped the question to a US CIK and the `ticker == …` metadata probe
+        came back empty. It is only ever set for a SINGLE company (the gate
+        returns '' for multi-company and macro questions), so a comparison
+        question still takes the normal path.
+
+        But the PERSISTENT path (`PERSIST_DYNAMIC_FETCH=true`, which is how the
+        deploy runs) ingests the filing into the live collection before this
+        node — the company is in the corpus by the time we get here, and
+        skipping would throw away exactly the chunks we just paid to write.
+        Only the ephemeral path, and a fetch that failed, leave it truly empty.
+        """
+        st = state.get("fetch_status") or {}
+        if st.get("decision") != "fetch":
+            return False
+        return bool(st.get("ephemeral")) or st.get("status") != "fetched"
 
     def _rank_fetched_chunks(self, state: AgentState, fetched: list[dict]) -> list[dict]:
         """Rank ephemerally-fetched chunks against the question IN MEMORY (BGE

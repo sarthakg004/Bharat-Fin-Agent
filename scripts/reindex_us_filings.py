@@ -62,12 +62,15 @@ sys.path.insert(0, os.getcwd())
 
 from dotenv import load_dotenv
 
+from finagent.tools.sec_fetch import SecFilingFetcher
+
 load_dotenv()
 
 # The collection currently served — status/cutover text only, never written to.
 SOURCE = os.getenv("US_COLLECTION", "us_filings_v4")
 # Dynamic-fetch downloads live here; they are not part of the corpus.
-EXCLUDE = "sec-edgar-filings"
+# "sec-edgar-filings" is the old sec-edgar-downloader tree, still on disk.
+EXCLUDE = (SecFilingFetcher.SCRATCH_DIR, "sec-edgar-filings")
 
 
 def status(target: str | None = None) -> None:
@@ -148,8 +151,9 @@ def main() -> None:
     # tier. Dynamically fetched filings are re-fetched on demand at runtime; they
     # are not corpus.
     _load = ing._load_records
-    ing._load_records = lambda mp: [r for r in _load(mp)
-                                    if EXCLUDE not in str(r.get("local_path", ""))]
+    ing._load_records = lambda mp: [
+        r for r in _load(mp)
+        if not any(x in str(r.get("local_path", "")) for x in EXCLUDE)]
 
     t0 = time.time()
     stats = ing.ingest_all(manifest_path=None, skip_if_already_indexed=True)

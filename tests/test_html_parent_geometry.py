@@ -16,15 +16,13 @@ from finagent.ingestion.ingest import (
     CorpusIngester,
 )
 
-# `unstructured` is an INGESTION dependency and is deliberately absent from the
-# Cloud Run image (see the header of requirements.txt — the container serves a
-# remote Qdrant collection and never chunks a filing). These tests drive the
-# chunker itself, so they only run where the ingestion extras are installed.
-# Skipping is the honest option: the alternative is forcing a heavy runtime
-# dependency into the image purely to satisfy a test of code the image never runs.
+# `unstructured` IS a runtime dependency now: the dynamic-fetch path chunks a
+# freshly downloaded 10-K inside the container, so the image that used to skip
+# these tests is the image that runs this code. The guard stays for the bare
+# environments that install neither (a docs-only checkout, a partial dev env).
 pytestmark = pytest.mark.skipif(
     importlib.util.find_spec("unstructured") is None,
-    reason="ingestion extra 'unstructured' not installed (not in the runtime image)",
+    reason="'unstructured' not installed",
 )
 
 

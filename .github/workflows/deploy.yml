@@ -59,6 +59,10 @@ jobs:
           pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
           # pypdf: test-only (test_upload_guards builds fixture PDFs with it).
           pip install -r requirements.txt pytest pypdf
+          # unstructured pip-installs this spaCy model on first partition_html.
+          # Doing it here keeps the HTML-chunker tests off a mid-test download
+          # (the Dockerfile bakes it the same way).
+          python -m spacy download en_core_web_sm
 
       - name: Run tests
         env:

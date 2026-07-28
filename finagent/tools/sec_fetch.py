@@ -35,6 +35,21 @@ from finagent.vectorstore import DEFAULT_EMBED_MODEL
 from finagent.config import settings
 
 
+def _form_key(form: str) -> str:
+    """Comparable form name: "10-K", "10 K" and "10k" all key as "10K"."""
+    return (form or "").upper().replace(" ", "").replace("-", "")
+
+
+def _filing_rows(block: dict) -> list[dict]:
+    """A submissions-index block (column-per-field arrays) as one dict per
+    filing: ``{form, date, accession, doc}``. Rows missing any field are
+    dropped. Both callers — `_list_filings` (by form) and `fetch_dated_filing`
+    (by date) — filter this same list."""
+    cols = ("form", "filingDate", "accessionNumber", "primaryDocument")
+    return [dict(zip(("form", "date", "accession", "doc"), row))
+            for row in zip(*(block.get(c) or [] for c in cols))]
+
+
 def _sec_identity() -> tuple[str, str]:
     """SEC EDGAR requires a name + email in the User-Agent of every request."""
     name = (os.getenv("SEC_UA_NAME") or "").strip() or "FinAgent Research"
@@ -53,6 +68,12 @@ class SecFilingFetcher(BaseTool):
 
     name = "sec_fetch"
     description = "Fetch and ingest a company's latest SEC filing if not already indexed."
+
+    # Dynamically fetched filings land under corpus_dir/SCRATCH_DIR/, kept OUT
+    # of the curated TICKER/YEAR_ACC.htm layout that `scripts/reindex_us_filings`
+    # walks: a reindex must rebuild the same corpus every time, not absorb
+    # whatever users happened to ask about since the last one.
+    SCRATCH_DIR = "dynamic-fetch"
 
     def __init__(
         self,
@@ -106,23 +127,92 @@ class SecFilingFetcher(BaseTool):
         """Download the latest `n` filings, sweeping the annual forms
         (10-K → 20-F → 40-F) since foreign private issuers (20-F) and Canadian
         issuers (40-F, e.g. Draganfly/DPRO) don't file 10-Ks. Returns the OK
-        records (enriched with company/market) and the form that worked."""
-        from finagent.ingestion.fetchPDFs import FetchPDFs
+        records (enriched with company/market) and the form that worked.
 
-        name, email = _sec_identity()
-        fetcher = FetchPDFs(output_dir=self.corpus_dir,
-                            sec_user_agent_name=name, sec_user_agent_email=email)
-        forms = [filing_type] if filing_type != "10-K" else ["10-K", "20-F", "40-F"]
-        for form in forms:
-            records = fetcher.from_sec(ticker, filing_type=form, num_filings=n)
-            ok = [r for r in records if r.get("status") == "ok"]
-            if ok:
-                for r in ok:
-                    r.setdefault("filing_type", form)
-                    r.setdefault("company", company or ticker)
-                    r.setdefault("market", self.market)
-                return ok, form
-        return [], None
+        Uses the SEC submissions API directly (the same endpoint
+        `fetch_dated_filing` already speaks) rather than `sec-edgar-downloader`.
+        That package lives in the `ingest` extra, which the Cloud Run image
+        deliberately does NOT install — so every dynamic fetch in production
+        died with "The 'sec-edgar-downloader' package is required for
+        from_sec()", the corpus never self-expanded, and questions about
+        un-indexed companies fell through to web-search noise. `requests` is a
+        runtime dependency, so this path works everywhere.
+        """
+        r = self.resolver.resolve(ticker)
+        cik = r.get("cik")
+        if not cik:
+            return [], None
+        forms = (filing_type,) if filing_type != "10-K" else ("10-K", "20-F", "40-F")
+        filings = self._list_filings(str(cik), forms)
+        if not filings:
+            return [], None
+
+        # One form per fetch: the sweep is a fallback for issuers that file no
+        # 10-K, not an invitation to mix form types in one evidence set.
+        used_form = filings[0]["form"]
+        records: list[dict] = []
+        for f in [x for x in filings if x["form"] == used_form][:n]:
+            rec = self._download_filing(str(cik), ticker, company, f)
+            if rec:
+                rec["market"] = self.market
+                records.append(rec)
+        return records, (used_form if records else None)
+
+    def _list_filings(self, cik: str, forms: tuple[str, ...]) -> list[dict]:
+        """Filings for `cik` whose form is in `forms`, newest first.
+
+        Reads `data.sec.gov/submissions/CIK##########.json` — the same index
+        `fetch_dated_filing` scans, but selected by form rather than by date.
+        Amendments (10-K/A) are excluded: an exact form match only.
+        """
+        want = {_form_key(f) for f in forms}
+        try:
+            resp = self._sec_get(f"https://data.sec.gov/submissions/CIK{cik.zfill(10)}.json")
+            resp.raise_for_status()
+            recent = ((resp.json().get("filings") or {}).get("recent") or {})
+        except Exception:
+            return []
+        hits = [f for f in _filing_rows(recent) if _form_key(f["form"]) in want]
+        # `recent` is already newest-first, but don't rely on it.
+        return sorted(hits, key=lambda f: f["date"], reverse=True)
+
+    def _download_filing(self, cik: str, ticker: str, company: str,
+                         filing: dict) -> Optional[dict]:
+        """Save one filing's primary document and return its manifest record.
+
+        The record shape is exactly what `CorpusIngester` consumed before, so
+        both the ephemeral and the persistent path are unchanged downstream —
+        only the directory moves, under `SCRATCH_DIR`. `year`
+        stays the FILING year — the convention the indexed corpus already uses,
+        which `filters.infer_filter` compensates for with its year+1 rule.
+        """
+        acc = filing["accession"]
+        url = (f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/"
+               f"{acc.replace('-', '')}/{filing['doc']}")
+        out_path = (self.corpus_dir / self.SCRATCH_DIR / ticker.upper()
+                    / f"{filing['date'][:4]}_{acc.split('-')[-1]}.htm")
+        try:
+            if not out_path.exists() or out_path.stat().st_size < 50_000:
+                # A 10-K primary document runs to several MB — the 20 s index
+                # timeout is far too tight for the document itself.
+                resp = self._sec_get(url, timeout=90)
+                resp.raise_for_status()
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                out_path.write_bytes(resp.content)
+        except Exception:
+            return None
+        return {
+            "source_method": "sec",
+            "ticker": ticker.upper(),
+            "company": company or ticker.upper(),
+            "year": filing["date"][:4],
+            "filing_type": filing["form"],
+            "accession_number": acc,
+            "source_url": url,
+            "local_path": str(out_path),
+            "size_bytes": out_path.stat().st_size,
+            "status": "ok",
+        }
 
     def fetch_chunks(self, ticker: str, company: str = "",
                      filing_type: str = "10-K", n: int = 1) -> dict:
@@ -198,12 +288,12 @@ class SecFilingFetcher(BaseTool):
     # header; a small timeout keeps a dead SEC endpoint from stalling the turn.
     _SEC_TIMEOUT = 20
 
-    def _sec_get(self, url: str):
+    def _sec_get(self, url: str, timeout: Optional[int] = None):
         import requests
 
         name, email = _sec_identity()
         return requests.get(url, headers={"User-Agent": f"{name} {email}"},
-                            timeout=self._SEC_TIMEOUT)
+                            timeout=timeout or self._SEC_TIMEOUT)
 
     def fetch_dated_filing(self, company: str, form: str, date,
                            window_days: int = 7, max_chunks: int = 40) -> dict:
@@ -226,24 +316,21 @@ class SecFilingFetcher(BaseTool):
         cik10 = str(cik).zfill(10)
 
         target = date if isinstance(date, _date) else _date.fromisoformat(str(date))
-        form_norm = form.upper().replace(" ", "").replace("-", "")
+        form_norm = _form_key(form)
 
         def _scan(block: dict) -> list[dict]:
-            forms = block.get("form", []) or []
-            dates = block.get("filingDate", []) or []
-            accs = block.get("accessionNumber", []) or []
-            docs = block.get("primaryDocument", []) or []
+            """Rows of `block` matching the form, filed within the window.
+            `date` is upgraded to a date object — the caller does arithmetic."""
             out = []
-            for i, f in enumerate(forms):
-                if not (f or "").upper().replace(" ", "").replace("-", "").startswith(form_norm):
+            for f in _filing_rows(block):
+                if not _form_key(f["form"]).startswith(form_norm):
                     continue
                 try:
-                    d = _date.fromisoformat(dates[i])
-                except Exception:
+                    d = _date.fromisoformat(f["date"])
+                except ValueError:
                     continue
                 if abs((d - target).days) <= window_days:
-                    out.append({"form": f, "date": d, "accession": accs[i],
-                                "doc": docs[i] if i < len(docs) else ""})
+                    out.append({**f, "date": d})
             return out
 
         resp = self._sec_get(f"https://data.sec.gov/submissions/CIK{cik10}.json")

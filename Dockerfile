@@ -52,6 +52,11 @@ RUN pip install --no-cache-dir torch torchvision --index-url https://download.py
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
+# unstructured's tokenizer downloads + pip-installs this spaCy model into
+# site-packages on FIRST USE. Doing that inside a request would add a network
+# fetch and a write to /opt/venv mid-answer, so bake it here.
+RUN python -m spacy download en_core_web_sm
+
 # Bake the bge models into the venv-side HF cache so cold start loads from disk.
 RUN python -c "from sentence_transformers import SentenceTransformer, CrossEncoder; \
 SentenceTransformer('BAAI/bge-large-en-v1.5'); \
@@ -108,9 +113,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # ca-certificates for outbound HTTPS (Groq/Tavily), curl for debugging.
 # libgl1 + libglib2.0-0: opencv (cv2) links libGL/libglib/libX11 — docling's
 # TableFormer imports cv2 mid-parse, so uploads 422 without them (works
-# locally only because desktops ship these).
+# locally only because desktops ship these). libmagic1: python-magic, which
+# unstructured imports to sniff a fetched filing's file type.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        curl ca-certificates libgomp1 libgl1 libglib2.0-0 \
+        curl ca-certificates libgomp1 libgl1 libglib2.0-0 libmagic1 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
