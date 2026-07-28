@@ -103,33 +103,21 @@ def test_agent_graph_has_expected_nodes():
     assert not ({"detect_lang", "translate_in", "translate_out"} & nodes)
 
 
-def test_confidence_gate_is_wired():
-    """The confidence framework (#8/9) sits after verification: verify_numbers
-    feeds `confidence`, which gates to answer / warning / refuse."""
+def test_verifier_is_the_only_gate():
+    """The confidence gate is gone: it scored a good answer at 25% because its
+    citation sub-score could not read a markdown table, and a bad one at 90%.
+    `verify_numbers` — which checks figures against evidence rather than
+    guessing a number — is the only thing that may suppress an answer now."""
     agent = _build_agent()
     g = agent.graph.get_graph()
     nodes = {n for n in g.nodes if not n.startswith("__")}
-    assert {"confidence", "answer_with_warning", "low_confidence"} <= nodes
+    assert not ({"confidence", "answer_with_warning", "low_confidence"} & nodes)
     targets = {(e.source, e.target) for e in g.edges}
-    assert ("verify_numbers", "confidence") in targets
-    assert ("confidence", "answer_with_warning") in targets
-    # Low band withholds the draft (for opt-in reveal) rather than hard-refusing.
-    assert ("confidence", "low_confidence") in targets
-
-
-def test_confidence_score_blends_and_renormalises():
-    """A fully-grounded pure-XBRL answer (no retrieval) must not be penalised for
-    the missing retrieval component — weights renormalise over what applies."""
-    agent = _build_agent()
-    out = agent.confidence_node({
-        "draft_answer": "Net income was $99.8 billion [1].",
-        "grades": [], "avg_grade": None, "grading_score": 1.0,
-        "numeric_verification": {"numbers_total": 1, "numbers_grounded": 1, "score": 1.0},
-        "xbrl_facts": [{"value": 99.8e9}],
-    })
-    assert out["retrieval_score"] is None          # not applicable
-    assert out["confidence"] == 1.0
-    assert out["confidence_band"] == "answer"
+    assert ("verify_numbers", "refuse") in targets       # hallucinated figures
+    assert any(s == "verify_numbers" and t.startswith("__end__") for s, t in targets)
+    for gone in ("confidence_node", "answer_with_warning_node",
+                 "withhold_low_confidence_node", "_confidence_gate"):
+        assert not hasattr(agent, gone), gone
 
 
 def test_xbrl_derivation_is_not_falsely_refused():
@@ -154,8 +142,6 @@ def test_xbrl_derivation_is_not_falsely_refused():
     assert not ungrounded, f"falsely ungrounded: {ungrounded}"
     # 【N】 citation markers must not be mistaken for figures 1/2/3.
     assert not any(d["raw"] in ("1", "2", "3") for d in figures)
-    # Fullwidth citations still count toward citation coverage.
-    assert agent._citation_score(state) == 1.0
 
 
 def test_evidence_builder_normalises_all_lanes():
@@ -234,7 +220,7 @@ def test_verification_report_cross_source_and_units():
 
 def test_audit_trail_has_all_required_sections():
     """#13: every answer carries an audit trail — sources used, calculations
-    performed, verification status, and the confidence score."""
+    performed, and verification status."""
     from finagent.api.rag_service import _build_audit
     state = {
         "status": "answered", "query_routes": ["numeric"],
@@ -246,14 +232,12 @@ def test_audit_trail_has_all_required_sections():
         "numeric_verification": {"score": 1.0, "numbers_total": 6, "numbers_grounded": 6,
                                  "unverified": []},
         "verification_report": {"cross_source": {"corroborated": 1}},
-        "confidence": 0.889, "confidence_band": "answer",
-        "citation_score": 0.667, "critic_score": 1.0,
     }
     a = _build_audit(state)
     assert a["sources_used"] and a["sources_used"][0]["kind"] == "xbrl"
     assert a["calculations"] and a["calculations"][0]["result"] == "+30.8%"
     assert a["verification"]["numeric_score"] == 1.0
-    assert a["confidence"]["score"] == 0.889 and a["confidence"]["band"] == "answer"
+    assert "confidence" not in a
 
 
 def test_observability_summaries():
@@ -310,11 +294,11 @@ def test_market_cache_is_bounded_and_ttl():
 
 
 def test_retrieval_status_caps_and_defers_refusal():
-    """#7: retrieval status reports attempts vs cap + retrieval confidence and
-    flags exhaustion, but defers the refuse decision to the confidence gate."""
+    """#7: retrieval status reports attempts vs cap + mean grade and flags
+    exhaustion, but defers the refuse decision to the numeric verifier."""
     from finagent.api.rag_service import _retrieval_status
     ex = _retrieval_status({"iteration_count": 2, "avg_grade": 1.5}, 2, 3.0)
-    assert ex["exhausted"] is True and ex["refusal_handled_by"] == "confidence_gate"
+    assert ex["exhausted"] is True and ex["refusal_handled_by"] == "verify_numbers"
     ok = _retrieval_status({"iteration_count": 0, "avg_grade": 4.5}, 2, 3.0)
     assert ok["exhausted"] is False
     # No grades at all (pure tool path) → not exhausted-with-grade, just capped check.
@@ -323,19 +307,14 @@ def test_retrieval_status_caps_and_defers_refusal():
 
 
 def test_new_nodes_degrade_gracefully_on_bad_state(monkeypatch=None):
-    """#14: the evidence_builder / confidence / verification-report additions
-    must never crash the run on a malformed state — they degrade to a safe dict."""
+    """#14: the evidence_builder / verification-report additions must never
+    crash the run on a malformed state — they degrade to a safe dict."""
     agent = _build_agent()
     # Malformed calc_results (inputs is not a list of dicts) must not raise.
     bad = {"calc_results": [{"value": 0.3, "inputs": "oops"}],
            "xbrl_facts": [{"value": None}], "draft_answer": "x"}
     out = agent.evidence_builder_node(bad)
     assert "evidence" in out                      # returned, didn't raise
-
-    # Confidence scoring on a malformed verification dict fails OPEN (answers).
-    out2 = agent.confidence_node({"numeric_verification": "not-a-dict",
-                                  "draft_answer": "x", "grading_score": 1.0})
-    assert "confidence_band" in out2              # returned a band, didn't raise
 
 
 def test_audit_degraded_summary():
@@ -472,9 +451,9 @@ def test_label_tokens_are_not_extracted_as_figures():
 
 
 def test_mostly_grounded_answer_is_not_hard_refused():
-    """Partial ungrounding goes to the confidence gate (warn/withhold keeps the
-    draft); only a substantially fabricated answer (< refuse_below_grounding
-    share grounded) still hard-refuses at the retry cap."""
+    """Partial ungrounding answers as drafted; only a substantially fabricated
+    answer (< refuse_below_grounding share grounded) still hard-refuses at the
+    retry cap."""
     agent = _build_agent()
     out_of_retries = {"critic_iterations": 99, "verify_iterations": 99}
     mostly = {"numeric_verification": {
@@ -665,18 +644,8 @@ def test_numeric_accuracy_metric():
 
 
 def test_explicit_abstention_detection():
-    """Soft-refusal phrasing is detected, real cited answers are not, and the
-    metrics layer counts an explicit abstention as a refusal."""
-    from finagent.graph.nodes.verification import _SOFT_REFUSAL_RE
+    """The eval's metrics layer counts an explicit abstention as a refusal."""
     from finagent.evaluation.financebench.parallel import _is_refusal
-
-    assert _SOFT_REFUSAL_RE.search("the figure cannot be calculated")
-    assert _SOFT_REFUSAL_RE.search("Apple does not disclose segment margins")
-    assert not _SOFT_REFUSAL_RE.search("Revenue was $394.3 billion (FY2022) [1].")
-    # v2 failure phrasings that previously slipped through and scored conf=1.0:
-    assert _SOFT_REFUSAL_RE.search("No relevant evidence provided to calculate the ratio.")
-    assert _SOFT_REFUSAL_RE.search("No available data on FY2015 revenue is present.")
-    assert _SOFT_REFUSAL_RE.search("No information is available in the provided sources.")
 
     assert _is_refusal("**Insufficient evidence to answer.** The filings ...")
     assert _is_refusal("I don't have enough information to answer this from ...")
@@ -694,22 +663,6 @@ def test_count_rows_tolerates_partial_shards(tmp_path):
     torn.write_text('[{"a": 1}, {"a"')          # mid-write
     missing = tmp_path / "shard2_outputs.json"  # never created
     assert _count_rows([good, torn, missing]) == 2
-
-
-def test_low_confidence_never_abstains():
-    """The low-confidence band always returns the draft with a caveat — even a
-    soft-refusal draft is shown, never replaced by an abstention template."""
-    from finagent.graph.nodes.verification import VerificationNodes
-
-    node = object.__new__(VerificationNodes)
-    state = {"draft_answer": "The filings do not disclose this figure, but "
-                             "segment revenue was $1.2 billion [1].",
-             "confidence": 0.35}
-    out = VerificationNodes.withhold_low_confidence_node(node, state)
-    assert out["refused"] is False
-    assert out["status"] == "answered_low_confidence"
-    assert out["final_answer"].startswith(state["draft_answer"])
-    assert "Confidence: 35%" in out["final_answer"]
 
 
 def test_turnover_ratio_averages_denominator():

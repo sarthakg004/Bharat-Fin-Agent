@@ -15,21 +15,18 @@ Full agentic RAG (v4) — the deployed agent. Adds to v3:
   * **Numeric verification** — every figure in the draft is deterministically
     grounded against the evidence (with an LLM rescue pass only when figures
     fail to ground). Ungrounded figures re-route, then refuse.
-  * **Confidence gate** — retrieval/verification/citation/critic sub-scores
-    blend into one confidence; low bands answer with an explicit caveat.
 
 Graph:
 
     START → planner(+routes) → router → {fetch_filing → retrieve → grader → rewrite↺ | xbrl}
           → xbrl → calculator → (market_data ∥ web_search ∥ edgar_search)
-          → evidence_builder → synthesize → critic → verify_numbers
-          → confidence → {answer | answer_with_warning | low_confidence} → END
-                       ↘ refuse → END
+          → evidence_builder → synthesize → critic → verify_numbers → END
+                                                     ↘ refuse → END
 
 The node implementations live in `finagent/graph/nodes/` as topical mixins —
 fetch (SEC fetch + retrieval), numeric (XBRL/calculator), external
 (market/web/EDGAR), synthesis (evidence + drafting + critic), verification
-(figure grounding + confidence gate). This module owns the constructor, the
+(figure grounding + refusal). This module owns the constructor, the
 lane resources, the routing functions, and the graph wiring.
 """
 
@@ -59,7 +56,7 @@ from finagent.config import settings
 
 class AgenticRAGv4(FetchNodes, NumericNodes, ExternalNodes,
                    SynthesisNodes, VerificationNodes, AgenticRAGv3):
-    """v3 + structured numeric lanes + web search + numeric verification + confidence gate."""
+    """v3 + structured numeric lanes + web search + numeric verification."""
 
     def __init__(
         self,
@@ -75,13 +72,9 @@ class AgenticRAGv4(FetchNodes, NumericNodes, ExternalNodes,
         dedupe_threshold: float = 0.93,
         strict_numeric: bool = True,
         # Hard-refuse only when LESS than this share of the draft's figures is
-        # grounded; a mostly-grounded answer falls through to the confidence
-        # gate instead (warn band, or the withhold path that keeps the draft).
+        # grounded; a mostly-grounded answer is shown as drafted.
         refuse_below_grounding: float = 0.6,
         persist_fetch: bool = True,
-        confidence_gating: bool = True,
-        confidence_answer: float = 0.80,
-        confidence_warn: float = 0.60,
         active_critic: bool = True,
         **kwargs,
     ):
@@ -107,17 +100,6 @@ class AgenticRAGv4(FetchNodes, NumericNodes, ExternalNodes,
         # Dynamic fetch: persist the fetched filing into the on-disk index (True,
         # local) or use it ephemerally in memory for this session (False, cloud).
         self.persist_fetch = persist_fetch
-        # Confidence framework (#8/9): blend retrieval/verification/citation/critic
-        # sub-scores into a single confidence, then gate the answer on it. With
-        # `confidence_gating` False the score is still computed (observability) but
-        # the gate always answers — for A/B against the ungated path. Bands:
-        #   confidence >= confidence_answer            → answer as-is
-        #   confidence_warn <= confidence < answer     → answer + moderate caveat
-        #   confidence <  confidence_warn              → answer + LOW-confidence
-        #                                                caveat (full draft shown)
-        self.confidence_gating = confidence_gating
-        self.confidence_answer = confidence_answer
-        self.confidence_warn = confidence_warn
         # Active-critic recovery (#6): when the critic finds unsupported claims
         # but the evidence is rich, route to a focused RE-DRAFT (cheap) instead
         # of a full re-retrieve — the draft over-claimed, not the evidence. Falls
@@ -267,7 +249,7 @@ class AgenticRAGv4(FetchNodes, NumericNodes, ExternalNodes,
         return "retrieval" if (not self.dispatch or has_narrative) else "tools"
 
     def _verify_router(self, state: AgentState) -> str:
-        """After numeric verification: refuse / retry retrieval / continue to the confidence gate.
+        """After numeric verification: refuse, retry retrieval, or end.
 
         The **verifier** is the source of truth for refusal: it does a precise
         per-number match against ALL evidence (text + tables + web). The
@@ -291,10 +273,8 @@ class AgenticRAGv4(FetchNodes, NumericNodes, ExternalNodes,
         # strict numeric verification, re-route to try to ground it; once out of
         # retries, hard-refuse ONLY when most of the draft's figures failed to
         # ground (a substantially fabricated answer). A mostly-grounded draft
-        # proceeds to the confidence gate, where the depressed verification
-        # sub-score lands it in the warn band (answer + caveat) or the withhold
-        # path (which preserves the draft for opt-in) — a refusal there would
-        # throw away an answer whose figures overwhelmingly trace to sources.
+        # is answered as drafted — a refusal there would throw away an answer
+        # whose figures overwhelmingly trace to sources.
         if self.strict_numeric:
             has_ungrounded = (nv.get("numbers_total", 0) > 0 and len(ungrounded) > 0)
             if state.get("needs_retry") and not out_of_retries:
@@ -320,11 +300,6 @@ class AgenticRAGv4(FetchNodes, NumericNodes, ExternalNodes,
         """After evidence_builder: proceed to synthesis, or (one-shot) fall back
         to corpus retrieval when the tools lanes all came back empty."""
         return "retrieve" if state.get("corpus_fallback_pending") else "synthesize"
-
-    def _confidence_gate(self, state: AgentState) -> str:
-        """Route on the band `confidence_node` already chose: answer / warn /
-        refuse. Kept as a pure read so the policy lives in one place."""
-        return state.get("confidence_band") or "answer"
 
     def _critic_router(self, state: AgentState) -> str:
         """Active-critic recovery (#6). After the critic:
@@ -378,9 +353,6 @@ class AgenticRAGv4(FetchNodes, NumericNodes, ExternalNodes,
         g.add_node("synthesize", self.synthesize_node)
         g.add_node("critic", self.critic_node)
         g.add_node("verify_numbers", self.verify_numbers_node)
-        g.add_node("confidence", self.confidence_node)
-        g.add_node("answer_with_warning", self.answer_with_warning_node)
-        g.add_node("low_confidence", self.withhold_low_confidence_node)
         g.add_node("refuse", self.refuse_node)
 
         g.add_edge(START, "planner")
@@ -444,21 +416,12 @@ class AgenticRAGv4(FetchNodes, NumericNodes, ExternalNodes,
              # re-draft with it.
              "websearch": "web_search"},
         )
-        # Verifier settles hard refusals (ungrounded figures) and retries; an
-        # answerable draft ("end") then flows into the confidence gate (#8/9).
+        # The verifier is the only gate left: it settles hard refusals
+        # (ungrounded figures) and retries. An answerable draft ends the run.
         g.add_conditional_edges(
             "verify_numbers", self._verify_router,
-            {"retrieve": "retrieve", "refuse": "refuse", "end": "confidence"},
+            {"retrieve": "retrieve", "refuse": "refuse", "end": END},
         )
-        # Confidence gate: high → answer, moderate → answer + caveat, low →
-        # answer + a stronger low-confidence caveat (the full draft is always
-        # shown; only hallucinated-figure refusals suppress an answer).
-        g.add_conditional_edges(
-            "confidence", self._confidence_gate,
-            {"answer": END, "warn": "answer_with_warning", "refuse": "low_confidence"},
-        )
-        g.add_edge("answer_with_warning", END)
-        g.add_edge("low_confidence", END)
         g.add_edge("refuse", END)
         return g.compile()
 
@@ -512,10 +475,6 @@ def _build_cli() -> argparse.ArgumentParser:
     p.add_argument("--max-rewrites", type=int, default=3)
     p.add_argument("--max-critic-retries", type=int, default=2)
     p.add_argument("--min-verify-score", type=float, default=0.5)
-    p.add_argument("--no-confidence-gating", dest="confidence_gating",
-                   action="store_false", help="compute confidence but never gate on it")
-    p.add_argument("--confidence-answer", type=float, default=0.80)
-    p.add_argument("--confidence-warn", type=float, default=0.60)
     p.add_argument("--question", default=None)
     p.add_argument("--dataset", default=None)
     p.add_argument("--question-col", default="question")
@@ -553,9 +512,6 @@ def main():
         max_rewrites=args.max_rewrites,
         max_critic_retries=args.max_critic_retries,
         min_verify_score=args.min_verify_score,
-        confidence_gating=args.confidence_gating,
-        confidence_answer=args.confidence_answer,
-        confidence_warn=args.confidence_warn,
     )
 
     if args.dataset:
@@ -584,13 +540,7 @@ def main():
     nv = state.get("numeric_verification") or {}
     print(f"Numeric verify:   score={nv.get('score')}  unverified={len(nv.get('unverified', []))}")
     print(f"Refused:          {state.get('refused', False)}")
-    print(f"Low confidence:   {state.get('low_confidence', False)}")
-    print(
-        f"Confidence:       {state.get('confidence')} "
-        f"(band={state.get('confidence_band')}, status={state.get('status')}) "
-        f"[retr={state.get('retrieval_score')} verif={state.get('verification_score')} "
-        f"cite={state.get('citation_score')} crit={state.get('critic_score')}]"
-    )
+    print(f"Status:           {state.get('status')}")
     print(f"\nAnswer:\n{state.get('final_answer')}")
     print(f"\nCitations:        {state.get('citations')}")
     if state.get("web_results"):

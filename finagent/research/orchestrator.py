@@ -349,7 +349,6 @@ class DeepResearch:
                     "question": task.question,
                     "answer": out.get("answer") or "",
                     "chunks": out.get("chunks") or [],
-                    "confidence": meta.get("confidence"),
                     "status": meta.get("answer_status"),
                     "input_tokens": meta.get("input_tokens") or 0,
                     "output_tokens": meta.get("output_tokens") or 0,
@@ -389,9 +388,7 @@ class DeepResearch:
     def _digest(findings: list[dict], per_answer_cap: int = 3000) -> str:
         parts = []
         for f in findings:
-            conf = f.get("confidence")
-            conf_s = f" (confidence {conf:.0%})" if isinstance(conf, (int, float)) else ""
-            parts.append(f"### {f['section']} — {f['label']}{conf_s}\n"
+            parts.append(f"### {f['section']} — {f['label']}\n"
                          f"{(f.get('global_answer') or '')[:per_answer_cap]}")
         return "\n\n".join(parts)
 
@@ -499,16 +496,13 @@ class DeepResearch:
             try:
                 f = self._run_task(task)
                 task.status, task.finding = "done", f
-                conf = f.get("confidence")
                 detail = f"{len(f.get('chunks') or [])} evidence items"
-                if isinstance(conf, (int, float)):
-                    detail += f" · {conf:.0%} confidence"
                 if f.get("cached"):
                     detail += " · cached"
                 task.detail = detail
                 findings[task.id] = f
                 emit({"type": "agent_done", "id": task.id, "status": "done",
-                      "detail": detail, "confidence": conf,
+                      "detail": detail,
                       "summary": (f.get("answer") or "")[:400]})
             except RuntimeError as e:
                 task.status, task.detail = "failed", str(e)
@@ -544,10 +538,6 @@ class DeepResearch:
                         + (f" · {len(contradictions)} contradiction(s) flagged"
                            if contradictions else "")})
 
-        confidences = [f["confidence"] for f in done
-                       if isinstance(f.get("confidence"), (int, float))]
-        agg_conf = round(sum(confidences) / len(confidences), 3) if confidences else None
-
         return {
             "report": report,
             "chunks": chunks,
@@ -556,7 +546,6 @@ class DeepResearch:
                 "model": self.model,
                 "company": scope.company, "ticker": scope.ticker,
                 "objective": scope.objective or question,
-                "confidence": agg_conf,
                 "agents_run": len(done), "agents_failed": len(failed),
                 "contradictions": contradictions,
                 "evidence_count": len(chunks),

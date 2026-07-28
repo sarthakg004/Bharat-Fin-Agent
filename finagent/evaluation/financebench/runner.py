@@ -132,7 +132,6 @@ def run_agent_outputs(
                 "retrieved_chunks": [c.get("text", "") for c in res.get("chunks", [])],
                 "qtype": q.get("qtype", ""),
                 "company": q.get("company", ""),
-                "confidence": meta.get("confidence"),
                 "answer_status": meta.get("answer_status"),
                 # Per-question cost/latency (aggregated into final_metrics):
                 # wall-clock end-to-end, and token totals across every LLM call

@@ -41,7 +41,6 @@ class AgentState(TypedDict, total=False):
     rewrite_history: list[str]         # past rewritten sub-queries
     critic_iterations: int             # critic-retry counter (cap = max_critic_retries)
     critic_feedback: list[str]         # unsupported claims, fed to an active re-draft
-    low_confidence: bool               # synth flag when grader stayed below threshold
 
     # --- Router (v3) ------------------------------------------------------- #
     query_routes: list[str]            # one of "narrative" | "numeric" | "external" per sub-query
@@ -80,20 +79,7 @@ class AgentState(TypedDict, total=False):
     #   {kind, fact, value, unit, source, citation, confidence, sub_query}
     evidence: list[dict]
 
-    # --- Confidence framework (#8/9) -------------------------------------- #
-    # Four sub-scores in [0,1], then their weighted blend, computed once after
-    # verification by `confidence_node`. Any sub-score that doesn't apply to a
-    # given question (e.g. retrieval on a pure-XBRL numeric query, or
-    # verification on an answer with no figures) is left out and the remaining
-    # weights are renormalised — so a fully-grounded numeric answer isn't
-    # penalised for not having gone through retrieval.
-    retrieval_score: float             # from avg_grade (1-5) → [0,1]
-    verification_score: float          # numeric_verification["score"]
-    citation_score: float              # fraction of figures carrying a [N] marker
-    critic_score: float                # grading_score (critic claim-support rate)
-    confidence: float                  # weighted blend of the applicable sub-scores
-    confidence_band: str               # "answer" | "warn" | "refuse" (gate routing)
-    status: str                        # "answered" | "answered_with_warning" | "refused"
+    status: str                        # "answered" | "refused"
 
     # --- Tools-lane corpus fallback ---------------------------------------- #
     # Set by `evidence_builder_node` when a tools-path question (which skipped

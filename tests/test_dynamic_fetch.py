@@ -6,7 +6,7 @@ segments … latest fiscal year"): the EDGAR fetch died on an ImportError for a
 package the deployed image doesn't ship, corpus retrieval then returned
 Walmart/Corning/General Mills/3M chunks for an AMAT question, and the answer —
 written entirely from analyst web pages, quoting a QUARTER for a fiscal-year
-question — was gated at confidence 0.9 with no caveat.
+question.
 
 No network: the SEC submissions index is a fake.
 """
@@ -14,7 +14,6 @@ No network: the SEC submissions index is a fake.
 from __future__ import annotations
 
 from finagent.graph.nodes.fetch import FetchNodes
-from finagent.graph.nodes.verification import VerificationNodes
 from finagent.tools.sec_fetch import SecFilingFetcher
 
 # Shape of data.sec.gov/submissions/CIK##########.json, trimmed to the keys read.
@@ -114,32 +113,3 @@ def test_corpus_retrieval_skipped_when_gate_proved_absence():
     for status in ({"decision": "already_indexed"}, {"decision": "not_us_listed"},
                    {}, None):
         assert not lacks({"fetch_status": status})
-
-
-def test_missing_filings_score_zero_not_not_applicable():
-    """A narrative/numeric question answered with no filing evidence at all must
-    not renormalise the blend over the surviving sub-scores."""
-    v = VerificationNodes()
-    state = {
-        "draft_answer": "Semiconductor Systems is the largest segment [1].",
-        "query_routes": ["numeric", "narrative"],
-        "grades": [], "avg_grade": 0.0, "retrieved_chunks": [],
-        "numeric_verification": {"numbers_total": 1, "score": 1.0},
-        "grading_score": 0.5,
-    }
-    comps = v._confidence_components(state)
-    assert comps["retrieval"] == 0.0
-
-    # Replay the traced sub-scores through the blend. Before: retrieval was
-    # absent, the denominator renormalised over the other three and the answer
-    # was gated at 0.9. After: it lands in the warn band (< confidence_answer
-    # 0.80), so the user gets the caveat.
-    traced = {"verification": 1.0, "citation": 1.0, "critic": 0.5}
-    blend = lambda c: (sum(v._CONF_WEIGHTS[k] * x for k, x in c.items())
-                       / sum(v._CONF_WEIGHTS[k] for k in c))
-    assert round(blend(traced), 2) == 0.9
-    assert 0.6 <= blend({**traced, "retrieval": comps["retrieval"]}) < 0.8
-
-    # A market/external-only question never expected filings — still N/A there.
-    assert "retrieval" not in v._confidence_components(
-        {**state, "query_routes": ["market"]})

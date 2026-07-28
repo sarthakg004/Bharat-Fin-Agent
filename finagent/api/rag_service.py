@@ -4,7 +4,7 @@ RAG service singletons.
 Single agentic pipeline (`AgenticRAGv4`): planner(+routes) → router → hybrid
 retrieve → grader → rewrite/proceed → xbrl → calculator →
 market_data (yfinance) ∥ web_search ∥ edgar_search → synthesize → critic →
-numeric verification → confidence gate.
+numeric verification.
 
 Web search uses Tavily when `TAVILY_API_KEY` is set; web_search escalates
 automatically when text retrieval comes back empty or weakly graded, so
@@ -140,10 +140,10 @@ def _tool_health(state: dict) -> dict:
 
 def _retrieval_status(state: dict, max_attempts: int, grade_threshold: float) -> dict:
     """Retrieval-loop status (#7): how many rewrite attempts ran vs the cap, the
-    retrieval confidence (mean grade), and whether the loop was EXHAUSTED without
+    mean chunk grade, and whether the loop was EXHAUSTED without
     reaching the quality bar. The actual refuse decision is NOT made here — a
     numeric/market question legitimately skips retrieval — it's deferred to the
-    confidence gate, which weighs ALL evidence, not just retrieval."""
+    numeric verifier, which weighs ALL evidence, not just retrieval."""
     attempts = state.get("iteration_count", 0)
     avg = state.get("avg_grade")
     exhausted = attempts >= max_attempts and (avg is None or avg < grade_threshold)
@@ -153,14 +153,14 @@ def _retrieval_status(state: dict, max_attempts: int, grade_threshold: float) ->
         "avg_grade": avg,
         "grade_threshold": grade_threshold,
         "exhausted": bool(exhausted),
-        "refusal_handled_by": "confidence_gate",
+        "refusal_handled_by": "verify_numbers",
     }
 
 
 def _build_audit(state: dict, retrieval: Optional[dict] = None) -> dict:
     """Audit trail (#13): a single self-contained record of HOW the answer was
-    produced — sources used, calculations performed, verification status, and
-    the confidence score. Assembled as a read-only VIEW over the final state at
+    produced — sources used, calculations performed, and verification status.
+    Assembled as a read-only VIEW over the final state at
     response time, so it never touches the answer-generation path.
     """
     ev = state.get("evidence") or []
@@ -177,7 +177,7 @@ def _build_audit(state: dict, retrieval: Optional[dict] = None) -> dict:
     return {
         "status": state.get("status"),
         "routes": state.get("query_routes") or [],
-        # Retrieval-loop status (#7): attempts vs cap + retrieval confidence.
+        # Retrieval-loop status (#7): attempts vs cap + mean grade.
         "retrieval": retrieval or {},
         # Failure recovery (#14): did any lane degrade, and which.
         "degraded": {"is_degraded": bool(degraded_lanes), "lanes": degraded_lanes,
@@ -210,17 +210,6 @@ def _build_audit(state: dict, retrieval: Optional[dict] = None) -> dict:
             "cross_source": vr.get("cross_source", {}),
             "units": vr.get("units", {}),
             "sources": vr.get("sources", {}),
-        },
-        # Confidence score + the sub-scores that produced it.
-        "confidence": {
-            "score": state.get("confidence"),
-            "band": state.get("confidence_band"),
-            "sub_scores": {
-                "retrieval": state.get("retrieval_score"),
-                "verification": state.get("verification_score"),
-                "citation": state.get("citation_score"),
-                "critic": state.get("critic_score"),
-            },
         },
     }
 
@@ -293,9 +282,6 @@ def _step_detail(node: str, delta: dict) -> Optional[str]:
             if not total:
                 return None
             return f"{nv.get('numbers_grounded', 0)}/{total} figures grounded"
-        if node == "confidence":
-            c = delta.get("confidence")
-            return f"{c:.0%} confidence" if isinstance(c, (int, float)) else None
     except Exception:
         return None      # detail is decoration — never break the stream over it
     return None
@@ -604,26 +590,15 @@ def run_agentic(question: str,
             "rewrite_iterations": state.get("iteration_count", 0),
             "critic_iterations": state.get("critic_iterations", 0),
             "needs_retry": state.get("needs_retry"),
-            "low_confidence": state.get("low_confidence"),
             "refused": state.get("refused", False),
-            # Confidence framework (#8/9): blended score, routing band, and the
-            # four sub-scores that fed it (each null when not applicable).
-            "confidence": state.get("confidence"),
-            "confidence_band": state.get("confidence_band"),
             "answer_status": state.get("status"),
-            "confidence_scores": {
-                "retrieval": state.get("retrieval_score"),
-                "verification": state.get("verification_score"),
-                "citation": state.get("citation_score"),
-                "critic": state.get("critic_score"),
-            },
             # Normalised evidence (#3): one common shape across all lanes, capped
             # for payload size. Per-kind counts give a quick provenance summary.
             "evidence_count": len(state.get("evidence", []) or []),
             "evidence_kinds": _count_kinds(state.get("evidence", []) or []),
             "evidence": (state.get("evidence", []) or [])[:60],
-            # Retrieval-loop status (#7): attempts vs cap, retrieval confidence,
-            # whether exhausted (refusal is deferred to the confidence gate).
+            # Retrieval-loop status (#7): attempts vs cap and whether the
+            # rewrite loop was exhausted.
             "retrieval": _retrieval_status(state, rag.max_rewrites, rag.grade_threshold),
             # Audit trail (#13): full provenance of this answer.
             "audit": _build_audit(

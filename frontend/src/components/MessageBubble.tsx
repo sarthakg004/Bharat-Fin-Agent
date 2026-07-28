@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { Check, ChevronRight, Gauge, RotateCcw } from "lucide-react";
+import { Check, ChevronRight, RotateCcw } from "lucide-react";
 
 import type { QueryMetadata } from "@/lib/api";
 import type { ChatMessage } from "@/store/chatStore";
@@ -234,39 +234,12 @@ function ThinkingTrace({ msg }: { msg: ChatMessage }) {
 }
 
 /** After the `metrics` SSE event, token counts sit at the top level of
- * `metadata` while the agent detail fields (confidence, grades, …) ride under
+ * `metadata` while the agent detail fields (grades, routes, …) ride under
  * `metadata.agentic`. Merge both layers so the footer sees one flat shape
  * regardless of which event arrived (agentic fields win where they overlap). */
 function agenticMeta(msg: ChatMessage): QueryMetadata {
   const top = (msg.metadata ?? {}) as QueryMetadata;
   return { ...top, ...(top.agentic ?? {}) } as QueryMetadata;
-}
-
-/** Confidence chip, coloured by band: high (accent) / moderate (warning) /
- * low (err). Hover shows the four sub-scores that fed the blend. */
-function ConfidenceBadge({ m }: { m: QueryMetadata }) {
-  if (m.confidence == null) return null;
-  const band =
-    m.confidence_band ??
-    (m.confidence >= 0.8 ? "answer" : m.confidence >= 0.6 ? "warn" : "refuse");
-  const color =
-    band === "answer" ? "text-accent" : band === "warn" ? "text-warning" : "text-err";
-  const label =
-    band === "answer" ? "high" : band === "warn" ? "moderate" : "low";
-
-  const s = m.confidence_scores;
-  const fmt = (v?: number | null) => (v == null ? "n/a" : `${Math.round(v * 100)}%`);
-  const title = s
-    ? `retrieval ${fmt(s.retrieval)} · verification ${fmt(s.verification)} · ` +
-      `citation ${fmt(s.citation)} · critic ${fmt(s.critic)}`
-    : undefined;
-
-  return (
-    <span className={`inline-flex items-center gap-1 ${color}`} title={title}>
-      <Gauge size={10} />
-      {Math.round(m.confidence * 100)}% confidence · {label}
-    </span>
-  );
 }
 
 function MetadataFooter({ msg }: { msg: ChatMessage }) {
@@ -280,12 +253,6 @@ function MetadataFooter({ msg }: { msg: ChatMessage }) {
       {chunks > 0 && <span>· {chunks} chunks used</span>}
       {m.input_tokens != null && (
         <span>· {m.input_tokens}↓ / {m.output_tokens ?? 0}↑ tok</span>
-      )}
-      {m.confidence != null && (
-        <>
-          <span>·</span>
-          <ConfidenceBadge m={m} />
-        </>
       )}
     </div>
   );

@@ -37,7 +37,7 @@ Usage as a library
     agent = AgenticRAGv2()  # collection defaults to settings.us_collection
     state = agent.run("Compare Microsoft and Apple revenue in FY23.")
     print(state["final_answer"])
-    print("avg_grade:", state["avg_grade"], "low_conf:", state.get("low_confidence"))
+    print("avg_grade:", state["avg_grade"])
 
 CLI
 ---
@@ -143,7 +143,6 @@ class AgenticRAGv2(AgenticRAG):
       * `hybrid_retrieve_node` replaces `retrieve_node`
       * `grader_node` and `rewrite_node` are new
       * `critic_node` is extended to schedule a retrieve-loop on failure
-      * `synthesize_node` adds the `low_confidence` flag
       * `_build_graph` wires the conditional edges
     """
 
@@ -471,16 +470,6 @@ class AgenticRAGv2(AgenticRAG):
             "iteration_count": iteration + 1,
         }
 
-    def synthesize_node(self, state: AgentState) -> dict:
-        """Same as the parent, plus a low-confidence flag when retrieval stayed weak."""
-        out = super().synthesize_node(state)
-        low_conf = (
-            state.get("avg_grade", 0.0) < self.grade_threshold
-            and state.get("iteration_count", 0) >= self.max_rewrites
-        )
-        out["low_confidence"] = bool(low_conf)
-        return out
-
     def critic_node(self, state: AgentState) -> dict:
         """Extends the parent's critic with a retrieval-retry hint.
 
@@ -554,7 +543,7 @@ class AgenticRAGv2(AgenticRAG):
         if avg >= self.grade_threshold:
             return "synthesize"
         if state.get("iteration_count", 0) >= self.max_rewrites:
-            return "synthesize"          # cap hit; synth will set low_confidence
+            return "synthesize"          # rewrite cap hit; answer as-is
         return "rewrite"
 
     def _critic_router(self, state: AgentState) -> str:
@@ -638,7 +627,6 @@ def main():
     print(f"\nAnswer:\n{state.get('final_answer')}")
     print(f"\nCitations:       {state.get('citations')}")
     print(f"Critic grade:    {state.get('grading_score')}  needs_retry={state.get('needs_retry')}")
-    print(f"Low confidence:  {state.get('low_confidence')}")
     if state.get("errors"):
         print(f"Errors:          {state['errors']}")
 

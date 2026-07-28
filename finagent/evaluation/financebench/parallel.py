@@ -244,13 +244,12 @@ def merge_shards(shard_outs: list[Path], output_path: Union[str, Path]) -> list[
 
 def summarize_outputs(outputs_path: Union[str, Path]) -> dict:
     """System-level behaviour metrics computed from the outputs alone (no
-    judge): coverage, refusals, errors, confidence."""
+    judge): coverage, refusals, errors."""
     rows = json.loads(Path(outputs_path).read_text())
     n = len(rows)
     refused = [r for r in rows if _is_refusal(r.get("answer"))]
     errors = [r for r in rows if r.get("error")]
     answered = n - len(refused) - len(errors)
-    confs = [r["confidence"] for r in rows if isinstance(r.get("confidence"), (int, float))]
 
     by_type: dict[str, dict] = {}
     for r in rows:
@@ -297,7 +296,6 @@ def summarize_outputs(outputs_path: Union[str, Path]) -> dict:
         "refusal_rate": round(len(refused) / n, 4) if n else None,
         "errors": len(errors),
         "error_rate": round(len(errors) / n, 4) if n else None,
-        "mean_confidence": round(sum(confs) / len(confs), 4) if confs else None,
         "latency": latency,
         "tokens": token_cost,
         # Numeric accuracy: gold figure present in the answer within 1% tol,
@@ -338,7 +336,6 @@ def final_report(
         f"| answer rate | {behaviour['answer_rate']} |",
         f"| refusal rate | {behaviour['refusal_rate']} |",
         f"| error rate | {behaviour['error_rate']} |",
-        f"| mean confidence | {behaviour['mean_confidence']} |",
         f"| numeric accuracy (gold in answer, 1% tol) | {behaviour.get('numeric_accuracy')} |",
         "",
     ]

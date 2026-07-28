@@ -45,7 +45,7 @@ live agent progress and the source chunks shown alongside.
   admits it can't answer.
 - **Anti-hallucination** — a claim-checking critic, a deterministic numeric
   verifier (every figure must trace to the evidence or derive from it), and a
-  blended **confidence gate** that answers, caveats, or refuses.
+  hard refusal when a figure can't be traced to the evidence.
 - **Per-session memory** — multi-chat threads kept in the browser; the agent
   gets the last few turns for follow-ups and pronouns.
 - **Bring-your-own-key** — Groq by default; switch to OpenAI / Anthropic /
@@ -63,7 +63,7 @@ layer adds a capability ([`finagent/graph/`](finagent/graph/)):
 | `base.py` | `AgenticRAG` | planner → retrieve → synthesize → critic |
 | `corrective.py` | `AgenticRAGv2` | hybrid retrieval, relevance grader, rewrite loop |
 | `full.py` | `AgenticRAGv3` | fused **plan+route** call, query router |
-| `agent.py` | `AgenticRAGv4` | XBRL facts, calculator, dynamic SEC fetch, EDGAR FTS, market data, web search, numeric verifier, confidence gate |
+| `agent.py` | `AgenticRAGv4` | XBRL facts, calculator, dynamic SEC fetch, EDGAR FTS, market data, web search, numeric verifier |
 
 `AgenticRAGv4` is the deployed agent. The runtime graph:
 
@@ -72,7 +72,7 @@ START → planner(+routes) → router ─┬─ retrieval path: fetch_filing →
                                    └─ tools path (no narrative sub-query): skip retrieval
       → xbrl → calculator → market_data ∥ web_search ∥ edgar_search   (parallel fan-out)
       → evidence_builder → synthesize → critic → verify_numbers
-      → confidence → {answer | answer + caveat | low-confidence caveat}
+      → {answer | refuse}
                    ↘ refuse (ungrounded figures)                         → END
 ```
 
@@ -137,7 +137,7 @@ python -m finagent.evaluation.financebench.parallel --score \
 ```
 
 This produces **one aggregate metrics list** — `results/final_metrics.json` /
-`.md` — covering answer/refusal/error rates, mean confidence, RAGAS
+`.md` — covering answer/refusal/error rates, RAGAS
 (faithfulness, answer relevancy, context precision/recall) overall and per
 question type (numeric / comparison / narrative).
 
@@ -183,7 +183,7 @@ ablation** (strict exact-chunk match): the cross-encoder lifts Hit@3 by 53%
 and MRR by 39% over the fused BM25+dense pool order
 (`results/retrieval_ablation.json`). `results/comparison.md` has the full v1 → v3 delta table, and
 `STRUCTURE.md` → *Bottleneck analysis & fixes* documents each root cause found
-along the way (corpus wiring, historical-year fetch, refusal confidence,
+along the way (corpus wiring, historical-year fetch, refusal scoring,
 mis-routing, web-escalation pollution — all fixed cost-neutrally).
 
 Runs are resilient to the free tier: per-minute limits rotate across the key
@@ -292,5 +292,5 @@ synchronously before each response returns, so tracing survives Cloud Run's
 CPU throttling and scale-to-zero. Without keys, tracing is a no-op.
 
 The answer payload separately carries in-app metrics — token totals per model,
-per-node latencies, tool-lane health, and the confidence/verification audit —
+per-node latencies, tool-lane health, and the verification audit —
 independent of any tracing backend.

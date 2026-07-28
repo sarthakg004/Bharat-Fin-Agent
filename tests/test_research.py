@@ -24,7 +24,7 @@ def _clear_task_cache():
 
 
 def _fake_run_fn(question: str) -> dict:
-    """Canned production-agent result: one chunk, one citation, 0.9 confidence."""
+    """Canned production-agent result: one chunk, one citation."""
     return {
         "answer": f"Finding for: {question[:40]} [1].",
         "chunks": [{"id": 0, "text": "evidence", "company": "AAPL",
@@ -122,7 +122,7 @@ def test_run_merges_evidence_onto_global_numbering():
     meta = out["metadata"]
     assert meta["mode"] == "research"
     assert meta["agents_run"] == 2 and meta["agents_failed"] == 0
-    assert meta["confidence"] == 0.9
+    assert "confidence" not in meta
     # Specialist tokens summed + report writer's own usage.
     assert meta["input_tokens"] == 250 and meta["output_tokens"] == 50
     assert out["report"].startswith("# Report")

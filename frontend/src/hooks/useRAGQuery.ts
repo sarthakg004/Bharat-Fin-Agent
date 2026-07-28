@@ -67,8 +67,7 @@ export function useRAGQuery() {
                 break;
               case "agent_done":
                 patchResearchTask(assistantId, e.id, {
-                  status: e.status, detail: e.detail,
-                  summary: e.summary, confidence: e.confidence,
+                  status: e.status, detail: e.detail, summary: e.summary,
                 });
                 break;
               case "status":

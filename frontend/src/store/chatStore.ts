@@ -42,7 +42,6 @@ export interface ResearchTask {
   /** First few hundred chars of the specialist's finding — the expandable
    * reasoning summary in the timeline. */
   summary?: string;
-  confidence?: number | null;
 }
 
 /** Deep Research state attached to an assistant message. */

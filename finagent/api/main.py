@@ -204,7 +204,6 @@ _STEP_LABELS = {
     "synthesize":     "Writing the answer…",
     "critic":         "Fact-checking the draft…",
     "verify_numbers": "Verifying every figure…",
-    "confidence":     "Scoring confidence…",
 }
 
 # Canonical pipeline order (for the UI progress bar). The agent skips most of

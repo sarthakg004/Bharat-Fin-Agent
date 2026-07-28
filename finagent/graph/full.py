@@ -442,16 +442,11 @@ class AgenticRAGv3(AgenticRAGv2):
         answer = text_of(response)
 
         citations = sorted(set(re.findall(r"\[[^\]]+\]", answer)))
-        low_conf = (
-            state.get("avg_grade", 0.0) < self.grade_threshold
-            and state.get("iteration_count", 0) >= self.max_rewrites
-        )
         return {
             "draft_answer": answer,
             "final_answer": answer,
             "citations": citations,
             "iteration_count": state.get("iteration_count", 0) + 1,
-            "low_confidence": bool(low_conf),
         }
 
     # ------------------------------------------------------------------ #
@@ -588,7 +583,6 @@ def main():
     print(f"\nAnswer:\n{state.get('final_answer')}")
     print(f"\nCitations:       {state.get('citations')}")
     print(f"Critic grade:    {state.get('grading_score')}  needs_retry={state.get('needs_retry')}")
-    print(f"Low confidence:  {state.get('low_confidence')}")
     if state.get("errors"):
         print(f"\nErrors:          {state['errors']}")
 

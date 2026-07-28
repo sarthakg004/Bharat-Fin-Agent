@@ -1,4 +1,4 @@
-"""Deterministic numeric verification, refusal/abstention, and the confidence gate.
+"""Deterministic numeric verification and the hallucinated-figure refusal.
 
 Split out of `finagent.graph.agent` (methods are unchanged); mixed into
 `AgenticRAGv4` ahead of `AgenticRAGv3` in the MRO.
@@ -17,38 +17,9 @@ from finagent.prompts.critic import (  # noqa: F401
     REFUSAL_TEMPLATE,
 )
 
-# Phrases a synthesizer uses when it is *itself* conceding the evidence can't
-# answer the question — the "soft refusals" buried inside otherwise-formatted
-# answers. Detected so the confidence blend can zero the citation component;
-# the draft is still shown (with a low-confidence caveat), never withheld.
-_SOFT_REFUSAL_RE = re.compile(
-    r"\b(?:"
-    r"not enough info(?:rmation)?|insufficient (?:info|information|evidence|data)|"
-    r"cannot (?:be )?(?:determined|calculated|computed|answered)|"
-    r"could not (?:be )?(?:determined|calculated|found)|"
-    r"unable to (?:determine|calculate|compute|answer|find|locate)|"
-    r"do(?:es)? not (?:disclose|provide|contain|include|report)|"
-    r"is not (?:disclosed|provided|available|reported)|"
-    r"are not (?:disclosed|provided|available|reported)|"
-    r"no (?:relevant |available )?(?:information|data|disclosure|figures?|evidence) "
-    r"(?:is|are|was|were|provided|available|present|on)?"
-    r")\b",
-    re.I,
-)
-
 
 class VerificationNodes:
-    """Deterministic numeric verification, refusal/abstention, and the confidence gate."""
-
-    # Weights from the spec. Applied only over the sub-scores that are present
-    # for a given question; the denominator renormalises so a missing component
-    # (e.g. retrieval on a pure-XBRL numeric query) doesn't drag the blend down.
-    _CONF_WEIGHTS = {
-        "retrieval": 0.25,
-        "verification": 0.35,
-        "citation": 0.25,
-        "critic": 0.15,
-    }
+    """Deterministic numeric verification and the hallucinated-figure refusal."""
 
     # A citation marker: [1] / [1, 3] and the fullwidth 【1】 form some models
     # (gpt-oss, certain Llama builds) emit despite the prompt asking for ASCII.
@@ -242,7 +213,7 @@ class VerificationNodes:
                                    ungrounded_raws: set, by_kind: dict) -> dict:
         """Assemble the financial verification report the spec (#5) asks for:
         cross-source corroboration, unit-shift flags, and source/citation
-        coverage. This is a REPORT — it informs confidence and the audit trail;
+        coverage. This is a REPORT — it informs the audit trail;
         it does not itself trigger refusals (that stays with numeric grounding).
         """
         grounded_nums = [d for d in draft_nums if d["raw"] not in ungrounded_raws]
@@ -312,188 +283,6 @@ class VerificationNodes:
         return {"final_answer": msg, "refused": True, "needs_retry": False,
                 "status": "refused"}
 
-    def _citation_score(self, state: AgentState) -> Optional[float]:
-        """Fraction of material figures in the draft that carry a [N] citation.
-
-        Returns None (component not applicable) when the draft is empty or there
-        is no evidence to cite at all. For a figure-free answer it's 1.0 if any
-        citation is present, else None — we don't penalise a purely qualitative
-        answer for having no numbers to anchor.
-        """
-        answer = state.get("draft_answer", "") or ""
-        if not answer.strip():
-            return None
-        has_evidence = any(state.get(k) for k in (
-            "retrieved_chunks", "xbrl_facts", "calc_results",
-            "web_results", "market_data", "edgar_results",
-        ))
-        if not has_evidence:
-            return None
-
-        # Positions of citation markers in the ORIGINAL answer.
-        markers = [m.start() for m in self._CITE_RE.finditer(answer)]
-
-        # Mask out tokens that look numeric but aren't financial claims, keeping
-        # length (and therefore offsets) identical so `markers` stays aligned.
-        def _blank(m: re.Match) -> str:
-            return " " * len(m.group(0))
-
-        masked = self._CITE_RE.sub(_blank, answer)
-        masked = re.sub(r"\bFY\s?\d{2,4}\b", _blank, masked, flags=re.I)
-        masked = re.sub(r"\bQ[1-4]\b", _blank, masked, flags=re.I)
-        masked = re.sub(r"\b10\s?-?\s?[KQ]\b|\b8\s?-?\s?K\b", _blank, masked, flags=re.I)
-        masked = re.sub(r"\bp\.?\s*\d+\b", _blank, masked, flags=re.I)
-
-        fig_ends = [m.end() for m in self._NUM_RE.finditer(masked) if m.group("num")]
-        if not fig_ends:
-            return 1.0 if markers else None
-
-        # A figure is "cited" if a marker sits just after it (or a few chars
-        # before, for "[1] revenue of $X" ordering).
-        WINDOW = 80
-        covered = sum(
-            1 for p in fig_ends
-            if any(-15 <= (mk - p) <= WINDOW for mk in markers)
-        )
-        return round(covered / len(fig_ends), 3)
-
-    def _confidence_components(self, state: AgentState) -> dict:
-        """The sub-scores that apply to this question, each in [0,1]."""
-        comps: dict[str, float] = {}
-
-        # A draft that is itself conceding it can't answer ("No relevant evidence
-        # provided…") must NOT score high: with no figures to verify and no
-        # claims for the critic to refute, the critic passes vacuously and the
-        # blend lands at ~1.0 — a content-free non-answer marked maximally
-        # confident. Force zero so the gate routes it to an explicit abstention.
-        draft = state.get("draft_answer") or state.get("final_answer") or ""
-        if _SOFT_REFUSAL_RE.search(draft[:600]):
-            return {}
-
-        # Retrieval — normalise the mean grade (1-5) to [0,1]. Applicable only
-        # when retrieval actually ran (graded chunks exist).
-        grades = state.get("grades") or []
-        avg = state.get("avg_grade")
-        if grades and avg is not None:
-            comps["retrieval"] = max(0.0, min(1.0, (avg - 1.0) / 4.0))
-        elif state.get("retrieved_chunks"):
-            # Chunks present but ungraded (e.g. ephemeral fetch on the tool path).
-            comps["retrieval"] = 0.5
-        elif any(r in ("narrative", "numeric") for r in (state.get("query_routes") or [])):
-            # The planner said this question is answered FROM THE FILINGS and
-            # retrieval delivered nothing — every chunk was off-entity, or the
-            # filing could not be fetched. Omitting the sub-score (the old
-            # behaviour) renormalised the blend over the three that survived, so
-            # a filings question answered entirely from marketing/analyst web
-            # pages scored 0.9 and was presented with no caveat at all. An
-            # absent primary source is a zero, not a non-applicable.
-            comps["retrieval"] = 0.0
-
-        # Verification — only when the answer actually made numeric claims.
-        nv = state.get("numeric_verification") or {}
-        if isinstance(nv, dict) and nv.get("numbers_total", 0) > 0:
-            comps["verification"] = max(0.0, min(1.0, float(nv.get("score", 0.0))))
-
-        # Citation coverage.
-        cs = self._citation_score(state)
-        if cs is not None:
-            comps["citation"] = cs
-
-        # Critic — claim-support rate (None when the critic couldn't score).
-        gs = state.get("grading_score")
-        if gs is not None:
-            comps["critic"] = max(0.0, min(1.0, float(gs)))
-
-        return comps
-
-    def confidence_node(self, state: AgentState) -> dict:
-        """Blend the applicable sub-scores into a single confidence and pick a band.
-
-        Runs once, after numeric verification has settled, on the path that the
-        verifier already deemed answerable (ungrounded-figure refusals are
-        handled upstream by `_verify_router`). Writes the four sub-scores plus
-        the blend and the routing band into state for the gate, the audit trail,
-        and the UI.
-        """
-        try:
-            comps = self._confidence_components(state)
-            if comps:
-                wsum = sum(self._CONF_WEIGHTS[k] for k in comps)
-                conf = sum(self._CONF_WEIGHTS[k] * v for k, v in comps.items()) / wsum
-            else:
-                conf = 0.0
-            conf = round(conf, 3)
-        except Exception as e:
-            # If scoring itself fails, don't block a verified answer — fail OPEN
-            # (answer, no gate) rather than refusing a good answer on a math bug.
-            self._log(state, f"confidence scoring failed ({e}); answering without the gate")
-            return {"confidence": None, "confidence_band": "answer",
-                    "status": "answered"}
-
-        if not self.confidence_gating:
-            band = "answer"
-        elif conf >= self.confidence_answer:
-            band = "answer"
-        elif conf >= self.confidence_warn:
-            band = "warn"
-        else:
-            band = "refuse"
-
-        self._log(
-            state,
-            f"confidence={conf} band={band} "
-            f"[{', '.join(f'{k}={v:.2f}' for k, v in comps.items())}]",
-        )
-        return {
-            "retrieval_score": comps.get("retrieval"),
-            "verification_score": comps.get("verification"),
-            "citation_score": comps.get("citation"),
-            "critic_score": comps.get("critic"),
-            "confidence": conf,
-            "confidence_band": band,
-            "status": "answered" if band == "answer" else state.get("status"),
-        }
-
-    def withhold_low_confidence_node(self, state: AgentState) -> dict:
-        """Low-confidence band: show the draft IN FULL with the confidence
-        score appended — the same presentation as the warn band, with a
-        stronger caveat. (Previously this hid the draft behind a "low-
-        confidence answer available" notice, which buried answers that were
-        often correct; hallucinated-figure refusals are handled separately by
-        `refuse_node`, so the figures here are grounded — the uncertainty is
-        about completeness/corroboration, which the caveat conveys.)
-        """
-        ans = state.get("draft_answer", "") or state.get("final_answer", "") or ""
-        if "_Confidence:" in ans:                      # idempotent on a re-entry
-            return {"status": "answered_low_confidence"}
-
-        conf = state.get("confidence")
-        pct = f"{conf:.0%}" if isinstance(conf, (int, float)) else "low"
-        note = (
-            f"\n\n*_Confidence: {pct} — low. Parts of this answer are weakly "
-            f"corroborated by the available sources; verify against the "
-            f"primary filing before relying on it._*"
-        )
-        return {
-            "final_answer": ans + note,
-            "refused": False,
-            "needs_retry": False,
-            "status": "answered_low_confidence",
-        }
-
-    def answer_with_warning_node(self, state: AgentState) -> dict:
-        """Moderate-confidence band: keep the answer but append a one-line caveat."""
-        ans = state.get("final_answer", "") or state.get("draft_answer", "")
-        if "_Confidence:" in ans:                      # idempotent on a re-entry
-            return {"status": "answered_with_warning"}
-        conf = state.get("confidence")
-        pct = f"{conf:.0%}" if isinstance(conf, (int, float)) else "moderate"
-        note = (
-            f"\n\n*_Confidence: {pct} — moderate. Some figures or claims are only "
-            f"partially corroborated by the available sources; verify against the "
-            f"primary filing before relying on them._*"
-        )
-        return {"final_answer": ans + note, "status": "answered_with_warning"}
 
     @staticmethod
     def _has_numbers(text: str) -> bool:

@@ -112,7 +112,6 @@ def _evaluate_one(q: dict, skip_baseline: bool) -> dict:
                 meta.get("agents_run", 0)
                 / max(1, meta.get("agents_run", 0) + meta.get("agents_failed", 0)), 3),
             "contradictions": len(meta.get("contradictions") or []),
-            "confidence": meta.get("confidence"),
         }
     except Exception as e:
         row["research"] = {"completed": False, "error": f"{type(e).__name__}: {e}"}
@@ -127,7 +126,6 @@ def _evaluate_one(q: dict, skip_baseline: bool) -> dict:
                 "latency_s": round(time.time() - t0, 1),
                 "input_tokens": bmeta.get("input_tokens"),
                 "output_tokens": bmeta.get("output_tokens"),
-                "confidence": bmeta.get("confidence"),
             }
         except Exception as e:
             row["baseline"] = {"completed": False, "error": f"{type(e).__name__}: {e}"}

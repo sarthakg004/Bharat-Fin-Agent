@@ -19,7 +19,7 @@ The workflow this supports
 Metrics compared (each overall + per question type where available):
     RAGAS        faithfulness · answer_relevancy · context_precision · context_recall
     Correctness  numeric_accuracy (deterministic, judge-free — see answer_match.py)
-    Behaviour    answer_rate · refusal_rate · mean_confidence
+    Behaviour    answer_rate · refusal_rate
 """
 
 from __future__ import annotations
@@ -146,8 +146,6 @@ def build_comparison(
              _g(base, "behaviour", "answer_rate")),
         _row("refusal_rate", _g(cur, "behaviour", "refusal_rate"),
              _g(base, "behaviour", "refusal_rate")),
-        _row("mean_confidence", _g(cur, "behaviour", "mean_confidence"),
-             _g(base, "behaviour", "mean_confidence")),
     ]
 
     # Per-qtype RAGAS faithfulness (the headline diagnostic).

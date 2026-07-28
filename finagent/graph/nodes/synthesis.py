@@ -257,7 +257,7 @@ class SynthesisNodes:
         """Normalise all lane outputs into one `evidence` list (#3).
 
         Runs after the tool lanes and before synthesis, so the structured view
-        is available to the verifier, the confidence/citation scoring, the audit
+        is available to the verifier, the audit
         trail, and (later) cross-source validation — without disturbing the
         synthesizer's existing numbered-evidence assembly.
         """
@@ -614,17 +614,11 @@ single item is irrelevant."""
         answer = text_of(response)
         # Citation extraction: only `[N]` / `[N, M]` markers, no verbose tags.
         citations = sorted(set(re.findall(r"\[\d+(?:\s*,\s*\d+)*\]", answer)))
-        low_conf = (
-            state.get("avg_grade", 0.0) < self.grade_threshold
-            and state.get("iteration_count", 0) >= self.max_rewrites
-            and not web_res
-        )
         return {
             "draft_answer": answer,
             "final_answer": answer,
             "citations": citations,
             "iteration_count": state.get("iteration_count", 0) + 1,
-            "low_confidence": bool(low_conf),
         }
 
     def _critic_system(self) -> str:

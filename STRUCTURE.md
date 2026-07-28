@@ -83,7 +83,7 @@ MRO, so overrides win):
 | `nodes/numeric.py` | `NumericNodes` | XBRL facts, derived-metric calculator |
 | `nodes/external.py` | `ExternalNodes` | yfinance market data, Tavily web search, EDGAR FTS |
 | `nodes/synthesis.py` | `SynthesisNodes` | evidence builder, analyst synthesis, critic |
-| `nodes/verification.py` | `VerificationNodes` | figure grounding, refusal/abstention, confidence gate |
+| `nodes/verification.py` | `VerificationNodes` | figure grounding, hallucinated-figure refusal |
 
 `graph/agent.py` itself keeps only the constructor, lane resources, routing
 functions, and `_build_graph` — read it first, then the mixin a node lives in.
@@ -137,11 +137,8 @@ xbrl → calculator ─┬─ market_data ┐
 synthesize → critic ─┬─ resynthesize ↺ (over-claimed, re-draft on same evidence)
                      ├─ websearch (insufficient draft → gather web, re-draft)
                      └─ verify_numbers ─┬─ retrieve ↺ (re-ground a figure)
-                                        ├─ refuse  (figures mostly ungrounded)
-                                        └─ confidence ─┬─ answer            → END
-                                                       ├─ warn  → +caveat   → END
-                                                       └─ low   → abstain OR → END
-                                                                  +low-conf caveat
+                                        ├─ refuse  (figures mostly ungrounded) → END
+                                        └─ answer                              → END
 ```
 
 Key roles: **planner** decomposes into sub-queries (enumerating comparisons and
@@ -149,9 +146,14 @@ Key roles: **planner** decomposes into sub-queries (enumerating comparisons and
 narrative/numeric/market/external; **retrieve** is the hybrid stack (below);
 **grader** scores 1-5 and drops off-entity chunks; the **xbrl → calculator**
 chain is the deterministic numeric path; **verify_numbers**
-deterministically grounds every figure in the draft; the **confidence** gate
-blends retrieval/verification/citation/critic sub-scores into one score and bands
-it answer / warn / low.
+deterministically grounds every figure in the draft and is the ONLY gate that
+may suppress an answer.
+
+A blended confidence score used to sit after the verifier and band the answer
+answer / warn / low. It was removed: its citation sub-score could not see
+figures inside a markdown table, so a correct, fully-cited answer scored 25%
+("low") while an answer written entirely from analyst blogs scored 90%. A
+number that inverts the thing it claims to measure is worse than no number.
 
 ## The retrieval stack (`retrieval/` + the agent's retrieve node)
 
@@ -175,7 +177,6 @@ Retrieval/synthesis knobs worth knowing (all on `AgenticRAGv4`, set in
 | `retrieve_cap` | 8 | **global** cap after merging all sub-queries' hits (`None` disables) |
 | `analyst_voice` | True | analyst synth + critic prompts (incl. the "don't invent provenance" rule) |
 | `strict_numeric` / `refuse_below_grounding` | True / 0.6 | hard-refuse only when most figures fail to ground |
-| `confidence_answer` / `confidence_warn` | 0.80 / 0.60 | confidence bands |
 | `abstain_on_insufficient` | True | promote a low-band *soft-refusal* draft to an explicit "Insufficient evidence" abstention |
 
 The synthesizer (`SYNTH_ANALYST_SYSTEM` in `graph/agent.py`) enforces: cite by
@@ -238,7 +239,7 @@ output is the artifact; shards are auto-deleted after a clean merge).
   in the answer within 1% tolerance? Judge-free, scored over numeric questions.
   This is the **answer-is-RIGHT** signal RAGAS misses: a correct-but-verbose
   numeric answer scores high here even when faithfulness penalises its phrasing.
-- **Behaviour** — answer / refusal / error rates, mean confidence. An explicit
+- **Behaviour** — answer / refusal / error rates. An explicit
   insufficient-evidence abstention counts as a refusal (healthier than a
   confident wrong answer).
 
@@ -285,10 +286,9 @@ prompt problem — the agent had no usable evidence. Root causes and fixes:
    relevant evidence provided…") had no figures to verify and no claims for the
    critic to refute, so the critic passed vacuously and the blend landed at
    `confidence=1.0`, status `answered` — a content-free non-answer counted as a
-   confident answer (this is why v2's mean confidence jumped to 0.85). **Fix:**
-   `_confidence_components` returns `{}` (→ `conf=0`, → clean abstention) when
-   the draft matches `_SOFT_REFUSAL_RE`, and that regex was widened to catch the
-   "no … evidence/data provided" phrasings it was missing.
+   confident answer (this is why v2's mean confidence jumped to 0.85). **Fix at
+   the time:** zero the blend on a soft-refusal draft. *Superseded* — the
+   confidence framework was removed outright (see the pipeline section).
 
 4. **Mis-routing wasted the tools.** The planner tagged qualitative/judgement
    questions as `numeric` (inventing a metric like "retention rate" that no

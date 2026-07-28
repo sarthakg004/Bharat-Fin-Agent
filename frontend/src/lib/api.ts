@@ -33,19 +33,8 @@ export interface QueryMetadata {
   rewrite_iterations?: number;
   critic_iterations?: number;
   needs_retry?: boolean | null;
-  low_confidence?: boolean | null;
   refused?: boolean;
-  // Confidence framework (#8/9).
-  confidence?: number | null;
-  confidence_band?: "answer" | "warn" | "refuse" | null;
   answer_status?: string | null;
-  confidence_scores?: {
-    retrieval?: number | null;
-    verification?: number | null;
-    citation?: number | null;
-    critic?: number | null;
-  } | null;
-  /** Low-confidence draft the gate withheld; revealed on demand. Empty otherwise. */
   numeric_verification_score?: number | null;
   unverified_count?: number;
   web_hits?: number;
@@ -145,7 +134,7 @@ export type SSEEvent =
   | { type: "step_done"; stage: string; detail?: string | null }
   | { type: "research_plan"; company?: string; ticker?: string; objective?: string; tasks: ResearchPlanTask[] }
   | { type: "agent_start"; id: string }
-  | { type: "agent_done"; id: string; status: "done" | "failed"; detail?: string; summary?: string; confidence?: number | null }
+  | { type: "agent_done"; id: string; status: "done" | "failed"; detail?: string; summary?: string }
   | { type: "sources"; chunks: Chunk[]; metadata: QueryMetadata }
   | { type: "chart"; chart: ChartSpec }
   | { type: "chunk"; content: string }

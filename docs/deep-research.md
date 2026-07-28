@@ -21,7 +21,7 @@ one load-bearing conclusion:
 > question* — fused plan+route, hybrid retrieval (BM25 ∪ dense + rerank),
 > grader/rewrite loop, XBRL facts, deterministic calculator, table agent,
 > market data, web search, EDGAR full-text search, claim critic, deterministic
-> numeric verification, and a confidence gate.
+> and numeric verification.
 
 The README also documents that a free-form conversational multi-agent layer
 was previously evaluated and **rejected** (it multiplies LLM calls for no
@@ -37,7 +37,7 @@ runtime. Instead:
   and thesis writing.
 
 One execution engine, zero duplicated agent logic, and every specialist
-inherits retrieval, verification, citations and confidence for free.
+inherits retrieval, verification and citations for free.
 
 ---
 
@@ -52,7 +52,7 @@ flowchart TD
     P --> A3[Valuation]
     P --> AN[…up to RESEARCH_MAX_AGENTS]
     subgraph runner [each specialist = one AgenticRAGv4 run — the production graph]
-        A1 --> R[plan+route → retrieve → XBRL → calc →<br/>tables → market ∥ web ∥ EDGAR →<br/>synthesize → critic → verify → confidence]
+        A1 --> R[plan+route → retrieve → XBRL → calc →<br/>tables → market ∥ web ∥ EDGAR →<br/>synthesize → critic → verify]
         A2 --> R
         A3 --> R
         AN --> R
@@ -141,7 +141,7 @@ Events, in order:
 | `chat` | `chat_id` |
 | `research_plan` | `company`, `ticker`, `objective`, `tasks: [{id, label}]` (incl. the final `thesis` task) |
 | `agent_start` | `id` |
-| `agent_done` | `id`, `status: done\|failed`, `detail` ("9 evidence items · 84% confidence"), `summary` (first 400 chars), `confidence` |
+| `agent_done` | `id`, `status: done\|failed`, `detail` ("9 evidence items"), `summary` (first 400 chars) |
 | `sources` | merged, globally-numbered chunks + run metadata |
 | `chunk` | report text pieces (pseudo-stream) |
 | `metrics` | latency, model, token totals, `agentic` = full research metadata |
@@ -149,7 +149,7 @@ Events, in order:
 
 Errors reuse the shared provider-error classification (`rate_limit` vs
 `error`) from the chat path. Run metadata includes per-task statuses,
-aggregate confidence (mean of specialist confidences), contradictions
+contradictions
 flagged, token totals (specialists + report writer), and evidence counts.
 Uploaded documents are not part of research runs (research covers filings +
 live sources); attach files in Chat mode instead.
