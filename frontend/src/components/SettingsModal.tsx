@@ -1,5 +1,5 @@
 import { AnimatePresence, motion } from "framer-motion";
-import { Check, Eye, EyeOff, Key, X } from "lucide-react";
+import { Check, Eye, EyeOff, Key, ListTree, PenLine, X } from "lucide-react";
 import { useState } from "react";
 
 import {
@@ -75,6 +75,40 @@ export function SettingsModal({ open, onClose }: Props) {
                 </div>
               </section>
 
+              {/* What the two models actually do. Without this the pair reads
+                  as a redundant setting; it is not — they are different jobs. */}
+              <section className="border border-border-subtle bg-bg-elevated px-3 py-2.5">
+                <SectionLabel>Two models, two jobs</SectionLabel>
+                <dl className="mt-2 space-y-1.5 font-ui text-[12px] leading-relaxed text-text-secondary">
+                  <div className="flex gap-2">
+                    <dt className="inline-flex shrink-0 items-center gap-1 font-mono text-[10px] uppercase tracking-wider text-accent">
+                      <ListTree size={11} /> Planner
+                    </dt>
+                    <dd>
+                      Turns your question into the search queries that hit the
+                      filings, and decides which lane answers it — filings, SEC
+                      XBRL, live market data or the web. Rewards precision over
+                      prose.
+                    </dd>
+                  </div>
+                  <div className="flex gap-2">
+                    <dt className="inline-flex shrink-0 items-center gap-1 font-mono text-[10px] uppercase tracking-wider text-accent">
+                      <PenLine size={11} /> Answer
+                    </dt>
+                    <dd>
+                      Reads the retrieved evidence and writes the cited answer,
+                      then fact-checks its own draft. Rewards long-form reasoning
+                      and careful writing.
+                    </dd>
+                  </div>
+                </dl>
+                <p className="mt-2 border-t border-border-subtle pt-2 font-mono text-[10.5px] leading-relaxed text-text-muted">
+                  Both default to <code>gpt-oss-120b</code>. Leave them alone and
+                  nothing changes — the split exists so a cheaper or stricter
+                  model can take one job without touching the other.
+                </p>
+              </section>
+
               {/* Per-provider rows */}
               <section className="space-y-4">
                 {PROVIDERS.map((p) => (
@@ -97,9 +131,9 @@ export function SettingsModal({ open, onClose }: Props) {
                 <strong className="text-text-secondary">Groq:</strong> if you leave the key empty the Space
                 uses its built-in <code>GROQ_API_KEY</code> from HF Secrets, so the default Groq models
                 always work without configuration.&nbsp;
-                <strong className="text-text-secondary">Others:</strong> paste a key to switch the
-                synthesiser. Keys are stored in <code>localStorage</code> on your device and posted only
-                when you send a query.
+                <strong className="text-text-secondary">Others:</strong> paste a key to switch provider —
+                both models move together, since one request carries one provider. Keys are stored in
+                <code>localStorage</code> on your device and posted only when you send a query.
               </p>
             </div>
           </motion.div>

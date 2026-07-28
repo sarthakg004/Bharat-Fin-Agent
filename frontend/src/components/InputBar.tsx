@@ -306,7 +306,7 @@ function ModelSelect() {
       <Picker
         icon={<ListTree size={11} />}
         label="Plan"
-        title="Model that decomposes your question into retrieval queries"
+        title="PLANNER — turns your question into the search queries that hit the filings, and picks the lane (filings / SEC XBRL / market data / web). Precision over prose."
         value={planner}
         onChange={(m) => setPlannerModel(provider, m)}
       >
@@ -319,7 +319,7 @@ function ModelSelect() {
       <Picker
         icon={<PenLine size={11} />}
         label="Answer"
-        title="Model that writes the answer (also selects the provider for both)"
+        title="ANSWER — reads the retrieved evidence, writes the cited answer and fact-checks its own draft. Also selects the provider for both models."
         value={`${provider}::${model}`}
         onChange={pickAnswer}
       >
