@@ -20,14 +20,45 @@ def test_model_for_resolves_roles_and_overrides():
     assert ctx.model_for("synth") == DEFAULTS["groq"]["synth"]
     # Derived roles follow the role they were defined against.
     assert ctx.model_for("router") == ctx.model_for("synth")
-    assert ctx.model_for("grader") == ctx.model_for("planner")
+    assert ctx.model_for("market_planner") == ctx.model_for("grader")
     assert ctx.model_for("verifier") == ctx.model_for("critic")
+    # The grader is deliberately a DIFFERENT model from the 120B roles, so a
+    # long run cannot exhaust every role's quota in lockstep.
+    assert ctx.model_for("grader") != ctx.model_for("synth")
 
     # The UI's "model" overrides the synth family only — not the planner.
     over = RuntimeContext(provider="groq", synth_model="my-model")
     assert over.model_for("synth") == "my-model"
     assert over.model_for("router") == "my-model"
     assert over.model_for("planner") == DEFAULTS["groq"]["planner"]
+
+
+def test_every_role_a_node_asks_for_is_configurable():
+    """`DEFAULTS[provider][role]` must be the model that role ACTUALLY runs.
+
+    This is the invariant the old test only appeared to check. It asserted that
+    a UI model pick leaves `model_for("planner")` alone — true, and irrelevant,
+    because the deployed fused plan+route node asked for the `router` role. So
+    `planner` was configured to qwen while the planner ran on gpt-oss-120b, and
+    picking a model in the UI silently re-pointed decomposition. Assert against
+    the role the NODE asks for, not the role that shares its name.
+    """
+    import re
+    from pathlib import Path
+
+    src = Path("finagent/graph/full.py").read_text()
+    planner_body = src[src.index("def planner_node"):src.index("def router_node")]
+    assert '_get_llm("planner")' in planner_body, \
+        "the fused planner must ask for the role named after it"
+
+    # Every role requested anywhere in the graph resolves for every provider.
+    roles = set()
+    for path in Path("finagent/graph").rglob("*.py"):
+        roles |= set(re.findall(r'_get_llm\(\s*"(\w+)"', path.read_text()))
+    roles |= {"router", "market_planner"}          # via the _get_*_llm helpers
+    for provider in DEFAULTS:
+        for role in roles:
+            assert RuntimeContext(provider=provider).model_for(role), (provider, role)
 
 
 def test_context_is_frozen():

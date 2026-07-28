@@ -306,9 +306,12 @@ class AgenticRAGv3(AgenticRAGv2):
     def planner_node(self, state: AgentState) -> dict:
         """Fused planner+router: ONE structured call decomposes the question
         AND routes each sub-query, replacing the two sequential LLM calls the
-        v1/v2 path makes. Runs on the router/tool tier (strong model) because
-        both decomposition and routing sit on the quality path. On failure it
-        falls back to the base planner (router_node then classifies)."""
+        v1/v2 path makes. Runs on the `planner` role — which is a STRONG model,
+        because decomposition sits on the quality path. It used to ask for the
+        `router` role instead, which meant `DEFAULTS[...]["planner"]` configured
+        nothing and the UI's model picker re-pointed the planner as a side
+        effect of overriding synth. On failure it falls back to the base planner
+        (router_node then classifies)."""
         from langchain_core.messages import HumanMessage, SystemMessage
 
         question = state["question"]
@@ -342,7 +345,7 @@ class AgenticRAGv3(AgenticRAGv2):
                 "quarterly filing (10-Q) means the comparison is that quarter "
                 "vs the same quarter a year earlier.\n\n")
 
-        llm = self._get_router_llm().with_structured_output(QueryPlan)
+        llm = self._get_llm("planner").with_structured_output(QueryPlan)
         try:
             out: QueryPlan = llm.invoke([
                 SystemMessage(content=PLAN_ROUTE_SYSTEM),

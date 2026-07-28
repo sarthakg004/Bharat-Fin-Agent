@@ -25,44 +25,59 @@ from typing import Optional
 # Per-provider model defaults. These used to be `AgenticRAG.DEFAULTS`; they moved
 # here because the agent must no longer know what a provider is.
 #
+# EVERY role a node asks for must appear here or in `_DERIVED`, and the value
+# must be the model that role ACTUALLY runs on. That was not true before:
+# `planner` said qwen while the deployed fused plan+route node called
+# `_get_llm("router")`, `router` derived from `synth`, and so the planner ran on
+# gpt-oss-120b. Setting `planner` changed nothing, the comment here described a
+# configuration that was not in effect, and the UI's model picker silently
+# re-pointed the planner (it overrides the synth family, and the planner was
+# inside it). Roles that differ are now spelled out rather than derived.
+#
 # Groq tier picks:
-#   planner / grader / router (structured output)  → qwen/qwen3.6-27b
-#   synth + critic  (long-form writing, reasoning) → openai/gpt-oss-120b
+#   planner / synth / critic (decomposition + long-form reasoning) → gpt-oss-120b
+#   grader   (bulk structured scoring)                             → qwen3.6-27b
 # The planner's decomposition drives retrieval and the grader DROPS chunks, so
 # both sit on the quality path — small (≤8B) models there measurably
-# mis-decomposed multi-hop questions and mis-graded relevant chunks. Qwen
-# (replacing the deprecated llama-3.3-70b) keeps these calls on a different
-# quota bucket from the 120B synth/critic, so the roles don't hit rate limits
-# in lockstep.
+# mis-decomposed multi-hop questions and mis-graded relevant chunks. Keeping the
+# grader on a different model from the 120B roles also splits the quota bucket,
+# so a long run doesn't exhaust every role's rate limit in lockstep.
 DEFAULTS: dict[str, dict[str, str]] = {
     "groq": {
-        "planner": "qwen/qwen3.6-27b",
+        "planner": "openai/gpt-oss-120b",
+        "grader":  "qwen/qwen3.6-27b",
         "synth":   "openai/gpt-oss-120b",
         "critic":  "openai/gpt-oss-120b",
     },
     "gemini": {
         "planner": "gemini-2.5-flash",
+        "grader":  "gemini-2.5-flash",
         "synth":   "gemini-2.5-flash",
         "critic":  "gemini-2.5-flash",
     },
     "openai": {
-        "planner": "gpt-4o-mini",
+        "planner": "gpt-4o",
+        "grader":  "gpt-4o-mini",
         "synth":   "gpt-4o",
         "critic":  "gpt-4o",
     },
     "anthropic": {
-        "planner": "claude-haiku-4-5",
+        "planner": "claude-sonnet-4-6",
+        "grader":  "claude-haiku-4-5",
         "synth":   "claude-sonnet-4-6",
         "critic":  "claude-sonnet-4-6",
     },
 }
 
-# Roles that don't get their own default, mapped to the one they follow. This
-# reproduces exactly what the mixins did with `grader_model or self.planner_model`,
-# `router_model or self.synth_model`, and so on.
+# Roles that follow another role rather than carrying their own default. Keep
+# this list SHORT: a derived role is one the operator cannot point at a
+# different model, which is exactly the trap `planner` fell into.
 _DERIVED = {
-    "grader":         "planner",
-    "market_planner": "planner",
+    # Cheap structured extraction that rides with bulk scoring.
+    "market_planner": "grader",
+    # The re-route classifier and the small tool extractors (corpus gate, XBRL
+    # concept, EDGAR query, formula spec) follow the synth tier deliberately —
+    # they are one-shot structured calls on the quality path.
     "router":         "synth",
     "verifier":       "critic",
 }
