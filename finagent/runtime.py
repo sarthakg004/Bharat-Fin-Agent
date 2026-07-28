@@ -88,9 +88,14 @@ class RuntimeContext:
     """One request's LLM configuration. Frozen so a node cannot write to it."""
 
     provider: str = "groq"
-    # The Settings UI's "model" — overrides the synthesizer family only, which
-    # is what it has always meant in the API contract.
+    # The Settings UI's two model pickers. `synth_model` overrides the
+    # synthesizer family (synth + critic + router + the tool extractors);
+    # `planner_model` overrides decomposition ONLY. They are separate because
+    # the two jobs pull in different directions: the planner writes structured
+    # retrieval keys, the synthesizer writes long-form prose, and the best model
+    # for one is not always the best for the other. None → provider default.
     synth_model: Optional[str] = None
+    planner_model: Optional[str] = None
     # None → `build_llm` reads the provider's env keys and rotates through the
     # pool on rate limits.
     api_key: Optional[str] = None
@@ -106,6 +111,8 @@ class RuntimeContext:
         base = _DERIVED.get(role, role)
         if base == "synth" and self.synth_model:
             return self.synth_model
+        if base == "planner" and self.planner_model:
+            return self.planner_model
         try:
             return DEFAULTS[self.provider][base]
         except KeyError:

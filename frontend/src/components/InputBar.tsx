@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { motion } from "framer-motion";
-import { ArrowUp, X, Loader2, ChevronDown, Cpu, FileText, FlaskConical, MessageSquare, Paperclip } from "lucide-react";
+import { ArrowUp, X, Loader2, ChevronDown, FileText, FlaskConical, ListTree, MessageSquare, Paperclip, PenLine } from "lucide-react";
 import toast from "react-hot-toast";
 
 import { uploadFile } from "@/lib/api";
@@ -18,8 +18,11 @@ interface Props {
   disabled?: boolean;
 }
 
-const MAX_ROWS = 5;
-const LINE_HEIGHT = 22;
+// The question bar is the primary control on the page, so it gets real estate:
+// ~3 lines visible before it scrolls, on a 24px rhythm.
+const MAX_ROWS = 8;
+const LINE_HEIGHT = 24;
+const MIN_HEIGHT = LINE_HEIGHT * 3;
 
 export function InputBar({ onSend, onClear, streaming, disabled }: Props) {
   const [value, setValue] = useState("");
@@ -38,7 +41,7 @@ export function InputBar({ onSend, onClear, streaming, disabled }: Props) {
     const el = ref.current;
     if (!el) return;
     el.style.height = "0px";
-    const next = Math.min(el.scrollHeight, LINE_HEIGHT * MAX_ROWS);
+    const next = Math.min(Math.max(el.scrollHeight, MIN_HEIGHT), LINE_HEIGHT * MAX_ROWS);
     el.style.height = next + "px";
   }
 
@@ -57,18 +60,19 @@ export function InputBar({ onSend, onClear, streaming, disabled }: Props) {
   return (
     <div
       className={cls(
-        "flex flex-col border border-border-default bg-bg-surface",
+        "flex flex-col border border-border-default bg-bg-surface shadow-[0_-1px_24px_rgba(0,0,0,0.35)]",
+        "transition-colors focus-within:border-border-strong",
         disabled && "opacity-60",
       )}
     >
       <UploadChips />
 
       {/* Question row */}
-      <div className="flex items-end gap-2 px-3 py-2">
+      <div className="flex items-end gap-3 px-4 pb-3 pt-3.5">
         <textarea
           ref={ref}
           value={value}
-          rows={1}
+          rows={3}
           onChange={(e) => {
             setValue(e.target.value);
             autoSize();
@@ -79,7 +83,8 @@ export function InputBar({ onSend, onClear, streaming, disabled }: Props) {
               ? `Name a company to research — e.g. "Should I invest in Nvidia?"   ${modKey()}↵ to send`
               : `Ask a financial question...   ${modKey()}↵ to send`
           }
-          className="flex-1 resize-none bg-transparent font-ui text-[14px] leading-[22px] text-text-primary placeholder:text-text-muted focus:outline-none"
+          style={{ height: MIN_HEIGHT }}
+          className="flex-1 resize-none bg-transparent font-ui text-[15px] leading-[24px] text-text-primary placeholder:text-text-muted focus:outline-none"
           disabled={disabled}
         />
         <div className="flex shrink-0 items-end gap-1">
@@ -87,7 +92,7 @@ export function InputBar({ onSend, onClear, streaming, disabled }: Props) {
           <button
             type="button"
             onClick={onClear}
-            className="flex h-[34px] w-[34px] items-center justify-center border border-border-subtle text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary"
+            className="flex h-[38px] w-[38px] items-center justify-center border border-border-subtle text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary"
             title="New conversation"
             aria-label="New conversation"
           >
@@ -98,7 +103,7 @@ export function InputBar({ onSend, onClear, streaming, disabled }: Props) {
             onClick={send}
             whileTap={{ scale: 0.95 }}
             className={cls(
-              "flex h-[34px] w-[34px] items-center justify-center border transition-colors",
+              "flex h-[38px] w-[38px] items-center justify-center border transition-colors",
               value.trim() && !streaming
                 ? "border-accent bg-accent text-bg-base hover:bg-accent-hover"
                 : "border-border-subtle bg-bg-elevated text-text-muted",
@@ -109,17 +114,16 @@ export function InputBar({ onSend, onClear, streaming, disabled }: Props) {
             {streaming ? (
               <Loader2 size={14} className="animate-spin" />
             ) : (
-              <ArrowUp size={14} />
+              <ArrowUp size={15} />
             )}
           </motion.button>
         </div>
       </div>
 
-      {/* Mode + model row — pick the pipeline and the model right here. */}
-      <div className="flex flex-wrap items-center gap-2 border-t border-border-subtle px-3 py-1.5">
+      {/* Mode + models — pick the pipeline and BOTH models right here. */}
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 border-t border-border-subtle bg-bg-base/40 px-4 py-2">
         <ModeToggle disabled={disabled || streaming} />
         <span className="h-4 w-px bg-border-subtle" />
-        <Cpu size={12} className="shrink-0 text-text-muted" />
         <ModelSelect />
       </div>
     </div>
@@ -212,7 +216,7 @@ function UploadButton({ disabled }: { disabled?: boolean }) {
         type="button"
         onClick={() => fileRef.current?.click()}
         disabled={disabled || busy}
-        className="flex h-[34px] w-[34px] items-center justify-center border border-border-subtle text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary disabled:opacity-50"
+        className="flex h-[38px] w-[38px] items-center justify-center border border-border-subtle text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary disabled:opacity-50"
         title="Attach PDF or DOCX files (analysed for this chat only)"
         aria-label="Attach documents"
       >
@@ -257,19 +261,30 @@ function UploadChips() {
   );
 }
 
-/** One combined model picker. Choosing a model also selects its provider; the
- *  provider is shown only as the optgroup label, never as a separate control. */
+/** The two model pickers.
+ *
+ *  PLAN and ANSWER are separate models because they are separate jobs: the
+ *  planner emits structured retrieval keys, the synthesizer writes prose, and
+ *  the best model for one is not always the best for the other. Both default to
+ *  the provider's first listed model, so leaving them alone reproduces the
+ *  previous single-model behaviour exactly.
+ *
+ *  The PROVIDER is shared and is chosen by the ANSWER picker's optgroup — one
+ *  request carries one provider and one API key, so offering a second provider
+ *  here would be a lie. Switching provider re-points both. */
 function ModelSelect() {
   const provider = useSettingsStore((s) => s.provider);
   const model = useSettingsStore((s) => s.modelByProvider[s.provider]);
+  const planner = useSettingsStore((s) => s.plannerByProvider[s.provider]);
   const keys = useSettingsStore((s) => s.keys);
   const setProvider = useSettingsStore((s) => s.setProvider);
   const setModel = useSettingsStore((s) => s.setModel);
+  const setPlannerModel = useSettingsStore((s) => s.setPlannerModel);
   const setKey = useSettingsStore((s) => s.setKey);
 
   const [draft, setDraft] = useState("");
 
-  function pick(value: string) {
+  function pickAnswer(value: string) {
     const [p, m] = value.split("::") as [Provider, string];
     setProvider(p);
     setModel(p, m);
@@ -286,27 +301,36 @@ function ModelSelect() {
   const hasUserKey = provider !== "groq" && !!keys[provider];
 
   return (
-    <div className="flex flex-wrap items-center gap-1.5">
-      <div className="relative">
-        <select
-          value={`${provider}::${model}`}
-          onChange={(e) => pick(e.target.value)}
-          className="cursor-pointer appearance-none border border-border-subtle bg-bg-elevated py-1 pl-2 pr-6 font-mono text-[11px] text-text-secondary transition-colors hover:text-text-primary focus:outline-none"
-          aria-label="Model"
-        >
-          {(Object.keys(PROVIDER_MODELS) as Provider[]).map((p) => (
-            <optgroup key={p} label={PROVIDER_LABELS[p]}>
-              {PROVIDER_MODELS[p].map((m) => (
-                <option key={`${p}::${m}`} value={`${p}::${m}`}>{m}</option>
-              ))}
-            </optgroup>
-          ))}
-        </select>
-        <ChevronDown
-          size={12}
-          className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 text-text-muted"
-        />
-      </div>
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+      {/* Planner — constrained to the provider the answer model selected. */}
+      <Picker
+        icon={<ListTree size={11} />}
+        label="Plan"
+        title="Model that decomposes your question into retrieval queries"
+        value={planner}
+        onChange={(m) => setPlannerModel(provider, m)}
+      >
+        {PROVIDER_MODELS[provider].map((m) => (
+          <option key={m} value={m}>{m}</option>
+        ))}
+      </Picker>
+
+      {/* Answer — also owns the provider choice. */}
+      <Picker
+        icon={<PenLine size={11} />}
+        label="Answer"
+        title="Model that writes the answer (also selects the provider for both)"
+        value={`${provider}::${model}`}
+        onChange={pickAnswer}
+      >
+        {(Object.keys(PROVIDER_MODELS) as Provider[]).map((p) => (
+          <optgroup key={p} label={PROVIDER_LABELS[p]}>
+            {PROVIDER_MODELS[p].map((m) => (
+              <option key={`${p}::${m}`} value={`${p}::${m}`}>{m}</option>
+            ))}
+          </optgroup>
+        ))}
+      </Picker>
 
       {/* Non-Groq models need the user's own key — collect it right here. */}
       {needsKey && (
@@ -316,13 +340,13 @@ function ModelSelect() {
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             placeholder={`${PROVIDER_LABELS[provider]} API key`}
-            className="w-[180px] border border-warning/60 bg-bg-elevated px-2 py-1 font-mono text-[11px] text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none"
+            className="w-[180px] border border-warning/60 bg-bg-elevated px-2 py-1.5 font-mono text-[11px] text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none"
             aria-label={`${PROVIDER_LABELS[provider]} API key`}
           />
           <button
             type="submit"
             disabled={!draft.trim()}
-            className="border border-accent bg-accent px-2 py-1 font-mono text-[10px] uppercase tracking-wider text-bg-base transition-colors hover:bg-accent-hover disabled:opacity-40"
+            className="border border-accent bg-accent px-2 py-1.5 font-mono text-[10px] uppercase tracking-wider text-bg-base transition-colors hover:bg-accent-hover disabled:opacity-40"
           >
             Use
           </button>
@@ -338,6 +362,42 @@ function ModelSelect() {
           <span className="inline-block h-1.5 w-1.5 rounded-full bg-accent" /> key set
         </button>
       )}
+    </div>
+  );
+}
+
+/** A labelled <select>: the label sits INSIDE the control so the two pickers
+ *  read as "Plan: <model>" / "Answer: <model>" rather than two bare dropdowns
+ *  whose meaning you have to remember. */
+function Picker({ icon, label, title, value, onChange, children }: {
+  icon: React.ReactNode;
+  label: string;
+  title: string;
+  value: string;
+  onChange: (v: string) => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div
+      className="group relative flex items-center border border-border-subtle bg-bg-elevated transition-colors focus-within:border-accent hover:border-border-default"
+      title={title}
+    >
+      <span className="pointer-events-none flex items-center gap-1 border-r border-border-subtle py-1.5 pl-2 pr-2 font-mono text-[10px] uppercase tracking-wider text-text-muted">
+        {icon}
+        {label}
+      </span>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="cursor-pointer appearance-none bg-transparent py-1.5 pl-2 pr-6 font-mono text-[11px] text-text-secondary transition-colors group-hover:text-text-primary focus:outline-none"
+        aria-label={title}
+      >
+        {children}
+      </select>
+      <ChevronDown
+        size={12}
+        className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 text-text-muted"
+      />
     </div>
   );
 }

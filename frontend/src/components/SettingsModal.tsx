@@ -19,8 +19,8 @@ interface Props {
 
 export function SettingsModal({ open, onClose }: Props) {
   const {
-    provider, modelByProvider, keys,
-    setProvider, setModel, setKey,
+    provider, modelByProvider, plannerByProvider, keys,
+    setProvider, setModel, setPlannerModel, setKey,
   } = useSettingsStore();
 
   return (
@@ -84,6 +84,8 @@ export function SettingsModal({ open, onClose }: Props) {
                     active={p === provider}
                     model={modelByProvider[p]}
                     setModel={(m) => setModel(p, m)}
+                    planner={plannerByProvider[p]}
+                    setPlanner={(m) => setPlannerModel(p, m)}
                     apiKey={keys[p]}
                     setApiKey={(k) => setKey(p, k)}
                   />
@@ -112,11 +114,14 @@ interface RowProps {
   active: boolean;
   model: string;
   setModel: (m: string) => void;
+  planner: string;
+  setPlanner: (m: string) => void;
   apiKey: string;
   setApiKey: (k: string) => void;
 }
 
-function ProviderRow({ provider, active, model, setModel, apiKey, setApiKey }: RowProps) {
+function ProviderRow({ provider, active, model, setModel, planner, setPlanner,
+                      apiKey, setApiKey }: RowProps) {
   const [reveal, setReveal] = useState(false);
   const hasKey = !!apiKey;
 
@@ -141,9 +146,29 @@ function ProviderRow({ provider, active, model, setModel, apiKey, setApiKey }: R
       </div>
 
       <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-2">
+        {/* Two models, two jobs: the planner emits structured retrieval keys,
+            the synthesizer writes prose. Both default to the same model, so a
+            user who never touches this sees no change. */}
         <label className="block">
           <span className="block font-mono text-[10px] uppercase tracking-wider text-text-muted">
-            Model
+            Planner model
+            <span className="ml-1 normal-case text-text-muted">(decomposes the question)</span>
+          </span>
+          <select
+            value={planner}
+            onChange={(e) => setPlanner(e.target.value)}
+            className="mt-1 w-full border border-border-default bg-bg-elevated px-2 py-1.5 font-mono text-[12px] text-text-primary focus:outline-none focus:border-accent"
+          >
+            {PROVIDER_MODELS[provider].map((m) => (
+              <option key={m} value={m}>{m}</option>
+            ))}
+          </select>
+        </label>
+
+        <label className="block">
+          <span className="block font-mono text-[10px] uppercase tracking-wider text-text-muted">
+            Answer model
+            <span className="ml-1 normal-case text-text-muted">(writes the answer)</span>
           </span>
           <select
             value={model}

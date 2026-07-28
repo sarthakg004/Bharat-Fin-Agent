@@ -78,7 +78,10 @@ export interface ChartSpec {
 
 export interface ProviderConfig {
   provider: "groq" | "gemini" | "openai" | "anthropic";
+  /** Writes the answer (synthesizer + critic). */
   synth_model?: string;
+  /** Decomposes the question. Independent of `synth_model`. */
+  planner_model?: string;
   api_key?: string;
 }
 

@@ -23,6 +23,13 @@ class ProviderConfig(BaseModel):
         default=None,
         description="Model name for the synthesizer / critic. None → provider default.",
     )
+    planner_model: Optional[str] = Field(
+        default=None,
+        description="Model name for the planner (question decomposition). "
+                    "Separate from the synthesizer because the two jobs differ: "
+                    "the planner emits structured retrieval keys, the "
+                    "synthesizer writes prose. None → provider default.",
+    )
     api_key: Optional[str] = Field(
         default=None,
         description="Caller-supplied API key. None → fall back to server env var.",

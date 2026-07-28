@@ -311,6 +311,7 @@ def run_agentic(question: str,
                 chat_history: Optional[list[dict]] = None,
                 provider: str = "groq",
                 synth_model: Optional[str] = None,
+                planner_model: Optional[str] = None,
                 api_key: Optional[str] = None,
                 collection: Optional[str] = None,
                 session_id: Optional[str] = None,
@@ -320,7 +321,7 @@ def run_agentic(question: str,
     """Synchronous v4 agentic run with optional conversation memory + per-request
     LLM overrides.
 
-    `provider` / `synth_model` / `api_key` come from the request's
+    `provider` / `synth_model` / `planner_model` / `api_key` come from the request's
     `provider_config` (set by the Settings UI). They override the server's
     default Groq config for THIS turn only. Keys are never persisted.
 
@@ -340,6 +341,7 @@ def run_agentic(question: str,
     rag = get_agentic(collection)
     # Everything request-specific goes here, not onto the shared agent.
     ctx = RuntimeContext(provider=provider, synth_model=synth_model,
+                         planner_model=planner_model,
                          api_key=api_key, session_id=session_id)
 
     # `chat_history` lives directly on AgentState (TypedDict, total=False) so

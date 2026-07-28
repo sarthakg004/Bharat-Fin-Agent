@@ -409,13 +409,15 @@ async def _run_rag(request: QueryRequest, hist: list[dict],
     pc = request.provider_config
     provider = (pc.provider if pc else "groq")
     synth_model = (pc.synth_model if pc else None)
+    planner_model = (pc.planner_model if pc else None)
     api_key = (pc.api_key if pc else None)
     # `run_in_executor` doesn't take kwargs — use a small lambda wrapper instead.
     return await loop.run_in_executor(
         _executor,
         lambda: rag_service.run_agentic(
             request.question, chat_history=hist,
-            provider=provider, synth_model=synth_model, api_key=api_key,
+            provider=provider, synth_model=synth_model,
+            planner_model=planner_model, api_key=api_key,
             session_id=request.session_id or None,
             extra_chunks=extra_chunks,
             on_step=on_step, on_step_done=on_step_done,
@@ -615,6 +617,7 @@ async def _stream_research(request: ResearchRequest) -> AsyncGenerator[str, None
     pc = request.provider_config
     provider = (pc.provider if pc else "groq")
     synth_model = (pc.synth_model if pc else None)
+    planner_model = (pc.planner_model if pc else None)
     api_key = (pc.api_key if pc else None)
 
     from finagent.research import DeepResearch
@@ -624,7 +627,8 @@ async def _stream_research(request: ResearchRequest) -> AsyncGenerator[str, None
             # Every specialist task runs through the production agent; the
             # orchestrator itself never talks to retrieval or tools directly.
             run_fn=lambda q: rag_service.run_agentic(
-                q, provider=provider, synth_model=synth_model, api_key=api_key,
+                q, provider=provider, synth_model=synth_model,
+                planner_model=planner_model, api_key=api_key,
                 session_id=request.session_id or None),
             provider=provider, model=synth_model, api_key=api_key,
             max_agents=request.max_agents,

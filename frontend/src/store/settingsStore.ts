@@ -1,5 +1,6 @@
 /**
- * Settings store — provider choice, model, and per-provider API keys.
+ * Settings store — provider choice, the two model picks (planner and answer),
+ * and per-provider API keys.
  *
  * Keys live in `localStorage` (browser only) and are forwarded to the
  * backend in each query's `provider_config` field. The backend never
@@ -59,8 +60,18 @@ interface SettingsState {
   mode: QueryMode;
   /** Which provider every query is routed through (server default is "groq"). */
   provider: Provider;
-  /** Which synth model to use under that provider. */
+  /** Which model WRITES THE ANSWER under that provider (synth + critic). */
   modelByProvider: Record<Provider, string>;
+  /**
+   * Which model DECOMPOSES the question under that provider.
+   *
+   * Separate from the answer model on purpose: the planner emits structured
+   * retrieval keys and the synthesizer writes prose, and the best model for one
+   * is not always the best for the other. Both default to the provider's first
+   * listed model (gpt-oss-120b on Groq), so out-of-the-box behaviour is
+   * unchanged — this exists so the two can be moved independently.
+   */
+  plannerByProvider: Record<Provider, string>;
   /**
    * User-supplied API keys, kept ONLY in localStorage.
    * Groq is empty by default because the Space ships with a server-side key —
@@ -71,6 +82,7 @@ interface SettingsState {
   setMode: (m: QueryMode) => void;
   setProvider: (p: Provider) => void;
   setModel: (p: Provider, model: string) => void;
+  setPlannerModel: (p: Provider, model: string) => void;
   setKey: (p: Provider, key: string) => void;
   clearKey: (p: Provider) => void;
 }
@@ -88,12 +100,15 @@ export const useSettingsStore = create<SettingsState>()(
       mode: "chat",
       provider: "groq",
       modelByProvider: { ...DEFAULT_MODELS },
+      plannerByProvider: { ...DEFAULT_MODELS },
       keys: { groq: "", gemini: "", openai: "", anthropic: "" },
 
       setMode: (mode) => set({ mode }),
       setProvider: (provider) => set({ provider }),
       setModel: (p, model) =>
         set((s) => ({ modelByProvider: { ...s.modelByProvider, [p]: model } })),
+      setPlannerModel: (p, model) =>
+        set((s) => ({ plannerByProvider: { ...s.plannerByProvider, [p]: model } })),
       setKey: (p, key) =>
         set((s) => ({ keys: { ...s.keys, [p]: key } })),
       clearKey: (p) =>
@@ -106,11 +121,21 @@ export const useSettingsStore = create<SettingsState>()(
       // choice that's no longer offered back to the provider default.
       merge: (persisted, current) => {
         const s = { ...current, ...(persisted as Partial<SettingsState>) };
-        const clamped = { ...s.modelByProvider };
-        for (const p of Object.keys(PROVIDER_MODELS) as Provider[]) {
-          if (!PROVIDER_MODELS[p].includes(clamped[p])) clamped[p] = DEFAULT_MODELS[p];
-        }
-        return { ...s, modelByProvider: clamped };
+        // `plannerByProvider` did not exist in earlier builds, so a persisted
+        // blob can be missing it entirely — fall back to the defaults, then
+        // clamp both maps the same way.
+        const clamp = (m: Record<Provider, string> | undefined) => {
+          const out = { ...DEFAULT_MODELS, ...(m ?? {}) };
+          for (const p of Object.keys(PROVIDER_MODELS) as Provider[]) {
+            if (!PROVIDER_MODELS[p].includes(out[p])) out[p] = DEFAULT_MODELS[p];
+          }
+          return out;
+        };
+        return {
+          ...s,
+          modelByProvider: clamp(s.modelByProvider),
+          plannerByProvider: clamp(s.plannerByProvider),
+        };
       },
     },
   ),
@@ -120,11 +145,13 @@ export const useSettingsStore = create<SettingsState>()(
 export function currentProviderConfig(): {
   provider: Provider;
   synth_model: string;
+  planner_model: string;
   api_key?: string;
 } {
   const s = useSettingsStore.getState();
   const provider = s.provider;
   const synth_model = s.modelByProvider[provider];
+  const planner_model = s.plannerByProvider[provider];
   const api_key = s.keys[provider] || undefined;   // omit if empty
-  return { provider, synth_model, ...(api_key ? { api_key } : {}) };
+  return { provider, synth_model, planner_model, ...(api_key ? { api_key } : {}) };
 }
