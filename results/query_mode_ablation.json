@@ -1,0 +1,136 @@
+{
+ "collection": "qx_p2500_c600_bge-large-en-v1.5_hdr",
+ "reranker": "BAAI/bge-reranker-v2-m3",
+ "n": 99,
+ "rows": {
+  "subquery": {
+   "config": "p2500_c600_bge-large-en-v1.5_hdr",
+   "parent": 2500,
+   "child": 600,
+   "embed": "BAAI/bge-large-en-v1.5",
+   "dim": 1024,
+   "reranker": "BAAI/bge-reranker-v2-m3",
+   "mode": "subquery",
+   "headers": true,
+   "scored": "as served",
+   "rank_by": "sub-query score",
+   "n": 99,
+   "subqueries": 3.09,
+   "pool_recall": 0.9091,
+   "cov@5": 0.6025,
+   "cov@8": 0.6634,
+   "hit@5": 0.6061,
+   "hit@8": 0.6768,
+   "retention": 0.7444,
+   "points": 44542,
+   "vectors_mb": 182.4,
+   "ctx_chars@8": 11451,
+   "pool_ms": 25,
+   "rerank_ms": 8194,
+   "by_type": {
+    "comparison": {
+     "n": 12,
+     "cov@8": 0.603,
+     "hit@8": 0.5833
+    },
+    "narrative": {
+     "n": 27,
+     "cov@8": 0.662,
+     "hit@8": 0.7037
+    },
+    "numeric": {
+     "n": 60,
+     "cov@8": 0.6761,
+     "hit@8": 0.6833
+    }
+   },
+   "wall_s": 1122.0
+  },
+  "question": {
+   "config": "p2500_c600_bge-large-en-v1.5_hdr",
+   "parent": 2500,
+   "child": 600,
+   "embed": "BAAI/bge-large-en-v1.5",
+   "dim": 1024,
+   "reranker": "BAAI/bge-reranker-v2-m3",
+   "mode": "question",
+   "headers": true,
+   "scored": "as served",
+   "rank_by": "sub-query score",
+   "n": 99,
+   "subqueries": 1,
+   "pool_recall": 0.7677,
+   "cov@5": 0.5696,
+   "cov@8": 0.6637,
+   "hit@5": 0.5859,
+   "hit@8": 0.697,
+   "retention": 0.9079,
+   "points": 44542,
+   "vectors_mb": 182.4,
+   "ctx_chars@8": 13955,
+   "pool_ms": 29,
+   "rerank_ms": 3874,
+   "by_type": {
+    "comparison": {
+     "n": 12,
+     "cov@8": 0.446,
+     "hit@8": 0.4167
+    },
+    "narrative": {
+     "n": 27,
+     "cov@8": 0.644,
+     "hit@8": 0.7037
+    },
+    "numeric": {
+     "n": 60,
+     "cov@8": 0.7161,
+     "hit@8": 0.75
+    }
+   },
+   "wall_s": 373.7
+  },
+  "rewrite": {
+   "config": "p2500_c600_bge-large-en-v1.5_hdr",
+   "parent": 2500,
+   "child": 600,
+   "embed": "BAAI/bge-large-en-v1.5",
+   "dim": 1024,
+   "reranker": "BAAI/bge-reranker-v2-m3",
+   "mode": "rewrite",
+   "headers": true,
+   "scored": "as served",
+   "rank_by": "sub-query score",
+   "n": 99,
+   "subqueries": 1,
+   "pool_recall": 0.8586,
+   "cov@5": 0.7052,
+   "cov@8": 0.7411,
+   "hit@5": 0.7677,
+   "hit@8": 0.8081,
+   "retention": 0.9412,
+   "points": 44542,
+   "vectors_mb": 182.4,
+   "ctx_chars@8": 12920,
+   "pool_ms": 21,
+   "rerank_ms": 3714,
+   "by_type": {
+    "comparison": {
+     "n": 12,
+     "cov@8": 0.6815,
+     "hit@8": 0.75
+    },
+    "narrative": {
+     "n": 27,
+     "cov@8": 0.6947,
+     "hit@8": 0.7407
+    },
+    "numeric": {
+     "n": 60,
+     "cov@8": 0.7739,
+     "hit@8": 0.85
+    }
+   },
+   "wall_s": 339.8
+  }
+ }
+}

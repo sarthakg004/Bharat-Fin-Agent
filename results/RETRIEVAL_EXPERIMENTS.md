@@ -992,3 +992,45 @@ selection-side.
 - The gain is in *"somewhere in the 8"*, not *"at the top"* — hit@5 moved 54 →
   55 while hit@8 moved 58 → 66. Lowering `retrieve_cap` to 5 would give most of
   it back.
+
+## 14. Does decomposition help at all? — July 2026
+
+Every section above was measured on the planner's sub-queries. The harness has
+carried a `--mode question` control since §10 and it was **never run on the
+shipped configuration**, so the value of decomposition itself had never been
+measured. `scripts/query_mode_ablation.py` measures it: three arms, one index,
+one reranker, one 8-passage budget — only the query text changes.
+
+| arm | queries/q | pool_recall | hit@5 | hit@8 | retention | wall |
+|---|---|---|---|---|---|---|
+| subquery (served path) | 3.09 | 0.9091 (90) | 0.6061 (60) | 0.6768 (67) | 0.744 | 1122s |
+| question only | 1 | 0.7677 (76) | 0.5859 (58) | 0.6970 (69) | 0.908 | 374s |
+| **one rewritten query** | 1 | 0.8586 (85) | **0.7677 (76)** | **0.8081 (80)** | **0.941** | **340s** |
+
+The subquery arm returns hit@8 0.6768 (67/99) — **identical to §13b's shipped
+row**, so this is measuring the same thing the rest of the file measures.
+
+**Decomposition buys recall and then throws it away.** Sub-queries pool the most
+evidence (90/99) and retain the least (0.744). One rewritten query pools less
+(85) and delivers 80. Question-only, from a pool 14 questions worse, still beats
+the served path on hit@8. §11a said the constraint was selection rather than
+recall; this is that finding at full strength — every extra sub-query adds five
+more candidates competing for the same eight slots.
+
+The rewrite is the question restated in the filing's vocabulary: company, fiscal
+year, statement caption, and the line items a filing actually prints — no
+question words, no derived-metric names. It is §13a-2's expansion idea applied
+to the whole query rather than appended to it. The gain concentrates exactly
+where §13a-2 predicted: numeric 41 -> 51 of 60.
+
+Comparison questions are the one place decomposition earns its keep (7/12 vs
+question-only 5/12) — the cross-document intuition is real but small, and a
+single query naming both years and all segments still beats it (9/12).
+
+**Caveat, and it is the important one:** the 99 rewrites were hand-authored, not
+model-generated. They were written from the question and its sub-queries with
+the gold spans never consulted, but by an author who knew §12 puts captions in
+chunk text. Whether a production LLM rewriter reaches the same number is
+UNTESTED and is the next thing to measure before shipping this.
+
+Full table, per-type breakdown and limits: `results/query_mode_ablation.md`.

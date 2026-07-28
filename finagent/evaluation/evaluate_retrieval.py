@@ -66,8 +66,13 @@ The decomposition is planned ONCE with the served planner and cached to
 `results/financebench_subqueries.json`. Re-planning per configuration would fold
 the planner's LLM nondeterminism into the geometry deltas we are trying to
 measure — the plan is upstream of retrieval, so it is held fixed, exactly like
-the corpus. `--mode question` retrieves on the bare question instead: cheaper,
-LLM-free, and useful as a control, but it is NOT what production does.
+the corpus. `--mode question` retrieves on the bare question instead: cheaper, LLM-free,
+and useful as a control, but it is NOT what production does. `--mode rewrite`
+retrieves on ONE query per question, restated in the filing's vocabulary
+(company + fiscal year + statement caption + the line items a filing actually
+prints) and cached in `results/financebench_rewrites.json`. All three modes are
+LLM-free at measurement time — the decomposition and the rewrite are both
+authored once, upstream, and held fixed.
 
 Usage
 -----
@@ -117,6 +122,7 @@ OUT_MD = Path("results/html_retrieval_sweep.md")
 SMOKE_JSON = Path("results/html_retrieval_sweep_smoke.json")
 SMOKE_MD = Path("results/html_retrieval_sweep_smoke.md")
 PLANS_PATH = Path("results/financebench_subqueries.json")
+REWRITES_PATH = Path("results/financebench_rewrites.json")
 MANIFEST = Path("data/us/eval/financebench/eval_manifest.json")
 SWEEP_MANIFEST = Path("data/us/eval/financebench/sweep_manifest.json")
 ELEMENT_CACHE = Path("data/us/eval/financebench/elements")
@@ -339,6 +345,11 @@ class Question:
     # planner routed every sub-query away from the filings (web/market/EDGAR),
     # so production retrieves nothing here — scored as a miss, because it is one.
     subs: list[str] = field(default_factory=list)
+    # ONE enhanced retrieval query (`--mode rewrite`): the question restated in
+    # the filing's own vocabulary — company, fiscal year, statement caption and
+    # the line items a filing prints. Authored offline and cached, exactly like
+    # `subs`, so no LLM runs inside the measurement.
+    rewrite: str = ""
 
 
 def load_eval_questions(doc_names: Optional[set] = None,
@@ -382,6 +393,18 @@ def load_eval_questions(doc_names: Optional[set] = None,
 # --------------------------------------------------------------------------- #
 # Sub-query plans — the production decomposition, cached
 # --------------------------------------------------------------------------- #
+
+def attach_rewrites(questions: list[Question], path: Path = REWRITES_PATH) -> int:
+    """Attach the cached single enhanced query. Returns the number of questions
+    that have none (they fall back to the raw question, scored as-is)."""
+    cache = json.loads(path.read_text()) if path.exists() else {}
+    missing = 0
+    for q in questions:
+        q.rewrite = (cache.get(q.id) or {}).get("rewrite") or ""
+        if not q.rewrite:
+            missing += 1
+    return missing
+
 
 def attach_subqueries(questions: list[Question], path: Path = PLANS_PATH,
                       refresh: bool = False) -> int:
@@ -581,7 +604,12 @@ def evaluate_index(cfg: Config, collection: str, questions: list[Question],
     cached: list[list[tuple[str, list]]] = []   # per question: [(sub, parents)]
     pool_hit, pool_ms, n_subs = 0, [], []
     for q in tqdm(questions, desc=f"{cfg.tag} pools", leave=False):
-        subs = q.subs if mode == "subquery" else [q.text]
+        if mode == "subquery":
+            subs = q.subs
+        elif mode == "rewrite":
+            subs = [q.rewrite or q.text]
+        else:
+            subs = [q.text]
         # Production also retrieves on the ORIGINAL question (§13), gated on the
         # planner having routed at least one sub-query to the filings.
         if mode == "subquery" and subs and q.text not in subs:
@@ -831,7 +859,8 @@ def self_check() -> None:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[3])
     ap.add_argument("--stage", choices=["parent", "child", "embedder", "embedder2", "headers"])
-    ap.add_argument("--mode", choices=["subquery", "question"], default="subquery",
+    ap.add_argument("--mode", choices=["subquery", "question", "rewrite"],
+                    default="subquery",
                     help="subquery = the served path (planner decomposition, "
                          "per-sub retrieval, merge, global cap); question = "
                          "retrieve on the bare question (LLM-free control)")
@@ -892,6 +921,10 @@ def main() -> None:
         mean_subs = statistics.mean(len(q.subs) for q in questions)
         print(f"Plans: {mean_subs:.2f} retrieved sub-queries/question, "
               f"{unretrieved} routed entirely away from the filings")
+    elif args.mode == "rewrite":
+        missing = attach_rewrites(questions)
+        print(f"Rewrites: 1 enhanced query/question, {missing} missing "
+              f"(fell back to the raw question)")
 
     from finagent.vectorstore import delete_collection
 
