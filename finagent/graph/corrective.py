@@ -389,12 +389,47 @@ class AgenticRAGv2(AgenticRAG):
             kept = [chunks[i] for i in sorted(kept_idx, key=ranked.index)]
             self._log(state, f"capped retrieval pool {len(chunks)}→{len(kept)} "
                              f"by cross-encoder rerank vs. the question")
-            return kept
+            return self._fit_budget(state, kept)
         except Exception as e:
             # Reranking is a precision optimisation — never let it drop evidence
             # on a model/load error. Fall back to a simple head-truncation.
             self._log(state, f"pool cap rerank failed ({e}); truncating to {cap}")
-            return chunks[:cap]
+            return self._fit_budget(state, chunks[:cap])
+
+    def _fit_budget(self, state: AgentState, kept: list[dict]) -> list[dict]:
+        """Bound the evidence so a shared-tier request cannot exceed 8000 tokens.
+
+        Groq's free tier rejects an over-sized request with HTTP 413 — a
+        permanent failure that no retry, no key and no wait can fix — and
+        production ran at 95-98% of that ceiling, so a follow-up question's
+        history was enough to break it. Unbounded before this.
+
+        Drops whole chunks from the BOTTOM of the ranking first, because a
+        complete low-ranked passage is worth less than an intact high-ranked
+        one; only truncates when a single chunk is itself over budget. Callers
+        with their own API key get `None` and are untouched.
+        """
+        from finagent.runtime import current_context
+
+        budget = current_context().evidence_budget()
+        if budget is None:
+            return kept
+        out, used = [], 0
+        for c in kept:
+            text = c["text"]
+            if used + len(text) <= budget:
+                out.append(c)
+                used += len(text)
+            elif not out:
+                # The single best passage alone exceeds the budget: keep a
+                # truncated head rather than answering with no evidence.
+                out.append({**c, "text": text[:budget]})
+                used = budget
+        if len(out) < len(kept):
+            self._log(state, f"evidence trimmed {len(kept)}→{len(out)} passages "
+                             f"to fit the free tier's per-request limit; add an "
+                             f"API key from the model picker for the full context")
+        return out
 
     def grader_node(self, state: AgentState) -> dict:
         """Score each chunk's relevance (1-5) AND drop the low-graded ones.

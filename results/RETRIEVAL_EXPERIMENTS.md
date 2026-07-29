@@ -373,9 +373,9 @@ company/year filter to a linear scan. Wired as `QDRANT_EVAL_URL`.
 - **Parent 4000 / page-level** — +0.014 over 2500 for +266 MB and ~6.2k tokens.
 - **Structure-aware (paragraph) parents for PDFs** — measurably worse; the
   overlap in a fixed window is what preserves boundary-straddling evidence.
-- **int8 dynamic quantisation of v2-m3** — benchmark was started to make fp32
-  latency viable, then abandoned when latency was accepted as a non-issue for a
-  portfolio deployment. Not measured; do not cite.
+- **int8 dynamic quantisation of v2-m3** — MEASURED July 2026 (§15). 2.23x
+  faster on CPU but keeps only 84.8% of fp32's top-8 selection, and peaks 6.0 GB
+  against fp32's 4.1. Rejected: the selected set IS hit@8.
 - **`--max-instances 3` for more RAM** — memory is per-instance and does not
   pool; it would also break `_UPLOADS`, which lives in one instance's memory.
 
@@ -1171,3 +1171,52 @@ Coverage caveat for anyone picking this up: only 50 of 63 company-years carry
 the key statement captions, and 3M 2018 has **none** — all 278 of its chunks
 have a bare `3M 2018` header. That is a hole in the §12 caption walker on that
 filing, and it caps how far caption grounding can go on this corpus.
+
+## 15. Retrieval latency, and why the reranker stays fp32 — July 2026
+
+Production traces (Langfuse) put **retrieval at 53% of a query's wall clock** —
+567s of 1068s on one Gemini run, and 283-827s per query across five traces
+regardless of which LLM answered. Every LLM call combined is 13-27s on Groq. So
+retrieval is the entire latency story, and it is `bge-reranker-v2-m3` scoring
+~96 (query, parent) pairs on Cloud Run's 8 vCPU with no GPU: ~2969 ms/pair
+there, ~1981-2285 ms/pair locally.
+
+Measured four ways to make that cheaper without changing the model. All rejected.
+
+| variant | ms/pair | speedup | top-8 overlap vs fp32 | peak RSS |
+|---|---|---|---|---|
+| **fp32 (shipped)** | 1981-2285 | — | — | 4.1 GB |
+| int8 dynamic | 1026-1213 | 2.23x | **84.8%** | 6.0 GB |
+| bfloat16 | 5775 | **0.34x** | not measured | — |
+| ONNX fp32 / int8 | — | — | export crashed, NOT measured | — |
+
+**hit@8 depends only on WHICH 8 parents are selected**, so top-8 overlap is the
+quality test: 1.00 would prove retrieval is unchanged. int8 scores 84.8% — 17 of
+112 selected passages move, and only 1 of 14 queries keeps an identical top-8
+(Spearman 0.942 over the full pool). That is a real quality risk on the exact
+axis this file spent §11-§14 improving, so the 2.23x is not free and int8 is
+rejected. Its 6.0 GB peak is a second strike: `quantize_dynamic` returns a NEW
+module, so both copies exist mid-conversion, and that spike lands at warm-up on
+top of the embedder — the shape of the exit-137 that already forced 4 GiB -> 8 GiB.
+
+**bfloat16 is 2.9x SLOWER, not faster.** CPUs without native bf16 instructions
+emulate it. Do not retry.
+
+Two dead ends worth recording so they are not re-attempted:
+
+* **int8 cannot be evaluated on a GPU.** `quantized::linear_dynamic` has no CUDA
+  kernel ("Could not run with arguments from the 'CUDA' backend"). Substituting
+  a GPU int8 library (bitsandbytes, TensorRT, torchao) measures a DIFFERENT
+  quantisation scheme's quality, not the CPU one that would ship.
+* **Simulating CPU int8 in fp32 on GPU does not work either.** Lifting the exact
+  int8 weights and per-channel scales out of the quantised module and replaying
+  them ran 8.8x faster (90 vs 911 ms/pair) but reproduced CPU int8 to only 84.4%
+  top-8 agreement — as far from it as fp32 is. fbgemm quantises activations
+  per-row with reduced-range accumulation; a per-tensor min/max simulation is a
+  third computation, not a proxy. A real int8 hit@8 needs the ~2.5h CPU eval.
+
+**Still open, and the only lever that does not trade quality:** rerank the
+~600-char CHILD chunk that actually matched instead of the 2500-char parent.
+`_collapse_to_parents` currently expands BEFORE reranking, so the cross-encoder
+reads 4x more text than the match justified. Same model, shorter input, and
+attention cost grows faster than linearly. Untested.

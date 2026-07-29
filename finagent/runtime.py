@@ -99,6 +99,14 @@ class RuntimeContext:
     # None → `build_llm` reads the provider's env keys and rotates through the
     # pool on rate limits.
     api_key: Optional[str] = None
+    # The planner may run on a DIFFERENT provider from the answer model. The
+    # two jobs have opposite economics: the planner makes several small
+    # structured calls where a free tier is fine, while the answer model does
+    # the long-form writing worth paying for. Forcing both onto one provider
+    # meant choosing a paid answer model silently moved the planner onto the
+    # same paid key. None → follow `provider` / `api_key`.
+    planner_provider: Optional[str] = None
+    planner_api_key: Optional[str] = None
     temperature: float = 0.0
     # The client's conversation id. Scopes anything cached BETWEEN turns of one
     # chat (a fetched filing, a research finding) so it is reused within the
@@ -106,18 +114,58 @@ class RuntimeContext:
     # caching at all, which is the safe default for the eval harness and CLIs.
     session_id: Optional[str] = None
 
+    # Shared-tier prompt ceiling, in CHARACTERS of retrieved evidence.
+    #
+    # Groq's free tier rejects any single request over 8000 tokens outright —
+    # HTTP 413, not a rate limit, so no wait and no other key helps. Measured
+    # traces ran 7581-7815 tokens against that 8000 ceiling, i.e. 95-98%, and a
+    # follow-up question's history tipped it over. Evidence is the dominant
+    # term (~6.9k tokens at cap 8), so bounding it is what keeps us under.
+    #
+    # ~3.6 chars/token on filing text, so 14000 chars ~= 3900 tokens, leaving
+    # ~4000 for the system prompt, the question, history and the answer.
+    FREE_TIER_EVIDENCE_CHARS = 14_000
+
+    def evidence_budget(self) -> Optional[int]:
+        """Characters of evidence this request may carry, None = unbounded.
+
+        Only the SHARED Groq pool is capped. A user who brought their own key
+        is on their own quota with their own (usually far larger) window, so
+        their requests are left exactly as they are.
+        """
+        if self.provider == "groq" and not self.api_key:
+            return self.FREE_TIER_EVIDENCE_CHARS
+        return None
+
+    def provider_for(self, role: str) -> str:
+        """Which provider serves a role. Only the planner can differ."""
+        if _DERIVED.get(role, role) == "planner" and self.planner_provider:
+            return self.planner_provider
+        return self.provider
+
+    def key_for(self, role: str) -> Optional[str]:
+        """The API key for a role, matched to `provider_for(role)`.
+
+        Must move together with the provider: sending the answer model's Gemini
+        key to Groq authenticates nothing.
+        """
+        if _DERIVED.get(role, role) == "planner" and self.planner_provider:
+            return self.planner_api_key
+        return self.api_key
+
     def model_for(self, role: str) -> str:
         """Resolve a role ('planner', 'synth', 'router', …) to a model name."""
         base = _DERIVED.get(role, role)
+        provider = self.provider_for(role)
         if base == "synth" and self.synth_model:
             return self.synth_model
         if base == "planner" and self.planner_model:
             return self.planner_model
         try:
-            return DEFAULTS[self.provider][base]
+            return DEFAULTS[provider][base]
         except KeyError:
             raise ValueError(
-                f"No default model for provider={self.provider!r} role={role!r}. "
+                f"No default model for provider={provider!r} role={role!r}. "
                 f"Providers: {list(DEFAULTS)}."
             ) from None
 
@@ -134,8 +182,8 @@ def create_llm(ctx: RuntimeContext, role: str):
     """
     from finagent.llm import build_llm
 
-    return build_llm(ctx.provider, ctx.model_for(role), ctx.api_key,
-                     temperature=ctx.temperature)
+    return build_llm(ctx.provider_for(role), ctx.model_for(role),
+                     ctx.key_for(role), temperature=ctx.temperature)
 
 
 # Scoped override for callers that build LLMs OUTSIDE a graph run — the CLIs,

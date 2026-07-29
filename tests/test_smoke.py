@@ -634,6 +634,138 @@ def test_rate_limit_reset_is_read_off_the_429():
     assert "retry_after" not in vague and "wait a minute" in vague["message"]
 
 
+def test_oversized_prompt_is_not_a_rate_limit():
+    """Groq rejects an over-sized prompt with HTTP 413 whose body says
+    `"code": "rate_limit_exceeded"`. Matching that as a rate limit burned all 12
+    keys in 0.6s and then told the user to retry in 14s — a retry that could
+    never work, because every key has the same per-request ceiling. It is the
+    prompt that must shrink, so this must NOT rotate and must NOT promise a wait.
+    """
+    import pytest
+
+    import finagent.llm as L
+    from finagent.api.main import _classify_provider_error
+
+    body = ('{"error":{"message":"Request too large for model `openai/gpt-oss-120b` '
+            'on tokens per minute (TPM): Limit 8000, Requested 8482, please reduce '
+            'your message size and try again","type":"tokens",'
+            '"code":"rate_limit_exceeded"}}')
+    too_big = Exception(body)
+    assert L.is_request_too_large(too_big)
+    # Still matches the rate-limit hints — that is exactly the trap, so the
+    # specific check has to be consulted first everywhere it matters.
+    assert L.is_rate_limit_error(too_big)
+
+    m = L.RotatingChatModel(provider="groq", chat_model="x",
+                            keys=["a", "b", "c"], chat_kwargs={"temperature": 0})
+    assert m._recover(too_big) is False, "must not rotate the pool"
+    calls = []
+    with pytest.raises(Exception) as caught:
+        m._retry(lambda llm: calls.append(1) or (_ for _ in ()).throw(too_big))
+    assert len(calls) == 1, f"tried {len(calls)} keys; must stop at the first"
+    assert not isinstance(caught.value, L.AllKeysExhaustedError)
+
+    ev = _classify_provider_error(too_big, None)
+    assert ev["code"] == "too_large" and "retry_after" not in ev
+    assert "waiting will not help" in ev["message"]
+
+    # A genuine 429 still rotates.
+    assert m._recover(Exception("429 rate limit reached")) is True
+
+
+def test_per_minute_limit_is_waited_out_not_failed():
+    """A TPM bucket refills in seconds. Rotating the whole pool in 0.6s and then
+    giving up threw away a recoverable failure — sleep the reported reset and
+    try the pool again. A DAILY quota is not waited on: it is hours away."""
+    import finagent.llm as L
+
+    m = L.RotatingChatModel(provider="groq", chat_model="x", keys=["a", "b"],
+                            chat_kwargs={"temperature": 0})
+    slept: list[float] = []
+
+    # Swap the MODULE REFERENCE in llm's namespace, not `time.sleep` itself —
+    # mutating the real module would leak a broken sleep into every other test.
+    class _NoSleep:
+        def __init__(self, real):
+            self._real = real
+
+        def sleep(self, s):
+            slept.append(s)
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    real_time = L.time
+    L.time = _NoSleep(real_time)
+    try:
+        m._last_daily = False
+        assert m._wait_out([3.0, 9.0], Exception("429")) is True
+        assert slept and 3.0 <= slept[0] <= 4.0, slept   # earliest key, small pad
+
+        # Longer than a user will wait → fail instead of holding the socket.
+        slept.clear()
+        assert m._wait_out([L.MAX_INLINE_WAIT_S + 1], Exception("429")) is False
+        assert not slept
+
+        # Daily quota → no wait at any duration.
+        m._last_daily = True
+        assert m._wait_out([5.0], Exception("429")) is False
+        assert not slept
+    finally:
+        L.time = real_time
+
+
+def test_free_tier_evidence_is_bounded():
+    """The shared Groq pool rejects >8000-token requests outright, and traces
+    ran 7581-7815 against that ceiling — a follow-up question's history was
+    enough to break it. Evidence is the dominant term, so it gets a budget.
+    A user on their own key keeps the full context."""
+    from finagent.runtime import RuntimeContext
+
+    shared = RuntimeContext()
+    assert shared.evidence_budget() == RuntimeContext.FREE_TIER_EVIDENCE_CHARS
+    assert RuntimeContext(api_key="sk-own").evidence_budget() is None
+    assert RuntimeContext(provider="gemini", api_key="k").evidence_budget() is None
+
+    agent = _build_agent()
+    agent._log = lambda s, m: None
+    budget = shared.evidence_budget()
+    chunks = [{"text": "x" * 4000, "sub_query": f"q{i}"} for i in range(8)]
+    with __import__("finagent.runtime", fromlist=["use_context"]).use_context(shared):
+        kept = agent._fit_budget({"errors": []}, chunks)
+    assert sum(len(c["text"]) for c in kept) <= budget
+    assert len(kept) == budget // 4000, f"dropped from the bottom, got {len(kept)}"
+
+    # One passage larger than the whole budget is truncated, never dropped —
+    # answering with no evidence at all is worse.
+    with __import__("finagent.runtime", fromlist=["use_context"]).use_context(shared):
+        solo = agent._fit_budget({"errors": []},
+                                 [{"text": "y" * 50_000, "sub_query": "q"}])
+    assert len(solo) == 1 and len(solo[0]["text"]) == budget
+
+
+def test_planner_can_run_on_its_own_provider():
+    """A free planner beside a paid answer model. The answer picker used to own
+    the provider outright, so choosing Gemini silently moved the planner onto
+    the paid key and hid the free models. Provider AND key must move together
+    per role — sending Gemini's key to Groq authenticates nothing."""
+    from finagent.runtime import RuntimeContext
+
+    ctx = RuntimeContext(provider="gemini", api_key="gem-key",
+                         planner_provider="groq", planner_api_key=None)
+    assert ctx.provider_for("planner") == "groq"
+    assert ctx.key_for("planner") is None          # → the server's Groq pool
+    assert ctx.model_for("planner") == "openai/gpt-oss-120b"
+    for role in ("synth", "critic", "grader", "router"):
+        assert ctx.provider_for(role) == "gemini", role
+        assert ctx.key_for(role) == "gem-key", role
+
+    # Unset → everything follows the one provider, exactly as before.
+    plain = RuntimeContext(provider="gemini", api_key="k")
+    assert plain.provider_for("planner") == "gemini"
+    assert plain.key_for("planner") == "k"
+
+
 def test_client_chat_history_is_the_only_memory():
     """The server is stateless: memory is exactly the turns the client replayed,
     capped at the last 6 and truncated. A request with no history yields none —

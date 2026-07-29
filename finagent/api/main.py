@@ -357,14 +357,32 @@ def _classify_provider_error(e: Exception, pc) -> dict:
     """Classify a provider failure into a user-facing SSE error event
     (shared by /api/query and /api/research)."""
     from finagent.llm import (format_wait, is_daily_quota_error,
-                              is_rate_limit_error, retry_after_seconds)
+                              is_rate_limit_error, is_request_too_large,
+                              retry_after_seconds)
 
     # Log the error type for debugging, but NOT the full exception value —
     # provider auth errors can echo the API key into logs.
     print(f"[query error] {type(e).__name__}", flush=True)
 
-    rate_limited = is_rate_limit_error(e)
     provider = (pc.provider if pc else "groq")
+    # Checked before the rate-limit branch: the provider reports an over-sized
+    # prompt with `code: rate_limit_exceeded`, and telling the user to wait for
+    # a reset that will never help is worse than saying nothing.
+    if is_request_too_large(e):
+        prov = {"groq": "Groq", "gemini": "Gemini", "openai": "OpenAI",
+                "anthropic": "Anthropic"}.get(provider, provider)
+        return {
+            "type": "error", "code": "too_large",
+            "message": (
+                f"This question's context exceeded the {prov} free tier's "
+                f"per-request limit, so it was rejected rather than rate "
+                f"limited — waiting will not help. Start a new chat to drop "
+                f"the conversation history, ask a narrower question, or add "
+                f"your own API key from the model picker for a larger window."
+            ),
+        }
+
+    rate_limited = is_rate_limit_error(e)
     user_key = bool(pc and pc.api_key)
     prov_label = {"groq": "Groq", "gemini": "Gemini",
                   "openai": "OpenAI", "anthropic": "Anthropic"}.get(provider, provider)
@@ -420,6 +438,8 @@ async def _run_rag(request: QueryRequest, hist: list[dict],
     provider = (pc.provider if pc else "groq")
     synth_model = (pc.synth_model if pc else None)
     planner_model = (pc.planner_model if pc else None)
+    planner_provider = (pc.planner_provider if pc else None)
+    planner_api_key = (pc.planner_api_key if pc else None)
     api_key = (pc.api_key if pc else None)
     # `run_in_executor` doesn't take kwargs — use a small lambda wrapper instead.
     return await loop.run_in_executor(
@@ -428,6 +448,7 @@ async def _run_rag(request: QueryRequest, hist: list[dict],
             request.question, chat_history=hist,
             provider=provider, synth_model=synth_model,
             planner_model=planner_model, api_key=api_key,
+            planner_provider=planner_provider, planner_api_key=planner_api_key,
             session_id=request.session_id or None,
             extra_chunks=extra_chunks,
             on_step=on_step, on_step_done=on_step_done,
@@ -572,13 +593,35 @@ def _validate_provider(request) -> None:
     provider-agnostic the check belongs here — and this is the better place
     anyway, since a bad key returns a clean 400 instead of dying mid-graph.
     """
+    pc = request.provider_config
+    # Both, because the planner may name its own provider — a Gemini answer
+    # model with a Groq planner needs BOTH keys resolvable, and failing here is
+    # far better than dying in the middle of a graph run.
+    pairs = [((pc.provider if pc else "groq"), (pc.api_key if pc else None))]
+    if pc and pc.planner_provider and pc.planner_provider != pc.provider:
+        pairs.append((pc.planner_provider, pc.planner_api_key))
+    for provider, key in pairs:
+        _require_key(provider, key)
+
+
+def _require_key(provider: str, key) -> None:
     from finagent.llm import resolve_api_key
 
-    pc = request.provider_config
     try:
-        resolve_api_key(pc.provider if pc else "groq", pc.api_key if pc else None)
+        resolve_api_key(provider, key)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        # `resolve_api_key`'s message is developer-facing ("set it in .env").
+        # Only Groq has server-side keys, so for anything else the actionable
+        # instruction is to paste one into the picker — which is what the user
+        # sees after selecting a model whose provider they have no key for.
+        label = {"gemini": "Gemini", "openai": "OpenAI",
+                 "anthropic": "Anthropic"}.get(provider)
+        detail = (
+            f"No {label} API key. This server only provides keys for Groq — "
+            f"paste your {label} key next to the model picker to use it, or "
+            f"switch the answer model back to a Groq model."
+        ) if label else str(e)
+        raise HTTPException(status_code=400, detail=detail) from e
 
 
 @app.post("/api/query")
@@ -628,6 +671,8 @@ async def _stream_research(request: ResearchRequest) -> AsyncGenerator[str, None
     provider = (pc.provider if pc else "groq")
     synth_model = (pc.synth_model if pc else None)
     planner_model = (pc.planner_model if pc else None)
+    planner_provider = (pc.planner_provider if pc else None)
+    planner_api_key = (pc.planner_api_key if pc else None)
     api_key = (pc.api_key if pc else None)
 
     from finagent.research import DeepResearch
@@ -639,6 +684,8 @@ async def _stream_research(request: ResearchRequest) -> AsyncGenerator[str, None
             run_fn=lambda q: rag_service.run_agentic(
                 q, provider=provider, synth_model=synth_model,
                 planner_model=planner_model, api_key=api_key,
+                planner_provider=planner_provider,
+                planner_api_key=planner_api_key,
                 session_id=request.session_id or None),
             provider=provider, model=synth_model, api_key=api_key,
             max_agents=request.max_agents,

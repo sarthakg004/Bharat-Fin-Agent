@@ -268,12 +268,15 @@ function UploadChips() {
 function ModelSelect() {
   const provider = useSettingsStore((s) => s.provider);
   const model = useSettingsStore((s) => s.modelByProvider[s.provider]);
-  const planner = useSettingsStore((s) => s.plannerByProvider[s.provider]);
   const keys = useSettingsStore((s) => s.keys);
   const setProvider = useSettingsStore((s) => s.setProvider);
   const setModel = useSettingsStore((s) => s.setModel);
   const setPlannerModel = useSettingsStore((s) => s.setPlannerModel);
+  const setPlannerProvider = useSettingsStore((s) => s.setPlannerProvider);
   const setKey = useSettingsStore((s) => s.setKey);
+  // null = follow the answer model, which is the default.
+  const plannerProvider = useSettingsStore((s) => s.plannerProvider) ?? provider;
+  const planner = useSettingsStore((s) => s.plannerByProvider[plannerProvider]);
 
   const [draft, setDraft] = useState("");
 
@@ -284,27 +287,44 @@ function ModelSelect() {
     setDraft("");
   }
 
-  function saveKey(e: React.FormEvent) {
-    e.preventDefault();
-    if (draft.trim()) { setKey(provider, draft.trim()); setDraft(""); }
+  function pickPlanner(value: string) {
+    const [p, m] = value.split("::") as [Provider, string];
+    // Choosing the answer's own provider clears the split, so the request goes
+    // back to carrying a single provider.
+    setPlannerProvider(p === provider ? null : p);
+    setPlannerModel(p, m);
   }
 
-  // Groq uses the server key; the others need the user's own key.
-  const needsKey = provider !== "groq" && !keys[provider];
+  function saveKey(e: React.FormEvent) {
+    e.preventDefault();
+    if (draft.trim()) { setKey(needsKeyFor!, draft.trim()); setDraft(""); }
+  }
+
+  // Groq uses the server key; every other provider needs the user's own. Ask
+  // for whichever is missing — the planner can now be on a different one.
+  const needsKeyFor = ([provider, plannerProvider] as Provider[])
+    .find((p) => p !== "groq" && !keys[p]);
   const hasUserKey = provider !== "groq" && !!keys[provider];
 
   return (
     <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
-      {/* Planner — constrained to the provider the answer model selected. */}
+      {/* Planner — free to sit on its OWN provider. Its calls are small and
+          structured, so a free tier serves it fine even when the answer model
+          is a paid one; tying it to the answer's provider used to drag it onto
+          the paid key and hide the free models entirely. */}
       <Picker
         icon={<ListTree size={11} />}
         label="Plan"
-        title="PLANNER — turns your question into the search queries that hit the filings, and picks the lane (filings / SEC XBRL / market data / web). Precision over prose."
-        value={planner}
-        onChange={(m) => setPlannerModel(provider, m)}
+        title="PLANNER — turns your question into the search queries that hit the filings, and picks the lane (filings / SEC XBRL / market data / web). Precision over prose. Can stay on a free provider while the answer model is paid."
+        value={`${plannerProvider}::${planner}`}
+        onChange={pickPlanner}
       >
-        {PROVIDER_MODELS[provider].map((m) => (
-          <option key={m} value={m}>{m}</option>
+        {(Object.keys(PROVIDER_MODELS) as Provider[]).map((p) => (
+          <optgroup key={p} label={PROVIDER_LABELS[p]}>
+            {PROVIDER_MODELS[p].map((m) => (
+              <option key={`${p}::${m}`} value={`${p}::${m}`}>{m}</option>
+            ))}
+          </optgroup>
         ))}
       </Picker>
 
@@ -325,16 +345,17 @@ function ModelSelect() {
         ))}
       </Picker>
 
-      {/* Non-Groq models need the user's own key — collect it right here. */}
-      {needsKey && (
+      {/* Non-Groq models need the user's own key — collect it right here.
+          Asks for whichever of the two providers is missing one. */}
+      {needsKeyFor && (
         <form onSubmit={saveKey} className="flex items-center gap-1">
           <input
             type="password"
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
-            placeholder={`${PROVIDER_LABELS[provider]} API key`}
+            placeholder={`${PROVIDER_LABELS[needsKeyFor]} API key`}
             className="w-[180px] border border-warning/60 bg-bg-elevated px-2 py-1.5 font-mono text-[11px] text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none"
-            aria-label={`${PROVIDER_LABELS[provider]} API key`}
+            aria-label={`${PROVIDER_LABELS[needsKeyFor]} API key`}
           />
           <button
             type="submit"

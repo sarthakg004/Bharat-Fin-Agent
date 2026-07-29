@@ -30,6 +30,18 @@ class ProviderConfig(BaseModel):
                     "the planner emits structured retrieval keys, the "
                     "synthesizer writes prose. None → provider default.",
     )
+    planner_provider: Optional[Literal["groq", "gemini", "openai", "anthropic"]] = Field(
+        default=None,
+        description="Provider for the planner when it differs from the answer "
+                    "model's. Lets a free planner run alongside a paid answer "
+                    "model — the planner makes several small structured calls "
+                    "where a free tier is fine. None → same as `provider`.",
+    )
+    planner_api_key: Optional[str] = Field(
+        default=None,
+        description="Key for `planner_provider`. Required whenever that names "
+                    "a provider the server has no key for.",
+    )
     api_key: Optional[str] = Field(
         default=None,
         description="Caller-supplied API key. None → fall back to server env var.",

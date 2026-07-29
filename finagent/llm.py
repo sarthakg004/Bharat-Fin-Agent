@@ -118,6 +118,30 @@ _DAILY_QUOTA_HINTS = (
     "daily quota", "daily limit",
 )
 
+# A prompt bigger than the model's whole per-minute token allowance. Groq
+# returns this as HTTP 413 whose body says `"code": "rate_limit_exceeded"`, so
+# `_RATE_LIMIT_HINTS` matches it on "rate_limit" and every classifier called it
+# transient. It is not: no wait shortens it and no other key is bigger, so the
+# old behaviour burned all 12 keys in 0.6s and then told the user to retry in
+# 14s — a retry that could never succeed. Only a smaller request fixes it.
+_TOO_LARGE_HINTS = (
+    "request too large", "reduce your message size",
+    "please reduce the length", "context length", "maximum context",
+    "string too long", "prompt is too long",
+)
+
+
+def is_request_too_large(exc: BaseException) -> bool:
+    """True when the PROMPT is the problem, not the rate of requests.
+
+    Checked BEFORE `is_rate_limit_error` everywhere it matters, because the
+    provider labels it as a rate-limit error and it is the more specific case.
+    """
+    return any(
+        hint in (str(c) or "").lower()
+        for c in _chain(exc) for hint in _TOO_LARGE_HINTS
+    )
+
 
 def text_of(response) -> str:
     """Plain text of a chat response's `.content`.
@@ -329,6 +353,13 @@ _EXHAUST_COOLDOWN_S = 60.0
 # still sees the true reset — only the internal fail-fast window is clamped.
 _EXHAUST_COOLDOWN_MAX_S = 300.0
 
+# How long a request may block waiting for a per-minute bucket to refill, and
+# how many times. Groq's TPM window is 60s and its resets are typically single
+# digits, so one wait of up to ~45s recovers almost every case; beyond that the
+# user is better served by an error than by a socket held open.
+MAX_INLINE_WAIT_S = 45.0
+MAX_WAIT_RETRIES = 1
+
 # Provider → unix time the provider itself said its limit clears. Separate from
 # the clamped fail-fast window above because this is the number shown to the
 # user, and it must stay honest even when it is three hours away.
@@ -384,6 +415,9 @@ class RotatingChatModel(BaseChatModel):
 
     _idx: int = PrivateAttr(default=0)
     _llm: Any = PrivateAttr(default=None)
+    # Whether the last failure was a DAILY quota. Per-minute limits are worth
+    # sleeping off; daily ones are not.
+    _last_daily: bool = PrivateAttr(default=False)
 
     def model_post_init(self, __context: Any) -> None:  # pydantic v2
         if not self.keys:
@@ -440,6 +474,12 @@ class RotatingChatModel(BaseChatModel):
 
     def _recover(self, exc: BaseException) -> bool:
         """Try to recover from `exc` by switching keys. False → not recoverable."""
+        # Checked first: the provider reports an over-sized prompt with
+        # `code: rate_limit_exceeded`, so the rate-limit branch below would
+        # claim it and rotate the whole pool for nothing — every key has the
+        # same per-request ceiling.
+        if is_request_too_large(exc):
+            return False
         if is_rate_limit_error(exc):
             self._rotate(exc)
             return True
@@ -457,7 +497,28 @@ class RotatingChatModel(BaseChatModel):
         wait = retry_after_seconds(exc)
         if wait is not None:
             waits.append(wait)
+        self._last_daily = is_daily_quota_error(exc)
         return self._recover(exc)
+
+    def _wait_out(self, waits: list, last: BaseException) -> bool:
+        """Sleep off a PER-MINUTE limit so the caller can try the pool again.
+
+        A TPM/RPM bucket refills in seconds — the pool rotating through every
+        key in 0.6s and then giving up wasted a recoverable failure. A DAILY
+        bucket does not refill for hours, so that one is left to fail. Returns
+        False when waiting cannot help (daily quota, no reported reset, or a
+        wait longer than a user will sit through).
+        """
+        if self._last_daily or not waits:
+            return False
+        wait = min(waits)
+        if wait > MAX_INLINE_WAIT_S:
+            return False
+        print(f"[RotatingChat:{self.provider}] every key at its per-minute "
+              f"limit; waiting {wait:.0f}s for the earliest to reset",
+              flush=True)
+        time.sleep(wait + 0.5)      # +0.5s so we land after the reset, not on it
+        return True
 
     def _check_cooldown(self) -> None:
         """Fail fast while the whole pool is known-exhausted (no network)."""
@@ -498,17 +559,25 @@ class RotatingChatModel(BaseChatModel):
         )
 
     def _retry(self, op):
-        """Run op(self._llm) across all keys, switching on recoverable errors."""
+        """Run op(self._llm) across all keys, switching on recoverable errors.
+
+        Two nested loops: the inner one rotates the pool, the outer one waits
+        out a per-minute reset and tries the pool again. Without the outer loop
+        a TPM limit — which clears in seconds — failed the whole request.
+        """
         self._check_cooldown()
         last: Any = None
-        waits: list[float] = []
-        for _ in range(max(1, len(self.keys))):
-            try:
-                return op(self._llm)
-            except Exception as e:
-                last = e
-                if not self._note_failure(e, waits):
-                    raise
+        for attempt in range(MAX_WAIT_RETRIES + 1):
+            waits: list[float] = []
+            for _ in range(max(1, len(self.keys))):
+                try:
+                    return op(self._llm)
+                except Exception as e:
+                    last = e
+                    if not self._note_failure(e, waits):
+                        raise
+            if attempt == MAX_WAIT_RETRIES or not self._wait_out(waits, last):
+                break
         raise self._exhausted(last, waits) from last
 
     # ------------------------------------------------------------------ #
@@ -521,19 +590,22 @@ class RotatingChatModel(BaseChatModel):
         )
 
     async def _agenerate(self, messages, stop=None, run_manager=None, **kw) -> ChatResult:
-        # Async variant — same retry loop but awaiting the inner call.
+        # Async variant — same two-loop structure as `_retry`.
         self._check_cooldown()
         last: Any = None
-        waits: list[float] = []
-        for _ in range(max(1, len(self.keys))):
-            try:
-                return await self._llm._agenerate(
-                    messages, stop=stop, run_manager=run_manager, **kw
-                )
-            except Exception as e:
-                last = e
-                if not self._note_failure(e, waits):
-                    raise
+        for attempt in range(MAX_WAIT_RETRIES + 1):
+            waits: list[float] = []
+            for _ in range(max(1, len(self.keys))):
+                try:
+                    return await self._llm._agenerate(
+                        messages, stop=stop, run_manager=run_manager, **kw
+                    )
+                except Exception as e:
+                    last = e
+                    if not self._note_failure(e, waits):
+                        raise
+            if attempt == MAX_WAIT_RETRIES or not self._wait_out(waits, last):
+                break
         raise self._exhausted(last, waits) from last
 
     # ------------------------------------------------------------------ #
@@ -564,15 +636,18 @@ class _RotatingBound(Runnable):
     async def ainvoke(self, input, config=None, **ikw):
         self.rot._check_cooldown()
         last: Any = None
-        waits: list[float] = []
-        for _ in range(max(1, len(self.rot.keys))):
-            try:
-                chain = getattr(self.rot._llm, self.method)(*self.args, **self.kw)
-                return await chain.ainvoke(input, config=config, **ikw)
-            except Exception as e:
-                last = e
-                if not self.rot._note_failure(e, waits):
-                    raise
+        for attempt in range(MAX_WAIT_RETRIES + 1):
+            waits: list[float] = []
+            for _ in range(max(1, len(self.rot.keys))):
+                try:
+                    chain = getattr(self.rot._llm, self.method)(*self.args, **self.kw)
+                    return await chain.ainvoke(input, config=config, **ikw)
+                except Exception as e:
+                    last = e
+                    if not self.rot._note_failure(e, waits):
+                        raise
+            if attempt == MAX_WAIT_RETRIES or not self.rot._wait_out(waits, last):
+                break
         raise self.rot._exhausted(last, waits) from last
 
 

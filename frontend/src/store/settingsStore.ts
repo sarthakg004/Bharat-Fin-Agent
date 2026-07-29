@@ -73,6 +73,18 @@ interface SettingsState {
    */
   plannerByProvider: Record<Provider, string>;
   /**
+   * Provider for the PLANNER when it differs from the answer model's.
+   *
+   * null = follow the answer model, which is the default and what everyone
+   * gets. It exists because the two jobs have opposite economics: the planner
+   * makes several small structured calls that a free tier handles fine, while
+   * the answer model does the long-form writing worth paying for. Without this
+   * the answer picker owned the provider outright, so choosing a paid answer
+   * model silently moved the planner onto the same paid key — and removed the
+   * free models from the planner list entirely.
+   */
+  plannerProvider: Provider | null;
+  /**
    * User-supplied API keys, kept ONLY in localStorage.
    * Groq is empty by default because the Space ships with a server-side key —
    * users can override it but they don't need to.
@@ -83,6 +95,7 @@ interface SettingsState {
   setProvider: (p: Provider) => void;
   setModel: (p: Provider, model: string) => void;
   setPlannerModel: (p: Provider, model: string) => void;
+  setPlannerProvider: (p: Provider | null) => void;
   setKey: (p: Provider, key: string) => void;
   clearKey: (p: Provider) => void;
 }
@@ -101,6 +114,7 @@ export const useSettingsStore = create<SettingsState>()(
       provider: "groq",
       modelByProvider: { ...DEFAULT_MODELS },
       plannerByProvider: { ...DEFAULT_MODELS },
+      plannerProvider: null,
       keys: { groq: "", gemini: "", openai: "", anthropic: "" },
 
       setMode: (mode) => set({ mode }),
@@ -109,6 +123,7 @@ export const useSettingsStore = create<SettingsState>()(
         set((s) => ({ modelByProvider: { ...s.modelByProvider, [p]: model } })),
       setPlannerModel: (p, model) =>
         set((s) => ({ plannerByProvider: { ...s.plannerByProvider, [p]: model } })),
+      setPlannerProvider: (plannerProvider) => set({ plannerProvider }),
       setKey: (p, key) =>
         set((s) => ({ keys: { ...s.keys, [p]: key } })),
       clearKey: (p) =>
@@ -135,6 +150,8 @@ export const useSettingsStore = create<SettingsState>()(
           ...s,
           modelByProvider: clamp(s.modelByProvider),
           plannerByProvider: clamp(s.plannerByProvider),
+          // Absent in older persisted blobs; null means "follow the answer".
+          plannerProvider: s.plannerProvider ?? null,
         };
       },
     },
@@ -147,11 +164,23 @@ export function currentProviderConfig(): {
   synth_model: string;
   planner_model: string;
   api_key?: string;
+  planner_provider?: Provider;
+  planner_api_key?: string;
 } {
   const s = useSettingsStore.getState();
   const provider = s.provider;
   const synth_model = s.modelByProvider[provider];
-  const planner_model = s.plannerByProvider[provider];
   const api_key = s.keys[provider] || undefined;   // omit if empty
-  return { provider, synth_model, planner_model, ...(api_key ? { api_key } : {}) };
+  // The planner follows the answer model unless explicitly moved. Only send
+  // the split fields when it actually differs, so the common request stays
+  // exactly the shape the server saw before this existed.
+  const pp = s.plannerProvider;
+  const planner_model = s.plannerByProvider[pp ?? provider];
+  const planner_key = pp ? s.keys[pp] || undefined : undefined;
+  return {
+    provider, synth_model, planner_model,
+    ...(api_key ? { api_key } : {}),
+    ...(pp && pp !== provider ? { planner_provider: pp } : {}),
+    ...(pp && pp !== provider && planner_key ? { planner_api_key: planner_key } : {}),
+  };
 }

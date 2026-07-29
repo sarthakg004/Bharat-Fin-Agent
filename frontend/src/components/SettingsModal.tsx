@@ -105,7 +105,11 @@ export function SettingsModal({ open, onClose }: Props) {
                 <p className="mt-2 border-t border-border-subtle pt-2 font-mono text-[10.5px] leading-relaxed text-text-muted">
                   Both default to <code>gpt-oss-120b</code>. Leave them alone and
                   nothing changes — the split exists so a cheaper or stricter
-                  model can take one job without touching the other.
+                  model can take one job without touching the other. The rows
+                  below set each provider's pair; the planner can also stay on a
+                  <em> different</em> provider from the answer (a free planner
+                  beside a paid answer model), which is chosen in the composer's
+                  Plan dropdown.
                 </p>
               </section>
 

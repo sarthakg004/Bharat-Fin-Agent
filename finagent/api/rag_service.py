@@ -312,6 +312,8 @@ def run_agentic(question: str,
                 provider: str = "groq",
                 synth_model: Optional[str] = None,
                 planner_model: Optional[str] = None,
+                planner_provider: Optional[str] = None,
+                planner_api_key: Optional[str] = None,
                 api_key: Optional[str] = None,
                 collection: Optional[str] = None,
                 session_id: Optional[str] = None,
@@ -342,6 +344,8 @@ def run_agentic(question: str,
     # Everything request-specific goes here, not onto the shared agent.
     ctx = RuntimeContext(provider=provider, synth_model=synth_model,
                          planner_model=planner_model,
+                         planner_provider=planner_provider,
+                         planner_api_key=planner_api_key,
                          api_key=api_key, session_id=session_id)
 
     # `chat_history` lives directly on AgentState (TypedDict, total=False) so

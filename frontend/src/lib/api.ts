@@ -203,7 +203,11 @@ async function streamSSE(path: string, req: unknown, handlers: StreamHandlers): 
   });
 
   if (!res.ok || !res.body) {
-    throw new Error(`Stream failed: ${res.status} ${res.statusText}`);
+    // The server explains itself in `detail` — a missing provider key comes
+    // back as "GEMINI_API_KEY not found…", which is actionable. Showing only
+    // the status turned that into a bare "Stream failed: 400".
+    const detail = await res.json().then((j) => j.detail).catch(() => null);
+    throw new Error(detail || `Stream failed: ${res.status} ${res.statusText}`);
   }
 
   const reader = res.body.getReader();
