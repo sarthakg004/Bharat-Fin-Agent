@@ -142,7 +142,9 @@ export type SSEEvent =
   | { type: "chart"; chart: ChartSpec }
   | { type: "chunk"; content: string }
   | { type: "metrics"; latency: number; model?: string; input_tokens?: number; output_tokens?: number; agentic?: QueryMetadata | null }
-  | { type: "error"; message: string; code?: string }
+  /** `retry_after` = seconds until the provider's limit clears, read off the
+   *  429 itself. Absent when the provider didn't say. */
+  | { type: "error"; message: string; code?: string; retry_after?: number }
   | { type: "done" };
 
 export interface StreamHandlers {

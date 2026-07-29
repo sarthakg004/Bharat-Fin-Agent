@@ -28,6 +28,10 @@ export interface ChatMessage {
   research?: ResearchState;
   metadata?: QueryMetadata;
   ragas?: RagasScores;
+  /** Epoch ms the provider's rate limit clears — drives the retry countdown.
+   * Absolute, not a duration, so it stays correct across re-renders and a
+   * thread reloaded from sessionStorage. */
+  retryAt?: number;
   error?: string;
   streaming?: boolean;
   createdAt: number;

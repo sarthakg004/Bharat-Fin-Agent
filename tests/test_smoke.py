@@ -550,7 +550,7 @@ def test_all_keys_exhausted_circuit_breaker():
                             keys=["k1", "k2"], chat_kwargs={"temperature": 0})
     # A full failed rotation cycle latches the provider cooldown…
     L._EXHAUSTED_UNTIL.pop("groq", None)
-    exc = m._exhausted(Exception("429 rate limit"))
+    exc = m._exhausted(Exception("429 rate limit"), [])
     assert isinstance(exc, L.AllKeysExhaustedError)
     assert L._EXHAUSTED_UNTIL["groq"] > __import__("time").time()
     # …and while latched, calls fail fast without touching the network.
@@ -561,6 +561,75 @@ def test_all_keys_exhausted_circuit_breaker():
         pass
     finally:
         L._EXHAUSTED_UNTIL.pop("groq", None)   # don't leak the latch to other tests
+
+
+def test_rate_limit_reset_is_read_off_the_429():
+    """A 429 says exactly when it clears; we surface that instead of guessing.
+
+    Groq puts the wait in the body ("try again in 2m59.56s", resolved against
+    whichever bucket tripped) and in `retry-after` / `x-ratelimit-reset-*`
+    headers (one per bucket, so they don't say which one failed). The body must
+    win, the value must survive the wrapping LangGraph/executor does to it, and
+    the pool's own reset is the EARLIEST of its keys'.
+    """
+    import time
+
+    import pytest
+
+    import finagent.llm as L
+    from finagent.api.main import _classify_provider_error
+
+    assert L.parse_duration("7.66s") == 7.66
+    assert L.parse_duration("500ms") == 0.5
+    assert L.parse_duration("1h2m3s") == 3723.0
+    assert L.parse_duration("30") == 30.0          # bare HTTP Retry-After
+    assert L.parse_duration("soon") is None
+    assert (L.format_wait(7.66), L.format_wait(179.6), L.format_wait(7500)) \
+        == ("8s", "3m 0s", "2h 5m")
+
+    class Err(Exception):
+        response = type("R", (), {"headers": {"retry-after": "60",
+                                              "x-ratelimit-reset-tokens": "7.66s"}})()
+
+    body = Err("Rate limit reached ... Please try again in 2m59.56s")
+    assert abs(L.retry_after_seconds(body) - 179.56) < 1e-9   # body beats headers
+    assert L.retry_after_seconds(Err("429 too many requests")) == 60.0  # fallback
+    assert L.retry_after_seconds(ValueError("unrelated")) is None
+    try:                                          # wrapped, as it arrives in prod
+        try:
+            raise body
+        except Exception as inner:
+            raise RuntimeError("node failed") from inner
+    except Exception as outer:
+        assert abs(L.retry_after_seconds(outer) - 179.56) < 1e-9
+
+    m = L.RotatingChatModel(provider="groq", chat_model="llama-3.1-8b-instant",
+                            keys=["k1", "k2"], chat_kwargs={"temperature": 0})
+    try:
+        L._EXHAUSTED_UNTIL.pop("groq", None)
+        L._RESET_AT.pop("groq", None)
+        # Two keys, two resets → the pool is usable again when the first one is.
+        assert m._exhausted(Exception("429"), [3600.0, 12.0]).retry_after == 12.0
+        # A daily bucket resets hours out. The user is told the truth; the
+        # process-wide fail-fast latch is clamped so keys in another org (whose
+        # day rolls over separately) aren't locked out behind it.
+        m._exhausted(Exception("429"), [7200.0])
+        assert L._EXHAUSTED_UNTIL["groq"] - time.time() <= L._EXHAUST_COOLDOWN_MAX_S
+        assert L._RESET_AT["groq"] - time.time() > 7000
+        with pytest.raises(L.AllKeysExhaustedError) as caught:
+            m._check_cooldown()
+        assert caught.value.retry_after > 7000 and "2h" in str(caught.value)
+    finally:
+        L._EXHAUSTED_UNTIL.pop("groq", None)
+        L._RESET_AT.pop("groq", None)
+
+    # …and it reaches the browser on the SSE error event.
+    ev = _classify_provider_error(body, None)
+    assert ev["code"] == "rate_limit" and ev["retry_after"] == 179.6
+    assert "Retry in 3m 0s." in ev["message"]
+    # Provider said nothing → no timer, and the copy stays vague as before.
+    vague = _classify_provider_error(Exception("429 rate limit"), None)
+    assert "retry_after" not in vague and "wait a minute" in vague["message"]
 
 
 def test_client_chat_history_is_the_only_memory():

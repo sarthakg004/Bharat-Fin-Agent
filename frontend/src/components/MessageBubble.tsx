@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { Check, ChevronRight, RotateCcw } from "lucide-react";
+import { Check, ChevronRight, Clock, RotateCcw } from "lucide-react";
 
 import type { QueryMetadata } from "@/lib/api";
 import type { ChatMessage } from "@/store/chatStore";
@@ -68,6 +68,8 @@ function AssistantBubble({ msg, onRetry }: BubbleProps) {
         </div>
       )}
 
+      {msg.retryAt && <RetryCountdown at={msg.retryAt} onRetry={onRetry} />}
+
       {/* Inline charts produced by the market-data tool lane. They arrive on
           a separate SSE channel and attach to the in-progress assistant
           message, so they appear immediately when the data lands. */}
@@ -92,6 +94,59 @@ function AssistantBubble({ msg, onRetry }: BubbleProps) {
       )}
     </motion.div>
   );
+}
+
+/** Live countdown to the moment a rate-limited provider will accept work again.
+ *
+ * The 429 already carries its own reset and the UI used to throw it away, so
+ * the only advice we could give was "wait a minute" — wrong in both directions:
+ * a per-minute bucket often clears in eight seconds, a drained daily bucket is
+ * hours out. `at` is an absolute deadline, so this stays right after a re-render
+ * or a thread restored from sessionStorage. The existing Retry button below is
+ * the action; this only says when to press it.
+ */
+function RetryCountdown({ at, onRetry }: { at: number; onRetry?: () => void }) {
+  const [left, setLeft] = useState(() => at - Date.now());
+
+  useEffect(() => {
+    setLeft(at - Date.now());
+    if (at <= Date.now()) return;
+    const id = setInterval(() => {
+      const ms = at - Date.now();
+      setLeft(ms);
+      if (ms <= 0) clearInterval(id);      // ponytail: no timer once it's cleared
+    }, 1000);
+    return () => clearInterval(id);
+  }, [at]);
+
+  const ready = left <= 0;
+  return (
+    <div
+      className={`flex w-fit items-center gap-2 border px-3 py-1.5 font-mono text-[11px] ${
+        ready ? "border-accent/40 text-accent" : "border-border-subtle text-text-secondary"
+      }`}
+      aria-live="polite"
+    >
+      <Clock size={12} className={ready ? "" : "animate-pulse"} />
+      {ready ? (
+        <span>Limit has reset{onRetry ? " — retry below" : ""}.</span>
+      ) : (
+        <span>
+          Resets in{" "}
+          <span className="tabular-nums text-text-primary">{formatLeft(left)}</span>
+        </span>
+      )}
+    </div>
+  );
+}
+
+/** Milliseconds → "42s" / "3m 07s" / "2h 05m". Ceil, so it never shows 0 early. */
+function formatLeft(ms: number): string {
+  const s = Math.ceil(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ${String(s % 60).padStart(2, "0")}s`;
+  return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}m`;
 }
 
 /**

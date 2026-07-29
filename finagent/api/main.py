@@ -356,7 +356,8 @@ def _swallow(task: asyncio.Future) -> None:
 def _classify_provider_error(e: Exception, pc) -> dict:
     """Classify a provider failure into a user-facing SSE error event
     (shared by /api/query and /api/research)."""
-    from finagent.llm import is_daily_quota_error, is_rate_limit_error
+    from finagent.llm import (format_wait, is_daily_quota_error,
+                              is_rate_limit_error, retry_after_seconds)
 
     # Log the error type for debugging, but NOT the full exception value —
     # provider auth errors can echo the API key into logs.
@@ -367,39 +368,48 @@ def _classify_provider_error(e: Exception, pc) -> dict:
     user_key = bool(pc and pc.api_key)
     prov_label = {"groq": "Groq", "gemini": "Gemini",
                   "openai": "OpenAI", "anthropic": "Anthropic"}.get(provider, provider)
+    # Seconds until the limit clears, straight off the provider's 429. None when
+    # the provider didn't say — then the copy stays vague, as it always was.
+    wait = retry_after_seconds(e) if rate_limited else None
     if rate_limited:
         code = "rate_limit"
+        daily = is_daily_quota_error(e)
+        # "Wait a minute" was always a guess. When the provider gave a number,
+        # say it — the frontend turns `retry_after` into a live countdown, and
+        # this sentence is the fallback for anything that only reads the text.
+        when = (f"Retry in {format_wait(wait)}." if wait is not None
+                else "Try again tomorrow." if daily
+                else "Please wait a minute and try again.")
         if user_key:
             # The user supplied THEIR OWN key — don't blame the shared keys.
             # Free tiers are tiny (Gemini = 5 req/min) and this agent makes
             # many model calls per question, so a single query can exhaust
             # them. Tell them what actually happened and how to recover.
-            daily = is_daily_quota_error(e)
             window = "daily quota" if daily else "per-minute rate limit"
             message = (
                 f"Your {prov_label} API key hit its {window}. This agent makes "
                 f"several model calls per question, and free tiers are very low "
-                f"(Gemini allows just 5 requests/min). "
-                + ("Try again tomorrow, " if daily else "Wait a minute and retry, ")
-                + f"or use a higher-tier {prov_label} key."
+                f"(Gemini allows just 5 requests/min). {when} "
+                f"Or use a higher-tier {prov_label} key."
             )
-        elif is_daily_quota_error(e):
-            message = ("We've hit today's usage limit on the shared API keys. "
-                       "Please try again tomorrow — or add your own API key "
-                       "from the model picker to keep going now.")
+        elif daily:
+            message = (f"We've hit today's usage limit on the shared API keys. "
+                       f"{when} Or add your own API key from the model picker "
+                       f"to keep going now.")
         else:
-            message = ("Limit exhausted: all shared API keys have hit their "
-                       "rate limit. Please wait a minute and try again — or "
-                       "add your own API key from the model picker to keep "
-                       "going now.")
-    else:
-        code = "error"
-        # Surface a clean provider error (the value may include a key, so the
-        # llm layer already avoids logging it; here we keep the type + a short
-        # hint without echoing the full provider payload).
-        msg = str(e)
-        message = f"{prov_label} error: {msg[:240]}" if user_key else f"{type(e).__name__}: {msg[:240]}"
-    return {"type": "error", "code": code, "message": message}
+            message = (f"Limit exhausted: all shared API keys have hit their "
+                       f"rate limit. {when} Or add your own API key from the "
+                       f"model picker to keep going now.")
+        return {"type": "error", "code": code, "message": message,
+                **({"retry_after": round(wait, 1)} if wait is not None else {})}
+
+    # Surface a clean provider error (the value may include a key, so the llm
+    # layer already avoids logging it; here we keep the type + a short hint
+    # without echoing the full provider payload).
+    msg = str(e)
+    message = (f"{prov_label} error: {msg[:240]}" if user_key
+               else f"{type(e).__name__}: {msg[:240]}")
+    return {"type": "error", "code": "error", "message": message}
 
 
 async def _run_rag(request: QueryRequest, hist: list[dict],

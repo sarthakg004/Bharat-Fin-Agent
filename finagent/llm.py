@@ -141,32 +141,35 @@ def text_of(response) -> str:
     return str(c or "")
 
 
+def _chain(exc: BaseException):
+    """Walk `exc` and its ``__cause__`` / ``__context__`` ancestry.
+
+    Every classifier below needs this: by the time a provider error bubbles up
+    through LangGraph and the thread executor it is usually *wrapped*, and a
+    check that only inspects the outer wrapper shows users a raw traceback
+    instead of the friendly "limit reached" message. Bounded and cycle-safe.
+    """
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen and len(seen) < 10:
+        seen.add(id(cur))
+        yield cur
+        cur = cur.__cause__ or cur.__context__
+
+
 def is_rate_limit_error(exc: BaseException) -> bool:
     """True if `exc` looks like a provider rate-limit / quota error.
 
     Covers groq.RateLimitError, openai.RateLimitError, anthropic.RateLimitError,
     google.api_core.exceptions.ResourceExhausted, and any wrapped variant that
     mentions a 429 or "rate limit" in the message.
-
-    Walks the exception chain (``__cause__`` / ``__context__``) because by the
-    time the error bubbles up through LangGraph + the thread executor the
-    provider's RateLimitError is usually *wrapped* — the original check only saw
-    the generic outer wrapper and so showed users a raw traceback instead of the
-    friendly "limit reached" message.
     """
-    seen: set[int] = set()
-    cur: BaseException | None = exc
-    depth = 0
-    while cur is not None and id(cur) not in seen and depth < 10:
-        seen.add(id(cur))
-        name = type(cur).__name__.lower()
-        if "ratelimit" in name or "resourceexhausted" in name:
-            return True
-        if any(hint in (str(cur) or "").lower() for hint in _RATE_LIMIT_HINTS):
-            return True
-        cur = cur.__cause__ or cur.__context__
-        depth += 1
-    return False
+    return any(
+        "ratelimit" in type(c).__name__.lower()
+        or "resourceexhausted" in type(c).__name__.lower()
+        or any(hint in (str(c) or "").lower() for hint in _RATE_LIMIT_HINTS)
+        for c in _chain(exc)
+    )
 
 
 _AUTH_HINTS = (
@@ -181,18 +184,11 @@ def is_auth_error(exc: BaseException) -> bool:
     A multi-key pool can contain a key that has been revoked since it was
     configured; requests landing on it must not fail — `RotatingChatModel`
     drops such a key from the pool and continues on the remaining ones."""
-    seen: set[int] = set()
-    cur: BaseException | None = exc
-    depth = 0
-    while cur is not None and id(cur) not in seen and depth < 10:
-        seen.add(id(cur))
-        if "authenticationerror" in type(cur).__name__.lower():
-            return True
-        if any(hint in (str(cur) or "").lower() for hint in _AUTH_HINTS):
-            return True
-        cur = cur.__cause__ or cur.__context__
-        depth += 1
-    return False
+    return any(
+        "authenticationerror" in type(c).__name__.lower()
+        or any(hint in (str(c) or "").lower() for hint in _AUTH_HINTS)
+        for c in _chain(exc)
+    )
 
 
 def is_daily_quota_error(exc: BaseException) -> bool:
@@ -203,18 +199,93 @@ def is_daily_quota_error(exc: BaseException) -> bool:
     orgs, rotation still helps until every org's daily bucket is drained — at
     which point only a 24h wait helps.
     """
-    if not is_rate_limit_error(exc):
-        return False
-    seen: set[int] = set()
-    cur: BaseException | None = exc
-    depth = 0
-    while cur is not None and id(cur) not in seen and depth < 10:
-        seen.add(id(cur))
-        if any(hint in (str(cur) or "").lower() for hint in _DAILY_QUOTA_HINTS):
-            return True
-        cur = cur.__cause__ or cur.__context__
-        depth += 1
-    return False
+    return is_rate_limit_error(exc) and any(
+        hint in (str(c) or "").lower()
+        for c in _chain(exc) for hint in _DAILY_QUOTA_HINTS
+    )
+
+
+# --------------------------------------------------------------------------- #
+# "How long until it clears?" — reading the reset off the 429 itself
+# --------------------------------------------------------------------------- #
+
+# Go-style durations, which is what Groq emits: "7.66s", "2m59.56s", "500ms".
+_DUR_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(ms|h|m|s)")
+_DUR_MULT = {"ms": 0.001, "s": 1.0, "m": 60.0, "h": 3600.0}
+_TRY_AGAIN_RE = re.compile(r"try again in\s+([\d.hms\s]+)", re.I)
+
+# Per-bucket reset headers, longest-lived bucket first. Used only as a fallback:
+# they say when EACH bucket refills, not which one tripped, so we take the first
+# that is present rather than guessing — see `retry_after_seconds`.
+_RESET_HEADERS = ("retry-after", "x-ratelimit-reset-requests",
+                  "x-ratelimit-reset-tokens")
+
+
+def parse_duration(text: str) -> Optional[float]:
+    """Seconds from a Go-style duration ("7.66s", "2m59.56s", "1h2m3s") or a
+    bare number ("30", the plain HTTP `Retry-After` form). None if unparseable.
+    """
+    t = (text or "").strip()
+    if not t:
+        return None
+    parts = _DUR_RE.findall(t)
+    if parts:
+        return sum(float(n) * _DUR_MULT[u] for n, u in parts)
+    try:
+        return float(t)
+    except ValueError:
+        return None
+
+
+def _headers_of(exc: BaseException) -> dict[str, str]:
+    """Lower-cased response headers off an SDK error, or {} if it has none."""
+    resp = getattr(exc, "response", None)
+    raw = getattr(resp, "headers", None) or getattr(exc, "headers", None)
+    try:
+        return {str(k).lower(): str(v) for k, v in dict(raw).items()}
+    except Exception:
+        return {}
+
+
+def retry_after_seconds(exc: BaseException) -> Optional[float]:
+    """How long until this provider error clears, in seconds — None if unknown.
+
+    Providers already answer this on the 429 and we were throwing it away, so
+    the UI could only say "wait a minute" whether the true wait was 8 seconds
+    or 3 hours. Groq (and every OpenAI-shaped SDK) puts it in two places:
+
+      * the body — "Please try again in 2m59.56s", computed against whichever
+        limit ACTUALLY tripped;
+      * the headers — `retry-after` plus per-bucket
+        `x-ratelimit-reset-{requests,tokens}`.
+
+    The body wins because it names the bucket that failed; the headers report
+    every bucket's refill regardless of which one was hit, so reading the wrong
+    one would tell the user to retry too early. `AllKeysExhaustedError` carries
+    a pre-resolved value, so a latched cooldown answers without re-parsing.
+    """
+    for cur in _chain(exc):
+        cached = getattr(cur, "retry_after", None)
+        if isinstance(cached, (int, float)) and not isinstance(cached, bool):
+            return float(cached)
+        m = _TRY_AGAIN_RE.search(str(cur) or "")
+        if m and (secs := parse_duration(m.group(1))) is not None:
+            return secs
+        headers = _headers_of(cur)
+        for name in _RESET_HEADERS:
+            if name in headers and (secs := parse_duration(headers[name])) is not None:
+                return secs
+    return None
+
+
+def format_wait(seconds: float) -> str:
+    """A wait a human reads at a glance: "8s", "3m 0s", "2h 5m"."""
+    s = max(0, int(seconds + 0.5))
+    if s < 60:
+        return f"{s}s"
+    if s < 3600:
+        return f"{s // 60}m {s % 60}s"
+    return f"{s // 3600}h {s % 3600 // 60}m"
 
 
 # --------------------------------------------------------------------------- #
@@ -239,7 +310,14 @@ class AllKeysExhaustedError(Exception):
     every node grinding through the whole key pool again. The message contains
     'rate limit' so `is_rate_limit_error` classifies it, and the original
     provider error is chained (`from`) so `is_daily_quota_error` still works.
+
+    `retry_after` is the pool's real reset in seconds when the provider told us
+    (see `retry_after_seconds`), else None.
     """
+
+    def __init__(self, message: str, retry_after: Optional[float] = None):
+        super().__init__(message)
+        self.retry_after = retry_after
 
 
 # Provider → unix time until which every key is considered exhausted. Shared
@@ -247,6 +325,16 @@ class AllKeysExhaustedError(Exception):
 # call short-circuits for the cooldown window instead of re-proving it.
 _EXHAUSTED_UNTIL: dict[str, float] = {}
 _EXHAUST_COOLDOWN_S = 60.0
+# Ceiling on a provider-reported cooldown. A drained DAILY bucket resets hours
+# out, and latching that process-wide would keep failing fast long after keys
+# from another org (whose day rolls over separately) have recovered. The user
+# still sees the true reset — only the internal fail-fast window is clamped.
+_EXHAUST_COOLDOWN_MAX_S = 300.0
+
+# Provider → unix time the provider itself said its limit clears. Separate from
+# the clamped fail-fast window above because this is the number shown to the
+# user, and it must stay honest even when it is three hours away.
+_RESET_AT: dict[str, float] = {}
 
 # Total exhaustion events per provider across this process lifetime.
 # Incremented every time _exhausted() fires (i.e., every full rotation cycle
@@ -362,40 +450,68 @@ class RotatingChatModel(BaseChatModel):
             return True
         return False
 
+    def _note_failure(self, exc: BaseException, waits: list) -> bool:
+        """Record what the provider said about the reset, then try to recover.
+
+        Called from every rotation loop so `_exhausted` can report a real
+        countdown instead of a guess. False → the error is not recoverable.
+        """
+        wait = retry_after_seconds(exc)
+        if wait is not None:
+            waits.append(wait)
+        return self._recover(exc)
+
     def _check_cooldown(self) -> None:
         """Fail fast while the whole pool is known-exhausted (no network)."""
-        until = _EXHAUSTED_UNTIL.get(self.provider, 0.0)
-        left = until - time.time()
+        left = _EXHAUSTED_UNTIL.get(self.provider, 0.0) - time.time()
         if left > 0:
+            # Report the provider's own reset when we have it; the latch may be
+            # shorter (clamped) but the user wants the truth, not our schedule.
+            true_left = max(_RESET_AT.get(self.provider, 0.0) - time.time(), left)
             raise AllKeysExhaustedError(
                 f"All {self.provider} API keys hit their rate limit; "
-                f"cooling down for another {int(left) + 1}s."
+                f"resets in {format_wait(true_left)}.",
+                retry_after=true_left,
             )
 
-    def _exhausted(self, last: BaseException) -> AllKeysExhaustedError:
-        """A full rotation cycle failed — latch the cooldown for the provider."""
-        _EXHAUSTED_UNTIL[self.provider] = time.time() + _EXHAUST_COOLDOWN_S
+    def _exhausted(self, last: BaseException,
+                   waits: "list | tuple" = ()) -> AllKeysExhaustedError:
+        """A full rotation cycle failed — latch the cooldown for the provider.
+
+        The pool recovers when its EARLIEST key does, so take the min of what
+        each key's 429 reported.
+        """
+        wait = min(waits) if waits else None
+        cooldown = (_EXHAUST_COOLDOWN_S if wait is None
+                    else min(max(wait, 1.0), _EXHAUST_COOLDOWN_MAX_S))
+        now = time.time()
+        _EXHAUSTED_UNTIL[self.provider] = now + cooldown
+        if wait is not None:
+            _RESET_AT[self.provider] = now + wait
         _EXHAUST_COUNT[self.provider] = _EXHAUST_COUNT.get(self.provider, 0) + 1
         print(f"[RotatingChat:{self.provider}] every key rate-limited; "
-              f"failing fast for {_EXHAUST_COOLDOWN_S:.0f}s "
-              f"(exhaustion #{_EXHAUST_COUNT[self.provider]} this session)")
+              f"failing fast for {cooldown:.0f}s "
+              f"(provider reset: {format_wait(wait) if wait is not None else 'unknown'}; "
+              f"exhaustion #{_EXHAUST_COUNT[self.provider]} this session)")
         return AllKeysExhaustedError(
             f"All {len(self.keys)} {self.provider} API keys hit their rate "
-            f"limit ({type(last).__name__})."
+            f"limit ({type(last).__name__}).",
+            retry_after=wait,
         )
 
     def _retry(self, op):
         """Run op(self._llm) across all keys, switching on recoverable errors."""
         self._check_cooldown()
         last: Any = None
+        waits: list[float] = []
         for _ in range(max(1, len(self.keys))):
             try:
                 return op(self._llm)
             except Exception as e:
                 last = e
-                if not self._recover(e):
+                if not self._note_failure(e, waits):
                     raise
-        raise self._exhausted(last) from last
+        raise self._exhausted(last, waits) from last
 
     # ------------------------------------------------------------------ #
     # BaseChatModel hooks
@@ -410,6 +526,7 @@ class RotatingChatModel(BaseChatModel):
         # Async variant — same retry loop but awaiting the inner call.
         self._check_cooldown()
         last: Any = None
+        waits: list[float] = []
         for _ in range(max(1, len(self.keys))):
             try:
                 return await self._llm._agenerate(
@@ -417,9 +534,9 @@ class RotatingChatModel(BaseChatModel):
                 )
             except Exception as e:
                 last = e
-                if not self._recover(e):
+                if not self._note_failure(e, waits):
                     raise
-        raise self._exhausted(last) from last
+        raise self._exhausted(last, waits) from last
 
     # ------------------------------------------------------------------ #
     # Structured-output / tool-binding — must rebuild the chain inside the
@@ -449,15 +566,16 @@ class _RotatingBound(Runnable):
     async def ainvoke(self, input, config=None, **ikw):
         self.rot._check_cooldown()
         last: Any = None
+        waits: list[float] = []
         for _ in range(max(1, len(self.rot.keys))):
             try:
                 chain = getattr(self.rot._llm, self.method)(*self.args, **self.kw)
                 return await chain.ainvoke(input, config=config, **ikw)
             except Exception as e:
                 last = e
-                if not self.rot._recover(e):
+                if not self.rot._note_failure(e, waits):
                     raise
-        raise self.rot._exhausted(last) from last
+        raise self.rot._exhausted(last, waits) from last
 
 
 def build_llm(

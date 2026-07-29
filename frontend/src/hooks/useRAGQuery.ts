@@ -112,12 +112,15 @@ export function useRAGQuery() {
                   useThreadStore.getState().saveActive();
                 }
                 if (e.code === "rate_limit") {
-                  // Daily limit hit on all keys — show it as a calm message in
-                  // the thread, not a red error.
+                  // Limit hit on all keys — show it as a calm message in the
+                  // thread, not a red error. `retry_after` is the provider's
+                  // own reset; store it as a deadline so the bubble can count
+                  // down to it instead of saying "wait a minute" and guessing.
                   patchMessage(assistantId, {
                     content: e.message, streaming: false, status: undefined,
+                    retryAt: e.retry_after ? Date.now() + e.retry_after * 1000 : undefined,
                   });
-                  toast("Daily usage limit reached", { icon: "⏳" });
+                  toast("Usage limit reached", { icon: "⏳" });
                 } else {
                   patchMessage(assistantId, { error: e.message, streaming: false });
                   toast.error(e.message);
