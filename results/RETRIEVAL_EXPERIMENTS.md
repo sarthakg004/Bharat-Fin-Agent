@@ -1098,3 +1098,76 @@ All numbers reproduce with `--mode served` / `--mode subquery` / `--mode
 question`; the retrieval queries are cached in
 `results/financebench_retrieval_queries.json` and regenerated with
 `--refresh-plans`.
+
+## 14c. Giving the question room on narrative questions — July 2026
+
+§14b left one regression open: narrative sat at 15-16 of 27 for every rewrite
+arm, against 19 for both the decomposition and question-only. The cause is that
+the §14 query is terse keywords, and narrative evidence is MD&A and
+risk-factor PROSE. Half of retrieval is a dense embedding match, which compares
+meaning — a keyword list does not read like a paragraph, so it lands in the
+wrong neighbourhood. The raw question is what retrieves prose well, and it was
+being given `QUESTION_SLOTS = 2` of the 8-passage budget.
+
+Swept the question's budget on `narrative`-routed requests (35 of 99). Nothing
+else changes — same index, same reranker, same cached queries, no extra call:
+
+| narrative slots | hit@5 | hit@8 | pool | retention | numeric | narrative | comparison |
+|---|---|---|---|---|---|---|---|
+| 2 (§14b) | 67 | 71 | 90 | 0.789 | 46/60 | 16/27 | 9/12 |
+| 5 | 66 | 71 | 90 | 0.789 | 47/60 | 16/27 | 8/12 |
+| **8 (shipped)** | 66 | **75** | 90 | **0.833** | 47/60 | **20/27** | 8/12 |
+
+**+4, free.** Narrative recovers 16 -> 20, past the 19 that question-only
+managed. `NARRATIVE_QUESTION_SLOTS = 8` in `AgenticRAGv2`.
+
+**The threshold is the finding.** 5 slots changes NOTHING — same 71, same 16.
+The question's evidence only survives into the cap once it has the full budget,
+so the graded 3/5 split that seemed intuitive would have bought nothing. Test
+the endpoints, not the midpoint.
+
+Note this is no longer "a bit more room": at 8 the question gets the same budget
+as the keyword query, so a narrative request effectively searches on both
+equally.
+
+### Rejected: grounding the query in the index's own captions
+
+The §14b gap to the hand-authored ceiling is filing-specific vocabulary — the
+model writes "net sales" where AMD prints "Net revenue", and generic "product
+revenue" instead of AMD's real segments. That vocabulary is already in the index:
+§12 put every chunk's heading trail in `context_header`. So the obvious fix is to
+stop asking the model to recall captions and instead show it the real ones for
+that company + year (median 64 distinct, filtered of signature blocks and
+cover-page boilerplate) and let it pick.
+
+It works, and it still loses:
+
+| arm | hit@5 | hit@8 | numeric | narrative | comparison |
+|---|---|---|---|---|---|
+| shipped queries, slots 2 | 67 | 71 | 46/60 | 16/27 | 9/12 |
+| **shipped queries, slots 8** | 66 | **75** | 47/60 | 20/27 | 8/12 |
+| grounded, slots 2 | 63 | 74 | **49/60** | 16/27 | 9/12 |
+| grounded, slots 8 | 59 | 73 | 48/60 | 19/27 | 6/12 |
+
+Three reasons it is not shipped:
+
+1. **The two fixes do not stack — together they are worse than either alone**
+   (73 vs 75 and 74). They contend for the same eight seats from opposite ends:
+   grounding makes the keyword query better at finding the right section, then
+   widening the question displaces the hits grounding just won. Comparison takes
+   the brunt, 9 -> 6.
+2. **hit@8 is a tie inside the noise** (75 vs 74; the §14b baseline itself moved
+   72 -> 71 between identical runs), so hit@5 decides — and grounding costs 4
+   there against the slot fix's 1. It finds evidence but ranks it lower.
+3. It is not free: a metadata scan plus ~55 captions of prompt on every question.
+
+The idea is nonetheless validated and worth revisiting: grounding produced
+**49/60 on numeric, the best of any arm measured**, including the hand-authored
+one. Showing the model real captions genuinely helps it find tables. The version
+to retry is grounding WITHOUT widening the question (the 74/99 row), paired with
+something other than slot-widening for prose.
+
+Coverage caveat for anyone picking this up: only 50 of 63 company-years carry
+the key statement captions, and 3M 2018 has **none** — all 278 of its chunks
+have a bare `3M 2018` header. That is a hole in the §12 caption walker on that
+filing, and it caps how far caption grounding can go on this corpus.

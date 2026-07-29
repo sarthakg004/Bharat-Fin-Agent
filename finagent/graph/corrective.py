@@ -152,6 +152,19 @@ class AgenticRAGv2(AgenticRAG):
     # the previous production on BOTH metrics.
     QUESTION_SLOTS = 2
 
+    # …except when the planner routed the request `narrative` (§14c). Narrative
+    # evidence is MD&A and risk-factor PROSE, and the §14 retrieval query is
+    # terse keywords — a poor dense match for prose, since embeddings compare
+    # meaning and a keyword list does not read like a paragraph. The raw question
+    # is what retrieves prose well, and 2 slots is not enough room for it.
+    #
+    # Swept on FinanceBench (n=99, hit@8 / narrative subset):
+    #     2 slots -> 71 / 16      5 slots -> 71 / 16      8 slots -> 75 / 20
+    # Note the THRESHOLD: 5 changes nothing. The question needs the full budget
+    # before its evidence survives into the cap. hit@5 -1 and comparison -1 are
+    # both inside the +/-1 run-to-run noise this sweep demonstrated.
+    NARRATIVE_QUESTION_SLOTS = 8
+
     def __init__(
         self,
         *args,
@@ -266,9 +279,20 @@ class AgenticRAGv2(AgenticRAG):
         # Gated on `retrieve_subs`: when the planner routed every sub-query to
         # yfinance/web/EDGAR it has decided the filings are not the source, and
         # this must not override that.
-        queries = [(sub_q, None) for sub_q in search_subs]
+        #
+        # `final_top_k` (5) is the budget for ONE OF SEVERAL sub-queries sharing
+        # the cap. The §14 query is alone, so 5 + QUESTION_SLOTS = 7 would leave
+        # the 8-passage cap unfilled and throw away that query's 6th-8th hits —
+        # the measured 72/99 gave it the full cap. Sub-queries keep `final_top_k`
+        # precisely because there are several of them competing.
+        solo = self.retrieve_cap if (rq and search_subs == [rq]) else None
+        queries = [(sub_q, solo) for sub_q in search_subs]
         if search_subs and state["question"] not in search_subs:
-            queries.append((state["question"], self.QUESTION_SLOTS))
+            # A narrative request needs the question searched as hard as the
+            # keyword query — see NARRATIVE_QUESTION_SLOTS.
+            slots = (self.NARRATIVE_QUESTION_SLOTS if "narrative" in routes
+                     else self.QUESTION_SLOTS)
+            queries.append((state["question"], slots))
         for sub_q, top_k in queries:
             for hyb in hybrids:
                 for text, meta in hyb.search(sub_q, top_k=top_k):

@@ -13,7 +13,6 @@ import { cls, modKey } from "@/lib/utils";
 
 interface Props {
   onSend: (q: string) => void;
-  onClear: () => void;
   streaming: boolean;
   disabled?: boolean;
 }
@@ -24,7 +23,7 @@ const MAX_ROWS = 8;
 const LINE_HEIGHT = 24;
 const MIN_HEIGHT = LINE_HEIGHT * 3;
 
-export function InputBar({ onSend, onClear, streaming, disabled }: Props) {
+export function InputBar({ onSend, streaming, disabled }: Props) {
   const [value, setValue] = useState("");
   const mode = useSettingsStore((s) => s.mode);
   const ref = useRef<HTMLTextAreaElement | null>(null);
@@ -89,15 +88,9 @@ export function InputBar({ onSend, onClear, streaming, disabled }: Props) {
         />
         <div className="flex shrink-0 items-end gap-1">
           <UploadButton disabled={disabled || streaming} />
-          <button
-            type="button"
-            onClick={onClear}
-            className="flex h-[38px] w-[38px] items-center justify-center border border-border-subtle text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary"
-            title="New conversation"
-            aria-label="New conversation"
-          >
-            <X size={14} />
-          </button>
+          {/* No "new conversation" button here: an X inside a composer reads as
+              "clear what I typed", but this started a new chat — which the
+              sidebar's primary action and ⌘N already do. */}
           <motion.button
             type="button"
             onClick={send}

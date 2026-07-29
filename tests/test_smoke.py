@@ -949,9 +949,10 @@ def test_retrieval_runs_on_the_rewrite_not_the_subqueries():
     this node; they just stopped being search keys."""
     agent = _build_agent()
     agent._log = lambda s, m: None
-    searched = []
+    searched, budgets = [], []
     agent._get_hybrids = lambda: [type("H", (), {
-        "search": staticmethod(lambda q, top_k=None: searched.append(q) or []),
+        "search": staticmethod(lambda q, top_k=None:
+                               (searched.append(q), budgets.append(top_k), [])[2]),
         "infer_filter": staticmethod(lambda q: None)})()]
     base = {"question": "What drove AMD revenue change in FY22?",
             "sub_queries": ["AMD segment revenue FY22", "AMD FY22 revenue drivers"],
@@ -961,6 +962,21 @@ def test_retrieval_runs_on_the_rewrite_not_the_subqueries():
     agent.hybrid_retrieve_node({**base, "retrieval_query": rq})
     assert searched == [rq, base["question"]], \
         f"must search the rewrite + the question only, got {searched}"
+    # The lone §14 query gets the FULL cap, not `final_top_k`. At 5 it would
+    # supply 5 + QUESTION_SLOTS = 7 into an 8-passage cap, leaving it unfilled
+    # and discarding its own 6th-8th hits — `final_top_k` is the budget for one
+    # of SEVERAL competing sub-queries, which this is not.
+    # This request has a `narrative` route, so the question gets the wider
+    # budget (§14c): keyword queries are a poor dense match for MD&A prose, and
+    # at 2 slots the question's evidence never survives into the cap.
+    assert budgets == [agent.retrieve_cap, agent.NARRATIVE_QUESTION_SLOTS], budgets
+
+    # A purely numeric request keeps the narrow §13 budget — the sweep showed
+    # widening it buys nothing there, and it costs hit@5.
+    searched.clear(); budgets.clear()
+    agent.hybrid_retrieve_node({**base, "query_routes": ["numeric", "numeric"],
+                                "retrieval_query": rq})
+    assert budgets == [agent.retrieve_cap, agent.QUESTION_SLOTS], budgets
 
     # No rewrite (planner failed, or a rung below v3) → the old sub-query path,
     # so a failed rewrite costs nothing rather than losing the turn.

@@ -3,7 +3,6 @@ import { motion } from "framer-motion";
 
 import { useChatStore } from "@/store/chatStore";
 import { useRAGQuery } from "@/hooks/useRAGQuery";
-import { useThreadStore } from "@/store/threadStore";
 import { MessageBubble } from "./MessageBubble";
 import { InputBar } from "./InputBar";
 import { cls } from "@/lib/utils";
@@ -27,7 +26,6 @@ interface Props {
 export function ChatPanel({ backendStatus }: Props) {
   const messages = useChatStore((s) => s.messages);
   const streamingId = useChatStore((s) => s.streamingId);
-  const createChat = useThreadStore((s) => s.createChat);
   const { ask, regenerate } = useRAGQuery();
   const backendOnline = backendStatus === "online";
 
@@ -59,7 +57,11 @@ export function ChatPanel({ backendStatus }: Props) {
           ref={scrollerRef}
           className="flex-1 overflow-y-auto px-6 py-6 md:px-10"
         >
-          <div className="mx-auto flex max-w-[760px] flex-col gap-6">
+          {/* Full container width. The 760px reading column left the composer
+              stranded in the middle of a wide panel; messages track the same
+              width so both edges line up. The panel itself is resizable, which
+              is the real line-length control. */}
+          <div className="flex w-full flex-col gap-6">
             {messages.map((m) => (
               <MessageBubble
                 key={m.id}
@@ -72,10 +74,9 @@ export function ChatPanel({ backendStatus }: Props) {
       )}
 
       <div className="sticky bottom-0 border-t border-border-subtle bg-bg-base px-6 py-3 md:px-10">
-        <div className="mx-auto max-w-[760px]">
+        <div className="w-full">
           <InputBar
             onSend={ask}
-            onClear={() => createChat("New chat")}
             streaming={!!streamingId}
             disabled={!backendOnline}
           />

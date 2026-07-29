@@ -3,6 +3,12 @@
 @tailwind utilities;
 
 :root {
+  /* The app is dark-only. Without this, native controls — <select> popups,
+     scrollbars, autofill — are painted by the OS in its own light scheme, so
+     the model dropdown opened as a white list rendering our light-on-dark text
+     invisible. */
+  color-scheme: dark;
+
   /* Backgrounds */
   --bg-base:        #0B0B0F;
   --bg-surface:     #111116;
@@ -58,6 +64,16 @@ html, body, #root {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
+}
+
+/* The open <select> list is drawn by the OS and inherits almost nothing from
+   the control, so `bg-transparent` on the <select> leaves the popup unpainted.
+   `color-scheme: dark` above handles this on its own in most browsers; these
+   are the explicit fallback for the ones that ignore it. */
+option,
+optgroup {
+  background-color: var(--bg-elevated);
+  color: var(--text-primary);
 }
 
 /* Subtle grain overlay — pure SVG noise, no images shipped. */

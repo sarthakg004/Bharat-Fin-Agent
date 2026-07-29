@@ -137,6 +137,10 @@ POOL_DEPTH = 48             # production HybridRetriever.pool_top_k
 FINAL_PER_SUB = 5           # production HybridRetriever.final_top_k
 RETRIEVE_CAP = 8            # production AgenticRAGv2.retrieve_cap
 QUESTION_SLOTS = AgenticRAGv2.QUESTION_SLOTS   # slots for the question query
+# …and the wider budget a `narrative`-routed request gets (§14c). Both mirror
+# production rather than being harness settings, so a sweep means editing the
+# class the agent actually uses.
+NARRATIVE_QUESTION_SLOTS = AgenticRAGv2.NARRATIVE_QUESTION_SLOTS
 FINAL_KS = (5, RETRIEVE_CAP)
 # Sub-query routes that reach the filings retriever. The rest (market /
 # external / cross_document) are answered by yfinance / web / EDGAR, so
@@ -356,6 +360,10 @@ class Question:
     # the line items a filing prints. Authored offline and cached, exactly like
     # `subs`, so no LLM runs inside the measurement.
     retrieval_query: str = ""
+    # Did the planner route any sub-query `narrative`? Drives the question's
+    # slot budget: narrative evidence is prose, and the terse §14 keyword query
+    # is a poor dense match for prose, so the raw question needs more room.
+    narrative: bool = False
 
 
 def load_eval_questions(doc_names: Optional[set] = None,
@@ -487,6 +495,7 @@ def attach_subqueries(questions: list[Question], path: Path = PLANS_PATH,
         if routes and len(routes) == len(subs):
             subs = [s for s, r in zip(subs, routes) if r in RETRIEVED_ROUTES]
         q.subs = subs
+        q.narrative = "narrative" in routes
         if not subs:
             n_unretrieved += 1
     return n_unretrieved
@@ -695,10 +704,10 @@ def evaluate_index(cfg: Config, collection: str, questions: list[Question],
             for sub, parents in pools:
                 # The question query gets a smaller slot budget than a
                 # sub-query — see `AgenticRAGv2.QUESTION_SLOTS`.
-                k = (QUESTION_SLOTS
-                     if mode in ("subquery", "served")
-                     and len(pools) > 1 and sub == question_query
-                     else per_sub_k)
+                is_question = (mode in ("subquery", "served")
+                               and len(pools) > 1 and sub == question_query)
+                k = ((NARRATIVE_QUESTION_SLOTS if q.narrative else QUESTION_SLOTS)
+                     if is_question else per_sub_k)
                 top = (parents[:k] if arm is None
                        else arm.rerank(sub, parents, top_k=k))
                 for text, meta in top:
