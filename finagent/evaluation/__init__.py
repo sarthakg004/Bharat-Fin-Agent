@@ -2,7 +2,6 @@
 
 Canonical modules:
     dataset      — load_eval_dataset(), question-type tagging, held-out split.
-    retrieval    — run_retrieval_eval(): pool_recall@k + conditional Hit@k/MRR.
     ragas_eval   — run_ragas_eval() + RAGASEvaluator (faithfulness, relevancy, …).
     ledger       — append_row(), load_ledger(), plot_metrics(), style_ledger().
 

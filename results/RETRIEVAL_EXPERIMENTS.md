@@ -998,8 +998,8 @@ selection-side.
 Every section above was measured on the planner's sub-queries. The harness has
 carried a `--mode question` control since §10 and it was **never run on the
 shipped configuration**, so the value of decomposition itself had never been
-measured. `scripts/query_mode_ablation.py` measures it: three arms, one index,
-one reranker, one 8-passage budget — only the query text changes.
+measured. This section measures it: three arms, one index, one reranker, one
+8-passage budget — only the query text changes.
 
 | arm | queries/q | pool_recall | hit@5 | hit@8 | retention | wall |
 |---|---|---|---|---|---|---|
@@ -1033,4 +1033,68 @@ the gold spans never consulted, but by an author who knew §12 puts captions in
 chunk text. Whether a production LLM rewriter reaches the same number is
 UNTESTED and is the next thing to measure before shipping this.
 
-Full table, per-type breakdown and limits: `results/query_mode_ablation.md`.
+## 14b. What an actual model writes — and what shipped (July 2026)
+
+The §14 caveat, closed. Every rewrite below is written by the **served planner**
+(`openai/gpt-oss-120b`) through `AgenticRAGv3._retrieval_query` — the prompt now
+in `finagent/prompts/planner.py`, not a copy. Same index, same reranker, same 99
+questions, same 8-passage budget as every row above.
+
+| arm | q/q | pool_recall | hit@5 | hit@8 | retention | wall |
+|---|---|---|---|---|---|---|
+| subquery (pre-§14 served path) | 3.09 | 0.9091 (90) | 0.6061 (60) | 0.6768 (67) | 0.744 | 1122s |
+| question only | 1 | 0.7677 (76) | 0.5859 (58) | 0.6970 (69) | 0.908 | 374s |
+| rewrite, hand-authored | 1 | 0.8586 (85) | 0.7677 (76) | 0.8081 (80) | 0.941 | 340s |
+| rewrite, LLM | 1 | 0.7980 (79) | 0.6768 (67) | 0.6768 (67) | 0.848 | 350s |
+| **rewrite + question, 2 queries** | 2 | 0.9091 (90) | 0.6869 (68) | **0.7273 (72)** | 0.800 | 754s |
+| rewrite + question, concatenated | 1 | 0.7778 (77) | 0.6566 (65) | 0.6970 (69) | 0.896 | 374s |
+
+hit@8 by question type (n: numeric 60, narrative 27, comparison 12):
+
+| type | subquery | question | hand | LLM | **rw+q** | concat |
+|---|---|---|---|---|---|---|
+| numeric | 41 | 45 | 51 | 45 | **47** | 46 |
+| narrative | 19 | 19 | 20 | 15 | **16** | 16 |
+| comparison | 7 | 5 | 9 | 7 | **9** | 7 |
+
+**Shipped: rewrite + question as two queries — 72/99, against the served path's
+67, at 754s instead of 1122s.** Better and faster at once, because the extra
+~2.3s LLM call replaces 1.09 pool+rerank passes per question.
+
+Four findings worth keeping:
+
+1. **The LLM rewrite ALONE is not enough** (67/99 — it ties the decomposition it
+   replaces and loses to the bare question). Everything the single-query arm won
+   in §14 came from vocabulary the hand author had and the model does not: it
+   writes "net sales" where AMD prints "Net revenue", and generic "product
+   revenue" instead of AMD's real segments. The 80 vs 67 gap is that gap, and
+   the hand-authored row is a ceiling, not a target.
+2. **Concatenating the two into one string does not work** (69/99). Pool recall
+   collapses 90 → 77: two queries get two clean embeddings in two neighbourhoods
+   and the union is real, while one blended 45-word string lands `bge-large`
+   between them. Retention stays high (0.896) — it ranks well, it just finds
+   less. The merge is load-bearing, not bookkeeping. It also ties question-only
+   at hit@8 for the same wall time, so the LLM call buys nothing that way.
+3. **Comparison questions never needed decomposition.** 7 (subquery) → 9 (one
+   query + the question), matching the hand-authored ceiling; question-only is
+   worst at 5. §14's "cross-document intuition is real but small" was generous —
+   a well-formed single query beats splitting outright.
+4. **Narrative is the open weakness**: 15-16 for every rewrite arm against 19 for
+   both question-only and the decomposition. Keyword-only queries strip the
+   prose that MD&A and risk-factor retrieval needs, and `QUESTION_SLOTS = 2` is
+   not enough budget to put it back — question-only scores 19 with all 8. Making
+   the question's slot budget depend on its route costs no extra LLM call and is
+   the obvious next move.
+
+Robustness: ~2% of generations fail outright — the model answers the question
+instead of writing a query for it (one produced `"Approximately 1.33."`) or
+returns nothing. `_retrieval_query` rejects anything under
+`MIN_RETRIEVAL_QUERY_WORDS` and returns `""`, and an empty query degrades
+retrieval to the sub-query path rather than losing the turn. The rewrite is also
+cleared on every retry (`rewrite_node`, `critic_node`), because those nodes run
+precisely when the first search failed.
+
+All numbers reproduce with `--mode served` / `--mode subquery` / `--mode
+question`; the retrieval queries are cached in
+`results/financebench_retrieval_queries.json` and regenerated with
+`--refresh-plans`.

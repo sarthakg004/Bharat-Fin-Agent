@@ -58,9 +58,30 @@ from finagent.graph.state import AgentState, QueryPlan, RouterReport
 # Prompts
 # --------------------------------------------------------------------------- #
 
-from finagent.prompts.planner import ROUTER_PROMPT, ROUTER_SYSTEM  # noqa: F401
+from finagent.llm import text_of
+from finagent.prompts.planner import (  # noqa: F401
+    RETRIEVAL_QUERY_SHOTS, RETRIEVAL_QUERY_SYSTEM, ROUTER_PROMPT, ROUTER_SYSTEM,
+)
 from finagent.vectorstore import DEFAULT_EMBED_MODEL
 from finagent.config import settings
+
+# Below this, a "retrieval query" is a failed generation rather than a terse
+# one: the model answered the question or returned nothing. The shortest useful
+# real query is company + year + a caption, which clears this comfortably.
+MIN_RETRIEVAL_QUERY_WORDS = 6
+
+
+def _first_line(text: str) -> str:
+    """First non-empty line, stripped of the wrappers models add anyway."""
+    for line in (text or "").splitlines():
+        line = line.strip().strip('"').strip("`").strip()
+        for prefix in ("query:", "search query:", "rewrite:"):
+            if line.lower().startswith(prefix):
+                line = line[len(prefix):].strip()
+        if line:
+            return line
+    return ""
+
 
 # Fused planner+router: ONE structured call both decomposes the question into
 # sub-queries AND routes each to its lane. This replaces two sequential LLM
@@ -366,7 +387,45 @@ class AgenticRAGv3(AgenticRAGv2):
             out_state["query_routes"] = []
             return out_state
         return {"sub_queries": [q for q, _ in pairs],
-                "query_routes": [r for _, r in pairs]}
+                "query_routes": [r for _, r in pairs],
+                "retrieval_query": self._retrieval_query(
+                    state, question, [r for _, r in pairs],
+                    history_block + upload_block)}
+
+    def _retrieval_query(self, state: AgentState, question: str,
+                         routes: list[str], context_block: str = "") -> str:
+        """Write the ONE query that searches the filings — the §14 rewrite.
+
+        A SECOND call, deliberately not fused into the plan above. The two jobs
+        pull in opposite directions: the plan routes and decomposes in prose,
+        this writes a terse keyword query whose rules are mostly prohibitions
+        (no derived names, no filler, both fiscal years). Measured separately at
+        72/99 hit@8 vs 67 for retrieving on the sub-queries.
+
+        Skipped entirely — no call, no cost — when the planner routed every
+        sub-query to yfinance/web/EDGAR, because then the filings are not the
+        source. Returns "" on any failure, which degrades retrieval to the
+        sub-query path rather than losing the turn.
+        """
+        from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+
+        if not any(r in ("narrative", "numeric") for r in routes):
+            return ""
+        msgs: list = [SystemMessage(content=RETRIEVAL_QUERY_SYSTEM)]
+        for shot_q, shot_a in RETRIEVAL_QUERY_SHOTS:
+            msgs += [HumanMessage(content=shot_q), AIMessage(content=shot_a)]
+        msgs.append(HumanMessage(content=context_block + question))
+        try:
+            out = _first_line(text_of(self._get_llm("planner").invoke(msgs)))
+        except Exception as e:
+            self._log(state, f"retrieval-query rewrite failed ({e}); "
+                             f"retrieving on the sub-queries")
+            return ""
+        # Too short means the model answered the question instead of writing a
+        # query for it (one FinanceBench run produced "Approximately 1.33.") or
+        # returned nothing. Both would retrieve garbage; the sub-queries are a
+        # better fallback than a bad query.
+        return out if len(out.split()) >= MIN_RETRIEVAL_QUERY_WORDS else ""
 
     def router_node(self, state: AgentState) -> dict:
         """Classify each sub-query as narrative / numeric / external.

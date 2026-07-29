@@ -24,6 +24,11 @@ class AgentState(TypedDict, total=False):
 
     question: str                      # the user's original question
     sub_queries: list[str]             # planner's decomposition (1-3 queries)
+    # The ONE query that searches the filings, written in the filing's own
+    # vocabulary. Retrieval runs on this + the raw question instead of on the
+    # sub-queries (§14). Empty → retrieval falls back to the sub-queries, which
+    # is what happens on a rewrite retry and whenever the planner call failed.
+    retrieval_query: str
     retrieved_chunks: list[dict]       # [{text, company, year, page, source, sub_query}]
     web_results: list[Any]             # filled by web_search_node
     draft_answer: str                  # synthesizer output (pre-critique)

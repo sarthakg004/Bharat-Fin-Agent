@@ -32,8 +32,6 @@ API_KEY_ENV = {
     "anthropic": "ANTHROPIC_API_KEY",
 }
 
-SUPPORTED_PROVIDERS = tuple(API_KEY_ENV)
-
 
 def resolve_api_key(provider: str, api_key: Optional[str] = None) -> str:
     """Return the API key for a provider, from the argument or its env var.

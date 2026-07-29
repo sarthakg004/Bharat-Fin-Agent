@@ -243,18 +243,31 @@ class AgenticRAGv2(AgenticRAG):
                              if r in ("narrative", "numeric")]
         else:
             retrieve_subs = sub_queries
+        # What actually searches the filings is ONE query in the filing's own
+        # vocabulary (§14), not the decomposition. The sub-queries are still what
+        # route the tool lanes, gate this node, and reach the synthesizer — they
+        # just stopped being retrieval keys, because decomposition buys pool
+        # recall and then loses it in selection (retention 0.744 vs 0.800, hit@8
+        # 67/99 vs 72/99 on FinanceBench, at 3.09 queries/question instead of 2).
+        #
+        # Empty `retrieval_query` → the sub-queries, unchanged. That is the path
+        # on a rewrite retry (which deliberately re-searches its own rewritten
+        # query), when the planner call failed, and on every graph rung below v3.
+        rq = (state.get("retrieval_query") or "").strip()
+        search_subs = [rq] if (rq and retrieve_subs) else retrieve_subs
         # Also retrieve on the question the user actually asked. Planning
         # discards information: a sub-query is a narrow lookup key, and nothing
         # was searching for the whole question. Adding it is worth 3 of 99
-        # FinanceBench questions (§13). It gets a SMALLER slot budget than a
-        # sub-query — at the full 5 it crowds the sub-queries out of the cap and
-        # costs 10 points of hit@5 for one extra hit@8.
+        # FinanceBench questions (§13) — and 5 more on top of the rewrite (§14),
+        # which is terse keywords and strips the prose a narrative question needs.
+        # It gets a SMALLER slot budget than a sub-query: at the full 5 it crowds
+        # the others out of the cap and costs 10 points of hit@5 for one hit@8.
         #
         # Gated on `retrieve_subs`: when the planner routed every sub-query to
         # yfinance/web/EDGAR it has decided the filings are not the source, and
         # this must not override that.
-        queries = [(sub_q, None) for sub_q in retrieve_subs]
-        if retrieve_subs and state["question"] not in retrieve_subs:
+        queries = [(sub_q, None) for sub_q in search_subs]
+        if search_subs and state["question"] not in search_subs:
             queries.append((state["question"], self.QUESTION_SLOTS))
         for sub_q, top_k in queries:
             for hyb in hybrids:
@@ -462,10 +475,14 @@ class AgenticRAGv2(AgenticRAG):
         # The next retrieve pass uses the rewrite as the (only) sub-query.
         # Routes are cleared so the router re-classifies the rewritten query
         # (in graphs that route after a rewrite) instead of zipping it against
-        # the stale plan's routes.
+        # the stale plan's routes. `retrieval_query` is cleared for the same
+        # reason and a stronger one: this node exists BECAUSE the first pass
+        # retrieved badly, and the §14 query was what that pass searched on.
+        # Leaving it set would make the retry re-run the identical search.
         return {
             "sub_queries": [rewritten],
             "query_routes": [],
+            "retrieval_query": "",
             "rewrite_history": history + [rewritten],
             "iteration_count": iteration + 1,
         }
@@ -495,6 +512,10 @@ class AgenticRAGv2(AgenticRAG):
         ] or [state["question"]]
 
         out["sub_queries"] = hints
+        # Same reason as `rewrite_node`: these hints ARE the new retrieval
+        # intent, and leaving the §14 query set would search the original
+        # question again and re-find the evidence the critic just rejected.
+        out["retrieval_query"] = ""
         out["critic_iterations"] = crit_iter + 1
         return out
 

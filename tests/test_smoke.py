@@ -8,6 +8,8 @@ retrievers, so this needs neither a key nor the vector store).
 
 from __future__ import annotations
 
+import inspect
+
 
 def test_package_imports():
     import finagent
@@ -938,6 +940,76 @@ def test_question_query_is_gated_on_planner_routing():
         "query_routes": ["numeric"], "errors": []})
     assert "What drove AMD revenue change in FY22?" in searched, \
         "the question itself must be retrieved on when filings are in play"
+
+
+def test_retrieval_runs_on_the_rewrite_not_the_subqueries():
+    """§14: the filings are searched with ONE query in the filing's vocabulary
+    plus the raw question — 72/99 hit@8 against 67 for retrieving on the
+    decomposition. The sub-queries still route the tool lanes and still gate
+    this node; they just stopped being search keys."""
+    agent = _build_agent()
+    agent._log = lambda s, m: None
+    searched = []
+    agent._get_hybrids = lambda: [type("H", (), {
+        "search": staticmethod(lambda q, top_k=None: searched.append(q) or []),
+        "infer_filter": staticmethod(lambda q: None)})()]
+    base = {"question": "What drove AMD revenue change in FY22?",
+            "sub_queries": ["AMD segment revenue FY22", "AMD FY22 revenue drivers"],
+            "query_routes": ["numeric", "narrative"], "errors": []}
+    rq = "AMD 2022 2021 segment information net revenue Data Center Client Gaming"
+
+    agent.hybrid_retrieve_node({**base, "retrieval_query": rq})
+    assert searched == [rq, base["question"]], \
+        f"must search the rewrite + the question only, got {searched}"
+
+    # No rewrite (planner failed, or a rung below v3) → the old sub-query path,
+    # so a failed rewrite costs nothing rather than losing the turn.
+    searched.clear()
+    agent.hybrid_retrieve_node({**base, "retrieval_query": ""})
+    assert searched == base["sub_queries"] + [base["question"]], searched
+
+    # Routed entirely away from the filings: the rewrite must NOT drag them
+    # back in. `_retrieval_query` also declines to spend a call in this case.
+    searched.clear()
+    agent.hybrid_retrieve_node({
+        "question": "What is AAPL trading at today?",
+        "sub_queries": ["AAPL current share price"], "query_routes": ["market"],
+        "retrieval_query": "Apple 2024 consolidated statements of operations",
+        "errors": []})
+    assert searched == [], f"routed to market but still searched: {searched}"
+
+    # A retry re-searches its own rewritten query, so the stale §14 query must
+    # be cleared — otherwise the retry repeats the search that just failed.
+    from finagent.graph.corrective import AgenticRAGv2
+    for node in (AgenticRAGv2.rewrite_node, AgenticRAGv2.critic_node):
+        assert '"retrieval_query"' in inspect.getsource(node), \
+            f"{node.__name__} must clear retrieval_query"
+
+
+def test_retrieval_query_rejects_an_answer_masquerading_as_a_query():
+    """The model sometimes ANSWERS instead of writing a query (a FinanceBench
+    run produced "Approximately 1.33.") or returns nothing. Either would send
+    garbage to the retriever, so both fall back to the sub-queries."""
+    from finagent.graph import full as F
+
+    agent = _build_agent()
+    agent._log = lambda s, m: None
+    replies = iter(["Approximately 1.33.", "", "  \n ",
+                    "AMD 2022 consolidated balance sheets total current assets"])
+    agent._get_llm = lambda role: type("L", (), {
+        "invoke": staticmethod(lambda msgs: type("R", (), {"content": next(replies)})())})()
+
+    for _ in range(3):
+        assert agent._retrieval_query({"errors": []}, "q", ["numeric"]) == ""
+    assert agent._retrieval_query({"errors": []}, "q", ["numeric"]).startswith("AMD 2022")
+
+    # Every route away from the filings → no call at all (the iterator would
+    # raise StopIteration if one were made).
+    assert agent._retrieval_query({"errors": []}, "q", ["market", "external"]) == ""
+
+    assert F._first_line('  "Nike 2023 revenue"  \nignored') == "Nike 2023 revenue"
+    assert F._first_line("Query: Nike 2023 revenue") == "Nike 2023 revenue"
+    assert F._first_line("") == ""
 
 
 def test_element_captions_name_a_table_that_lost_its_heading():

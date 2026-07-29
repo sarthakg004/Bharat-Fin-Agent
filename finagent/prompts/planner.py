@@ -98,6 +98,94 @@ Sub-queries:
 {sub_queries}
 """
 
+# --------------------------------------------------------------------------- #
+# Retrieval query — the ONE query that actually searches the filings
+# --------------------------------------------------------------------------- #
+#
+# Retrieval no longer runs on the planner's sub-queries. Measured on FinanceBench
+# (RETRIEVAL_EXPERIMENTS.md §14, n=99, hit@8): decomposition scores 67/99 at 3.09
+# queries/question, and ONE query in the filing's vocabulary plus the raw
+# question scores 72/99 at 2 — better AND 368s faster over the set, because
+# decomposition buys pool recall (90/99) and then loses it in selection
+# (retention 0.744, the worst of every arm measured).
+#
+# Three things shape this prompt, and the third is the one the ablation taught:
+#   * §12 put a heading trail on every chunk, so naming the statement caption
+#     matches the header text directly — the strongest single signal available.
+#   * The index holds filing prose, not questions. "How much did X grow?" shares
+#     almost no vocabulary with the table that answers it; printed captions do.
+#   * This text is ALSO the cross-encoder's query. The winning arm won on
+#     retention, not recall, so the query must describe ONE passage coherently.
+#     Hedging across three statements is exactly how decomposition failed.
+#
+# `expand_query` still expands derived metrics downstream, so the model is told
+# to name the inputs a filing prints rather than the ratio it never states.
+RETRIEVAL_QUERY_SYSTEM = """\
+You write ONE search query that will be run against a vector + BM25 index of SEC
+filing text, and then used to rerank what it finds. You are not answering the
+question — you are describing the single passage that contains the answer, in
+the words that passage itself uses.
+
+The index holds the filings themselves: statement tables, note text, MD&A prose.
+Each chunk carries its heading trail, so naming the right heading is the
+strongest signal you have.
+
+Write the query as keywords in the filing's own vocabulary:
+
+1. Company name, and the fiscal year(s) the question needs.
+2. The financial-statement caption or note/item heading the answer sits under
+("consolidated balance sheets", "consolidated statements of cash flows",
+"segment information", "Item 1A. Risk Factors").
+3. The exact line-item captions the filing PRINTS ("total current liabilities",
+"net cash provided by operating activities", "purchases of property and
+equipment").
+
+Rules:
+- Target ONE statement or section. Only name a second if the question genuinely
+cannot be answered from one — a query that hedges across three statements
+retrieves more and ranks worse.
+- NEVER write the name of a derived figure. Filings do not print "operating
+margin", "gross margin", "quick ratio", "current ratio", "working capital",
+"free cash flow", "inventory turnover" or "EPS growth" — they print the inputs.
+Write those inputs instead. If the word you are about to write is a ratio, a
+margin, a turnover, or a growth rate, delete it and name the two or three
+captions it is computed from.
+- If the question asks what changed, what drove something, or how it grew or
+improved, write BOTH fiscal years as numbers ("2022 2021"). A filing prints the
+comparative year in the same table, and omitting it is the most common way this
+query misses.
+- Use the captions THIS company prints, not generic industry phrasing. Name its
+actual reportable segments and product lines if the answer lives in a segment or
+business table. Never pad with plausible-sounding drivers like "product mix" or
+"customer demand" — filler outranks nothing and dilutes the real terms.
+- Write each caption in full. "net cash provided by operating activities net cash
+used in investing activities" — not "operating investing financing".
+- Keywords only: no question words, no verbs, no instructions, no punctuation
+beyond what a caption itself contains.
+- 12 to 20 words. Precision beats coverage; an extra plausible line item costs
+more than a missing one.
+- One line. No preamble, no quotes, no explanation."""
+
+# One shot per question type, each pinned to that type's failure mode:
+# decomposing a derived metric into printed captions, landing on an Item heading
+# instead of restating the analyst's phrasing, and naming segment captions for
+# both years. Companies chosen to be uninformative about any particular filing.
+RETRIEVAL_QUERY_SHOTS = (
+    ("Did Intel's inventory position grow faster than its cost of sales between "
+     "FY2021 and FY2022?",
+     "Intel 2022 2021 consolidated balance sheets inventories raw materials work "
+     "in process finished goods cost of sales"),
+    ("What are the principal risks Starbucks identifies for its supply chain as "
+     "of FY2023?",
+     "Starbucks 2023 Item 1A Risk Factors supply chain green coffee commodity "
+     "prices sourcing suppliers distribution disruption"),
+    ("Which segment contributed the largest share of Oracle's total revenue in "
+     "FY2023, and how did that share change from FY2022?",
+     "Oracle 2023 2022 segment information total revenues by segment cloud "
+     "services license support hardware services operating segments"),
+)
+
+
 MARKET_PLANNER_SYSTEM = """\
 You are a market-data planner. Given a question routed to the `market` lane,
 decide which yfinance-backed tools to invoke and with what arguments.
@@ -136,5 +224,6 @@ then return a single MarketIntent (tool + symbol/symbols + period/interval).
 
 __all__ = [
     "PLANNER_PROMPT", "ROUTER_SYSTEM", "ROUTER_PROMPT",
+    "RETRIEVAL_QUERY_SYSTEM", "RETRIEVAL_QUERY_SHOTS",
     "MARKET_PLANNER_SYSTEM", "MARKET_PLANNER_PROMPT",
 ]

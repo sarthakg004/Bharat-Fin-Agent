@@ -51,28 +51,34 @@ http://localhost:6333) through the **real** `CorpusIngester` and the **real**
 `HybridRetriever`, with all 72 filings in one collection, so distractors and the
 company/year metadata filter are live.
 
-Sub-queries (`--mode subquery`, the default)
---------------------------------------------
-Production never retrieves on the raw question: the planner decomposes it into
-1-8 routed sub-queries, `hybrid_retrieve_node` retrieves `final_top_k=5` per
-sub-query routed `narrative`/`numeric` (a `market`/`external`/`cross_document`
-sub-query is answered by its own tool and is NOT retrieved), merges and dedupes
-them, and `_cap_pool` re-ranks that merged pool against the ORIGINAL question
-down to `retrieve_cap=8` — reserving each sub-query's best passage first so one
-entity cannot crowd out the other in a comparison. This harness reproduces that
-whole path, so what it scores is what the synthesizer receives.
+Query modes (`--mode served`, the default)
+-----------------------------------------
+The planner still decomposes the question into 1-8 routed sub-queries, but since
+§14 those route the tool lanes rather than the retriever. `hybrid_retrieve_node`
+searches the filings with ONE retrieval query, plus the raw question at
+`QUESTION_SLOTS`, and only when at least one sub-query is routed
+`narrative`/`numeric` (a `market`/`external`/`cross_document` question is
+answered by its own tool and retrieves nothing). `_cap_pool` then re-ranks the
+merged pool against the ORIGINAL question down to `retrieve_cap=8`, reserving
+each query's best passage first so one entity cannot crowd out the other in a
+comparison. This harness reproduces that whole path, so what it scores is what
+the synthesizer receives.
 
-The decomposition is planned ONCE with the served planner and cached to
-`results/financebench_subqueries.json`. Re-planning per configuration would fold
-the planner's LLM nondeterminism into the geometry deltas we are trying to
-measure — the plan is upstream of retrieval, so it is held fixed, exactly like
-the corpus. `--mode question` retrieves on the bare question instead: cheaper, LLM-free,
-and useful as a control, but it is NOT what production does. `--mode rewrite`
-retrieves on ONE query per question, restated in the filing's vocabulary
-(company + fiscal year + statement caption + the line items a filing actually
-prints) and cached in `results/financebench_rewrites.json`. All three modes are
-LLM-free at measurement time — the decomposition and the rewrite are both
-authored once, upstream, and held fixed.
+`--mode served` (the DEFAULT) is what production does since §14: retrieval runs
+on ONE query per question written in the filing's own vocabulary (company +
+fiscal year + statement caption + the line items a filing prints) plus the raw
+question at `QUESTION_SLOTS`. Both the retrieval queries and the sub-query plans
+are produced ONCE by the served nodes and cached
+(`results/financebench_retrieval_queries.json`,
+`results/financebench_subqueries.json`); re-generating per configuration would
+fold the planner's LLM nondeterminism into the geometry deltas we are trying to
+measure. They are upstream of retrieval, so they are held fixed, exactly like
+the corpus.
+
+Two controls, both LLM-free at measurement time:
+  `--mode subquery`  retrieve on the planner's decomposition — what production
+                     did before §14, kept so that regression stays visible.
+  `--mode question`  retrieve on the bare question. Cheapest possible baseline.
 
 Usage
 -----
@@ -122,7 +128,7 @@ OUT_MD = Path("results/html_retrieval_sweep.md")
 SMOKE_JSON = Path("results/html_retrieval_sweep_smoke.json")
 SMOKE_MD = Path("results/html_retrieval_sweep_smoke.md")
 PLANS_PATH = Path("results/financebench_subqueries.json")
-REWRITES_PATH = Path("results/financebench_rewrites.json")
+RETRIEVAL_QUERIES_PATH = Path("results/financebench_retrieval_queries.json")
 MANIFEST = Path("data/us/eval/financebench/eval_manifest.json")
 SWEEP_MANIFEST = Path("data/us/eval/financebench/sweep_manifest.json")
 ELEMENT_CACHE = Path("data/us/eval/financebench/elements")
@@ -345,11 +351,11 @@ class Question:
     # planner routed every sub-query away from the filings (web/market/EDGAR),
     # so production retrieves nothing here — scored as a miss, because it is one.
     subs: list[str] = field(default_factory=list)
-    # ONE enhanced retrieval query (`--mode rewrite`): the question restated in
+    # ONE retrieval query (`--mode served`): the question restated in
     # the filing's own vocabulary — company, fiscal year, statement caption and
     # the line items a filing prints. Authored offline and cached, exactly like
     # `subs`, so no LLM runs inside the measurement.
-    rewrite: str = ""
+    retrieval_query: str = ""
 
 
 def load_eval_questions(doc_names: Optional[set] = None,
@@ -394,14 +400,46 @@ def load_eval_questions(doc_names: Optional[set] = None,
 # Sub-query plans — the production decomposition, cached
 # --------------------------------------------------------------------------- #
 
-def attach_rewrites(questions: list[Question], path: Path = REWRITES_PATH) -> int:
-    """Attach the cached single enhanced query. Returns the number of questions
-    that have none (they fall back to the raw question, scored as-is)."""
-    cache = json.loads(path.read_text()) if path.exists() else {}
+def attach_retrieval_queries(questions: list[Question],
+                             path: Path = RETRIEVAL_QUERIES_PATH,
+                             refresh: bool = False) -> int:
+    """Write each question's retrieval query with the SERVED node and cache it.
+
+    Same discipline as `attach_subqueries`, and for the same reason: the query
+    is upstream of retrieval, so it is generated once and held fixed across
+    configurations — regenerating per config would fold the model's sampling
+    noise into every geometry delta measured downstream.
+
+    Calls `AgenticRAGv3._retrieval_query` directly, so the harness scores the
+    prompt production actually ships rather than a copy that can drift from it.
+    Returns the number of questions with no usable query (those fall back to the
+    raw question, scored as-is — which is what production does too)."""
+    from tqdm import tqdm
+
+    cache: dict = {}
+    if path.exists() and not refresh:
+        cache = json.loads(path.read_text())
+
+    todo = [q for q in questions if q.id not in cache]
+    if todo:
+        from finagent.graph import FinAgent
+
+        agent = FinAgent()
+        for q in tqdm(todo, desc="retrieval queries"):
+            state: dict = {"errors": []}
+            # `numeric` mirrors a filings-routed question: the real gate is the
+            # planner's routes, and every question in this set is answered from
+            # the filings by construction.
+            cache[q.id] = {"question": q.text,
+                           "retrieval_query": agent._retrieval_query(
+                               state, q.text, ["numeric"])}
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(cache, indent=2))   # resumable
+
     missing = 0
     for q in questions:
-        q.rewrite = (cache.get(q.id) or {}).get("rewrite") or ""
-        if not q.rewrite:
+        q.retrieval_query = (cache.get(q.id) or {}).get("retrieval_query") or ""
+        if not q.retrieval_query:
             missing += 1
     return missing
 
@@ -578,7 +616,7 @@ def cap_pool(question: str, chunks: list[tuple], reranker_model: Optional[str],
 
 
 def evaluate_index(cfg: Config, collection: str, questions: list[Question],
-                   mode: str = "subquery") -> list[dict]:
+                   mode: str = "served") -> list[dict]:
     """Score one index, in two passes so only ONE model is on the GPU at a time.
 
     Pass 1 pulls every candidate pool (needs the embedder); pass 2 runs the
@@ -606,13 +644,15 @@ def evaluate_index(cfg: Config, collection: str, questions: list[Question],
     for q in tqdm(questions, desc=f"{cfg.tag} pools", leave=False):
         if mode == "subquery":
             subs = q.subs
-        elif mode == "rewrite":
-            subs = [q.rewrite or q.text]
+        elif mode == "served":
+            subs = [q.retrieval_query or q.text]
         else:
             subs = [q.text]
-        # Production also retrieves on the ORIGINAL question (§13), gated on the
-        # planner having routed at least one sub-query to the filings.
-        if mode == "subquery" and subs and q.text not in subs:
+        # Production also retrieves on the ORIGINAL question (§13/§14), gated on
+        # the planner having routed at least one sub-query to the filings. The
+        # retrieval query keeps the full per-sub budget; the question adds its
+        # top QUESTION_SLOTS on top.
+        if mode in ("subquery", "served") and subs and q.text not in subs:
             subs = subs + [q.text]
         n_subs.append(len(subs))
         pools: list[tuple[str, list]] = []
@@ -655,8 +695,10 @@ def evaluate_index(cfg: Config, collection: str, questions: list[Question],
             for sub, parents in pools:
                 # The question query gets a smaller slot budget than a
                 # sub-query — see `AgenticRAGv2.QUESTION_SLOTS`.
-                k = (QUESTION_SLOTS if mode == "subquery" and len(pools) > 1
-                     and sub == question_query else per_sub_k)
+                k = (QUESTION_SLOTS
+                     if mode in ("subquery", "served")
+                     and len(pools) > 1 and sub == question_query
+                     else per_sub_k)
                 top = (parents[:k] if arm is None
                        else arm.rerank(sub, parents, top_k=k))
                 for text, meta in top:
@@ -755,7 +797,7 @@ def render_table(data: dict) -> str:
         f"sub-query away from the filings (scored as misses — production "
         f"retrieves nothing for them either).",
         "",
-        "`mode` = `subquery` runs the served path (planner decomposition → "
+        "`mode` = `served` runs the production path (one retrieval query → "
         "per-sub-query retrieval → merge → global cap); `question` retrieves on "
         "the bare question and is a control, not what production does.",
         "",
@@ -859,11 +901,13 @@ def self_check() -> None:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[3])
     ap.add_argument("--stage", choices=["parent", "child", "embedder", "embedder2", "headers"])
-    ap.add_argument("--mode", choices=["subquery", "question", "rewrite"],
-                    default="subquery",
-                    help="subquery = the served path (planner decomposition, "
-                         "per-sub retrieval, merge, global cap); question = "
-                         "retrieve on the bare question (LLM-free control)")
+    ap.add_argument("--mode",
+                    choices=["served", "subquery", "question"],
+                    default="served",
+                    help="served = production since §14 (one retrieval query "
+                         "in the filing's vocabulary + the question); subquery "
+                         "= the pre-§14 decomposition; question = the bare "
+                         "question (LLM-free control)")
     ap.add_argument("--refresh-plans", action="store_true",
                     help="re-plan the sub-queries instead of reusing the cache")
     ap.add_argument("--parent", type=int, default=2500, help="held parent size")
@@ -921,9 +965,10 @@ def main() -> None:
         mean_subs = statistics.mean(len(q.subs) for q in questions)
         print(f"Plans: {mean_subs:.2f} retrieved sub-queries/question, "
               f"{unretrieved} routed entirely away from the filings")
-    elif args.mode == "rewrite":
-        missing = attach_rewrites(questions)
-        print(f"Rewrites: 1 enhanced query/question, {missing} missing "
+    elif args.mode == "served":
+        missing = attach_retrieval_queries(questions,
+                                           refresh=args.refresh_plans)
+        print(f"Retrieval queries: 1/question, {missing} missing "
               f"(fell back to the raw question)")
 
     from finagent.vectorstore import delete_collection
