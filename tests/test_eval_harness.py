@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 
 import pandas as pd
+import pytest
 
 from finagent.evaluation.financebench.parallel import _is_refusal, final_report
 from finagent.evaluation.ragas import (
@@ -20,8 +21,8 @@ from finagent.evaluation.ragas import (
 )
 
 REFUSAL = ("I don't have enough information to answer this from the available "
-           "filings. The retrieval and numeric verification steps could not "
-           "ground the requested figures.")
+           "filings. The claim-checking critic could not support the draft's "
+           "claims from the gathered evidence.")
 
 
 def test_cap_contexts_bounds_the_judge_prompt():
@@ -99,6 +100,12 @@ def test_partial_scores_are_carried_into_the_retry():
     the four context-heavy ones were refused every attempt, and the run churned
     forever without completing a single row.
     """
+    # `ragas` is an eval-only extra and CI installs just the runtime deps, so
+    # the assertion below that scoring makes no judge call would otherwise fail
+    # on the import rather than on the behaviour it is checking. The rest of
+    # this module needs no judge and keeps running.
+    pytest.importorskip("ragas")
+
     from finagent.evaluation.ragas import RAGASEvaluator, _score_of
 
     prior = {"faithfulness": 0.75, "groundedness": float("nan"),
