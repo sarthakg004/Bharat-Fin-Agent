@@ -37,3 +37,16 @@ results/**/score.log
 
 # Personal interview-prep notes — local only.
 docs/interview-prep/
+
+# Session transcript and Claude working notes: local aids, not project files.
+summary.txt
+CLAUDE.md
+
+# Eval run artifacts: raw outputs and caches, not reports. The v5 RAGAS pass
+# was only partially complete (41/127), so its metrics would mislead anyone
+# reading them as a result. Keep the write-ups (RETRIEVAL_EXPERIMENTS.md,
+# v1-v4 final_metrics.md) and leave the bulk data on disk.
+results/v5/
+results/financebench_gold_*.json
+results/financebench_retrieval_queries_*.json
+results/financebench_full_outputs*.json

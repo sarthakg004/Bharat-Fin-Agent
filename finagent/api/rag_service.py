@@ -2,14 +2,13 @@
 RAG service singletons.
 
 Single agentic pipeline (`AgenticRAGv4`): planner(+routes) → router → hybrid
-retrieve → grader → rewrite/proceed → xbrl → calculator →
-market_data (yfinance) ∥ web_search ∥ edgar_search → synthesize → critic →
-numeric verification.
+retrieve → xbrl → calculator → market_data (yfinance) ∥ web_search ∥
+edgar_search → synthesize → critic.
 
 Web search uses Tavily when `TAVILY_API_KEY` is set; web_search escalates
-automatically when text retrieval comes back empty or weakly graded, so
-questions about companies not in the corpus hit the web instead of returning
-"no information".
+automatically when text retrieval comes back empty or the question's company
+is not in the corpus, so questions about companies we don't index hit the web
+instead of returning "no information".
 
 Retrieval is hybrid (dense + BM25-sparse, fused server-side with RRF in Qdrant)
 and reranked with `bge-reranker-v2-m3`. Both were chosen by measurement, not
@@ -48,13 +47,16 @@ def _build_agent(collection: Optional[str] = None) -> AgenticRAGv4:
         # US-only active retrieval. Non-US / non-corpus questions get
         # empty/weak filing retrieval and escalate to web_search automatically.
         collections=[coll],
-        # Reranker is env-configurable so we can A/B without a code change; the
-        # image bakes whatever this resolves to at build time.
+        # Reranker comes from settings (RERANKER_MODEL) so we can A/B without a
+        # code change, and so config.py is the single place that names it — this
+        # used to read the env var directly with its own default, which left
+        # settings.reranker_model dead and disagreeing with what production ran.
+        # The image bakes whatever this resolves to at build time.
         # v2-m3 replaced bge-reranker-base after a 150-question A/B on the eval
         # collection: hit@8 0.4000 -> 0.5467 at the same pool depth, i.e. the
         # SAME candidates ranked better (pool_recall is identical, 0.6800).
         # It costs ~3.4x CPU per pair; see results/RETRIEVAL_EXPERIMENTS.md.
-        reranker_model=os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-v2-m3"),
+        reranker_model=settings.reranker_model,
         # Fused (sparse+dense) candidate pool. Widened over time — 8+8 →
         # 12+12 → 24+24 — because narrative/MD&A prose was where first-stage
         # recall was weakest and the reranker can only reorder what the pool
@@ -63,7 +65,7 @@ def _build_agent(collection: Optional[str] = None) -> AgenticRAGv4:
         # tight, globally-best set by `retrieve_cap`.
         pool_top_k=48, final_top_k=5,
         retrieve_cap=8,
-        max_rewrites=2, max_critic_retries=1,
+        max_critic_retries=1,
         # PERSIST_DYNAMIC_FETCH=true everywhere now: the index is a Qdrant
         # server, so a fetched filing is upserted into it and the next user
         # gets it for free. Deterministic point ids make the concurrent
@@ -138,22 +140,20 @@ def _tool_health(state: dict) -> dict:
     }
 
 
-def _retrieval_status(state: dict, max_attempts: int, grade_threshold: float) -> dict:
-    """Retrieval-loop status (#7): how many rewrite attempts ran vs the cap, the
-    mean chunk grade, and whether the loop was EXHAUSTED without
-    reaching the quality bar. The actual refuse decision is NOT made here — a
-    numeric/market question legitimately skips retrieval — it's deferred to the
-    numeric verifier, which weighs ALL evidence, not just retrieval."""
-    attempts = state.get("iteration_count", 0)
-    avg = state.get("avg_grade")
-    exhausted = attempts >= max_attempts and (avg is None or avg < grade_threshold)
+def _retrieval_status(state: dict, max_attempts: int) -> dict:
+    """Retrieval-loop status (#7): how many synthesis attempts ran vs the cap,
+    and whether the loop was EXHAUSTED still holding unsupported claims. The
+    actual refuse decision is NOT made here — a numeric/market question
+    legitimately skips retrieval — it's made by `_critic_router`, which weighs
+    ALL evidence, not just retrieval."""
+    attempts = state.get("critic_iterations", 0)
+    score = state.get("grading_score")
     return {
         "attempts": attempts,
         "max_attempts": max_attempts,
-        "avg_grade": avg,
-        "grade_threshold": grade_threshold,
-        "exhausted": bool(exhausted),
-        "refusal_handled_by": "verify_numbers",
+        "claims_supported": score,
+        "exhausted": bool(attempts >= max_attempts and state.get("needs_retry")),
+        "refusal_handled_by": "critic",
     }
 
 
@@ -165,8 +165,6 @@ def _build_audit(state: dict, retrieval: Optional[dict] = None) -> dict:
     """
     ev = state.get("evidence") or []
     calc = state.get("calc_results") or []
-    nv = state.get("numeric_verification") or {}
-    vr = state.get("verification_report") or {}
     # Graceful-degradation summary (#14): lanes that ran but returned nothing
     # usable (all calls failed/missed). The run still completes — every lane
     # try/excepts and the agent answers from whatever else grounded — but we
@@ -200,16 +198,10 @@ def _build_audit(state: dict, retrieval: Optional[dict] = None) -> dict:
              ]}
             for r in calc
         ],
-        # Verification status — numeric grounding + the cross-source / unit /
-        # citation report.
+        # Verification status — the critic's per-claim support verdict.
         "verification": {
-            "numeric_score": nv.get("score"),
-            "figures_total": nv.get("numbers_total"),
-            "figures_grounded": nv.get("numbers_grounded"),
-            "ungrounded_figures": [u.get("number") for u in (nv.get("unverified") or [])],
-            "cross_source": vr.get("cross_source", {}),
-            "units": vr.get("units", {}),
-            "sources": vr.get("sources", {}),
+            "claims_supported": state.get("grading_score"),
+            "unsupported_claims": state.get("critic_feedback") or [],
         },
     }
 
@@ -242,14 +234,6 @@ def _step_detail(node: str, delta: dict) -> Optional[str]:
         if node == "retrieve":
             n = len(delta.get("retrieved_chunks") or [])
             return f"{n} passages" if n else "no relevant passages"
-        if node == "grader":
-            kept = len(delta.get("retrieved_chunks") or [])
-            avg = delta.get("avg_grade")
-            if avg is None:
-                return None
-            return f"kept {kept} · avg grade {avg:g}/5"
-        if node == "rewrite":
-            return "query refined"
         if node == "xbrl":
             n = len(delta.get("xbrl_facts") or [])
             return f"{n} exact figure{'s' if n != 1 else ''} from SEC XBRL" if n else None
@@ -276,12 +260,6 @@ def _step_detail(node: str, delta: dict) -> Optional[str]:
         if node == "critic":
             gs = delta.get("grading_score")
             return f"{gs:.0%} of claims supported" if isinstance(gs, (int, float)) else None
-        if node == "verify_numbers":
-            nv = delta.get("numeric_verification") or {}
-            total = nv.get("numbers_total") or 0
-            if not total:
-                return None
-            return f"{nv.get('numbers_grounded', 0)}/{total} figures grounded"
     except Exception:
         return None      # detail is decoration — never break the stream over it
     return None
@@ -572,8 +550,6 @@ def run_agentic(question: str,
         })
         next_id += 1
 
-    nv = state.get("numeric_verification") or {}
-
     return {
         "answer": state.get("final_answer") or "",
         "chunks": chunks,
@@ -592,8 +568,6 @@ def run_agentic(question: str,
             "sub_queries": state.get("sub_queries", []),
             "query_routes": state.get("query_routes", []),
             "grading_score": state.get("grading_score"),
-            "avg_grade": state.get("avg_grade"),
-            "rewrite_iterations": state.get("iteration_count", 0),
             "critic_iterations": state.get("critic_iterations", 0),
             "needs_retry": state.get("needs_retry"),
             "refused": state.get("refused", False),
@@ -603,20 +577,13 @@ def run_agentic(question: str,
             "evidence_count": len(state.get("evidence", []) or []),
             "evidence_kinds": _count_kinds(state.get("evidence", []) or []),
             "evidence": (state.get("evidence", []) or [])[:60],
-            # Retrieval-loop status (#7): attempts vs cap and whether the
-            # rewrite loop was exhausted.
-            "retrieval": _retrieval_status(state, rag.max_rewrites, rag.grade_threshold),
+            # Critic-loop status (#7): attempts vs cap and whether the loop was
+            # exhausted still holding unsupported claims.
+            "retrieval": _retrieval_status(state, rag.max_critic_retries),
             # Audit trail (#13): full provenance of this answer.
             "audit": _build_audit(
-                state, _retrieval_status(state, rag.max_rewrites, rag.grade_threshold)),
-            "numeric_verification_score": nv.get("score"),
-            # #5 verification report: cross-source corroboration, unit-shift
-            # flags, and citation coverage of numeric evidence.
-            "verification_report": state.get("verification_report") or {},
-            "unverified_count": len(nv.get("unverified", [])) if isinstance(nv, dict) else 0,
-            "numbers_total": nv.get("numbers_total", 0) if isinstance(nv, dict) else 0,
-            "hallucination_rate": nv.get("hallucination_rate", 0.0) if isinstance(nv, dict) else 0.0,
-            "ungrounded_figures": [u.get("number") for u in nv.get("unverified", [])] if isinstance(nv, dict) else [],
+                state, _retrieval_status(state, rag.max_critic_retries)),
+            "unsupported_claims": state.get("critic_feedback") or [],
             "web_hits": len(state.get("web_results", []) or []),
             "edgar_companies": sum(len(r.get("companies", []))
                                    for r in (state.get("edgar_results", []) or [])),

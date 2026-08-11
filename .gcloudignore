@@ -32,3 +32,14 @@ tests/
 # The whole corpus — 6.5 GB locally, none of it wanted by the build.
 data/
 chroma.tar.gz
+
+# Documentation and working notes. The image never COPYs these, but without
+# them listed they still ride along in the Cloud Build source upload.
+docs/
+logs/
+scripts/
+summary.txt
+CLAUDE.md
+STRUCTURE.md
+*.md
+!README.md

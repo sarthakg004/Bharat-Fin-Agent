@@ -34,36 +34,31 @@ from typing import Optional
 # re-pointed the planner (it overrides the synth family, and the planner was
 # inside it). Roles that differ are now spelled out rather than derived.
 #
-# Groq tier picks:
-#   planner / synth / critic (decomposition + long-form reasoning) → gpt-oss-120b
-#   grader   (bulk structured scoring)                             → qwen3.6-27b
-# The planner's decomposition drives retrieval and the grader DROPS chunks, so
-# both sit on the quality path — small (≤8B) models there measurably
-# mis-decomposed multi-hop questions and mis-graded relevant chunks. Keeping the
-# grader on a different model from the 120B roles also splits the quota bucket,
-# so a long run doesn't exhaust every role's rate limit in lockstep.
+# The planner's decomposition drives retrieval, so every reasoning role sits on
+# the quality tier — small (≤8B) models there measurably mis-decomposed
+# multi-hop questions.
 DEFAULTS: dict[str, dict[str, str]] = {
     "groq": {
         "planner": "openai/gpt-oss-120b",
-        "grader":  "qwen/qwen3.6-27b",
         "synth":   "openai/gpt-oss-120b",
         "critic":  "openai/gpt-oss-120b",
     },
+    # Gemini free-tier picks. The binding limit is REQUESTS PER DAY, metered
+    # PER MODEL (~20 RPD/key on the big Flash tier — measure, don't assume,
+    # before sizing a long run). Splitting planner+synth (3.6) from the critic
+    # (3.5) keeps a run from draining one bucket in lockstep.
     "gemini": {
-        "planner": "gemini-2.5-flash",
-        "grader":  "gemini-2.5-flash",
-        "synth":   "gemini-2.5-flash",
-        "critic":  "gemini-2.5-flash",
+        "planner": "gemini-3.6-flash",
+        "synth":   "gemini-3.6-flash",
+        "critic":  "gemini-3.5-flash",
     },
     "openai": {
         "planner": "gpt-4o",
-        "grader":  "gpt-4o-mini",
         "synth":   "gpt-4o",
         "critic":  "gpt-4o",
     },
     "anthropic": {
         "planner": "claude-sonnet-4-6",
-        "grader":  "claude-haiku-4-5",
         "synth":   "claude-sonnet-4-6",
         "critic":  "claude-sonnet-4-6",
     },
@@ -73,24 +68,30 @@ DEFAULTS: dict[str, dict[str, str]] = {
 # this list SHORT: a derived role is one the operator cannot point at a
 # different model, which is exactly the trap `planner` fell into.
 _DERIVED = {
-    # Cheap structured extraction that rides with bulk scoring.
-    "market_planner": "grader",
+    # Cheap structured extraction that rides the synth tier.
+    "market_planner": "synth",
     # The re-route classifier and the small tool extractors (corpus gate, XBRL
-    # concept, EDGAR query, formula spec) follow the synth tier deliberately —
-    # they are one-shot structured calls on the quality path.
+    # concept, EDGAR query, formula spec). Normally pinned to the free Groq
+    # pool — see ROUTER_PIN — so the small Gemini RPD budget is spent on the
+    # reasoning roles; this entry is only the fallback when no Groq key exists.
     "router":         "synth",
-    "verifier":       "critic",
 }
+
+# The extractor calls behind `router` are one-shot structured outputs; Qwen on
+# the free Groq pool is good enough for them and a Gemini call there would buy
+# quality nothing downstream uses. Falls back to the context provider when no
+# Groq key is configured.
+ROUTER_PIN = ("groq", "qwen/qwen3.6-27b")
 
 
 @dataclass(frozen=True, slots=True)
 class RuntimeContext:
     """One request's LLM configuration. Frozen so a node cannot write to it."""
 
-    provider: str = "groq"
+    provider: str = "gemini"
     # The Settings UI's two model pickers. `synth_model` overrides the
-    # synthesizer family (synth + critic + router + the tool extractors);
-    # `planner_model` overrides decomposition ONLY. They are separate because
+    # synthesizer family (synth + market planner; the extractors are pinned,
+    # see ROUTER_PIN); `planner_model` overrides decomposition ONLY. They are separate because
     # the two jobs pull in different directions: the planner writes structured
     # retrieval keys, the synthesizer writes long-form prose, and the best model
     # for one is not always the best for the other. None → provider default.
@@ -137,8 +138,18 @@ class RuntimeContext:
             return self.FREE_TIER_EVIDENCE_CHARS
         return None
 
+    def _router_pinned(self) -> bool:
+        """The extractor pin only holds if a Groq key is actually available."""
+        if self.provider == ROUTER_PIN[0]:
+            return True
+        from finagent.llm import collect_provider_keys
+
+        return bool(collect_provider_keys(ROUTER_PIN[0]))
+
     def provider_for(self, role: str) -> str:
-        """Which provider serves a role. Only the planner can differ."""
+        """Which provider serves a role. Only planner and router can differ."""
+        if role == "router" and self._router_pinned():
+            return ROUTER_PIN[0]
         if _DERIVED.get(role, role) == "planner" and self.planner_provider:
             return self.planner_provider
         return self.provider
@@ -149,12 +160,18 @@ class RuntimeContext:
         Must move together with the provider: sending the answer model's Gemini
         key to Groq authenticates nothing.
         """
+        if role == "router" and self._router_pinned():
+            # A user key for another provider must not be sent to Groq; None
+            # makes `build_llm` read the Groq env pool.
+            return self.api_key if self.provider == ROUTER_PIN[0] else None
         if _DERIVED.get(role, role) == "planner" and self.planner_provider:
             return self.planner_api_key
         return self.api_key
 
     def model_for(self, role: str) -> str:
         """Resolve a role ('planner', 'synth', 'router', …) to a model name."""
+        if role == "router" and self._router_pinned():
+            return ROUTER_PIN[1]
         base = _DERIVED.get(role, role)
         provider = self.provider_for(role)
         if base == "synth" and self.synth_model:

@@ -1,14 +1,18 @@
 """The retriever must actually issue the fused (dense + sparse) query.
 
-Regression test. `use_mmr` defaulted to True while the comment beside it said
-"off by default", and nothing in the codebase passed the flag. LangChain's
+Regression test. There used to be a `use_mmr` flag, and it defaulted to True
+while the comment beside it said "off by default". LangChain's
 `max_marginal_relevance_search` is dense-only — it sends a NearestQuery with
 `using="dense"` and no prefetch — so the sparse/BM25 half of every collection
 was written at ingest and never read at query time. The bug was invisible:
 retrieval still returned plausible chunks, and the eval harness called
 `similarity_search` directly, so it measured a path production never ran.
 
-No cluster needed: a stub store records which retrieval call the branch makes.
+The flag is gone now, which makes the bug unreachable rather than merely
+untrue, so these tests assert the call that reaches the store instead of the
+value of a setting.
+
+No cluster needed: a stub store records which retrieval call is made.
 """
 
 from __future__ import annotations
@@ -43,9 +47,11 @@ def _retriever(**kw):
 
 def test_default_issues_the_fused_query_not_mmr():
     r = _retriever()
-    assert r.use_mmr is False, "MMR is dense-only; it disables sparse retrieval"
     r._pool("what were total operating expenses in 2023?")
     assert [c[0] for c in r.store.calls] == ["similarity_search"]
+    assert not hasattr(r, "use_mmr"), (
+        "the MMR flag is back; it is dense-only and silently disables the "
+        "sparse half of every collection")
 
 
 def test_pool_depth_is_passed_through():
@@ -54,12 +60,18 @@ def test_pool_depth_is_passed_through():
     assert r.store.calls[0][1]["k"] == 96
 
 
-def test_mmr_remains_available_but_opt_in():
-    """Not dead code — it's a deliberate trade (diversity for lexical recall)
-    that a caller can still make explicitly."""
-    r = _retriever(use_mmr=True)
+def test_mmr_is_unreachable():
+    """MMR is not an option any more, in either direction.
+
+    It was kept for a while as an opt-in "diversity vs lexical recall" trade,
+    but nothing ever opted in and leaving the branch there left a one-keyword
+    path back to a silently dense-only retriever.
+    """
+    with pytest.raises(TypeError):
+        _retriever(use_mmr=True)
+    r = _retriever()
     r._pool("revenue")
-    assert [c[0] for c in r.store.calls] == ["max_marginal_relevance_search"]
+    assert all(c[0] != "max_marginal_relevance_search" for c in r.store.calls)
 
 
 def test_agent_builds_retrievers_that_fuse():
@@ -102,9 +114,16 @@ def test_collection_is_sized_for_the_embedder_in_use():
     configured for dense vectors with 384 dimensions". Nothing caught it until
     a reindex was already running.
     """
-    from finagent.vectorstore import DEFAULT_EMBED_MODEL, DENSE_DIM, dim_for
+    from finagent.vectorstore import (
+        DEFAULT_EMBED_MODEL, GEMINI_EMBED_DIM, dim_for)
 
-    assert dim_for(DEFAULT_EMBED_MODEL) == DENSE_DIM
+    # Every embedder the project can be pointed at resolves to its own width,
+    # WITHOUT an API call. `DENSE_DIM` is deliberately not the reference here:
+    # it is bge-large's 1024, and asserting against it only held while bge was
+    # the default. What must stay true is that the default embedder, whatever
+    # it is, reports a width.
+    assert dim_for(DEFAULT_EMBED_MODEL) > 0
+    assert dim_for("gemini-embedding-2") == GEMINI_EMBED_DIM == 1536
     assert dim_for("BAAI/bge-large-en-v1.5") == 1024
     assert dim_for("BAAI/bge-base-en-v1.5") == 768
 

@@ -127,6 +127,29 @@ def _default_workers(n_keys: int) -> int:
     return max(1, min(n_keys, 4, by_mem))
 
 
+def _gpu_worker_cap() -> int:
+    """How many workers the GPU can hold, or a no-op cap when there is none.
+
+    Every worker is a separate process with its own copy of the embedder and the
+    cross-encoder — measured at ~4.8 GiB of VRAM each since the embedder moved to
+    bge-large. Two of those on one 8 GiB card OOMs mid-run, and the failure is
+    ugly: `run_agentic` raises per question, so the run keeps going and quietly
+    fills the output with error rows (16 of the first 30 on the first v5 attempt)
+    instead of stopping.
+    """
+    try:
+        import torch
+
+        from finagent.device import get_device
+
+        if get_device() != "cuda" or not torch.cuda.is_available():
+            return 1 << 30
+        total = torch.cuda.get_device_properties(0).total_memory
+        return max(1, int(total // (5.5 * 1024 ** 3)))
+    except Exception:
+        return 1 << 30
+
+
 def run_parallel(
     questions,
     output_path: Union[str, Path] = DEFAULT_OUTPUT,
@@ -143,6 +166,12 @@ def run_parallel(
     if not keys:
         raise RuntimeError(f"No {provider} API keys configured in .env")
     workers = workers or _default_workers(len(keys))
+    gpu_cap = _gpu_worker_cap()
+    if workers > gpu_cap:
+        _log(f"capping {workers} -> {gpu_cap} worker(s): the GPU holds one "
+             f"copy of the encoder + reranker per worker "
+             f"(set FINAGENT_DEVICE=cpu to trade speed for parallelism)")
+        workers = gpu_cap
     _log(f"using {workers} worker(s)")
 
     output_path = Path(output_path)
@@ -244,8 +273,25 @@ def merge_shards(shard_outs: list[Path], output_path: Union[str, Path]) -> list[
 
 def summarize_outputs(outputs_path: Union[str, Path]) -> dict:
     """System-level behaviour metrics computed from the outputs alone (no
-    judge): coverage, refusals, errors."""
+    judge): coverage, refusals, errors.
+
+    Reported twice — over every question the run covered, and over the
+    evidence-recoverable subset (the 99 whose gold span survives HTML parsing,
+    the set the retrieval numbers are quoted against). The gap between the two
+    is the parsing ceiling's cost, which no amount of retrieval work can move.
+    """
     rows = json.loads(Path(outputs_path).read_text())
+    report = _behaviour(rows)
+
+    from finagent.evaluation.financebench.runner import _recoverable_ids
+    ids = _recoverable_ids()
+    subset = [r for r in rows if r.get("financebench_id") in ids]
+    if subset and len(subset) < len(rows):
+        report["recoverable"] = _behaviour(subset)
+    return report
+
+
+def _behaviour(rows: list[dict]) -> dict:
     n = len(rows)
     refused = [r for r in rows if _is_refusal(r.get("answer"))]
     errors = [r for r in rows if r.get("error")]
@@ -306,6 +352,60 @@ def summarize_outputs(outputs_path: Union[str, Path]) -> dict:
     }
 
 
+def _limitations(outputs_path: Union[str, Path], behaviour: dict) -> list[str]:
+    """The ceilings these numbers were measured under.
+
+    All three are free-tier or corpus constraints rather than agent behaviour,
+    and every one of them pushes the scores DOWN, so a reader who doesn't know
+    about them will under-read the system. Stated with live counts so the note
+    can't drift away from the run it describes.
+    """
+    from finagent.evaluation.ragas import CONTEXT_CHAR_CAP, CONTEXT_TOTAL_CHAR_CAP
+    from finagent.runtime import RuntimeContext, current_context
+
+    rows = json.loads(Path(outputs_path).read_text())
+    sizes = [sum(len(c) for c in (r.get("retrieved_chunks") or [])) for r in rows]
+    budget = current_context().evidence_budget()
+    over = sum(1 for s in sizes if budget is not None and s > budget)
+
+    capped = [
+        f"1. **Groq free tier caps a single request at 8,000 tokens**, against "
+        f"`gpt-oss-120b`'s 131k context window — ~6% of the model. The "
+        f"synthesizer's evidence is therefore trimmed to "
+        f"{RuntimeContext.FREE_TIER_EVIDENCE_CHARS:,} characters "
+        f"(`RuntimeContext.evidence_budget`, `runtime.py`). "
+        f"**{over} of {len(rows)} questions retrieved more evidence than that "
+        f"budget admits**, so on those the answer was written from a truncated "
+        f"view of what retrieval actually found.",
+    ] if budget is not None else [
+        f"1. **Evidence was NOT truncated for this run.** The 8,000-token "
+        f"per-request wall is Groq's alone, and this run did not use it, so "
+        f"the synthesizer saw every retrieved passage "
+        f"(`RuntimeContext.evidence_budget`, `runtime.py`). Earlier Groq runs "
+        f"were measured under that ceiling and are not directly comparable.",
+    ]
+
+    return [
+        "",
+        "## Measurement limitations",
+        "",
+        *capped,
+        "",
+        f"2. **RAGAS scores against the full retrieved set**, capped for the "
+        f"judge's own request limit at {CONTEXT_CHAR_CAP:,} chars per chunk / "
+        f"{CONTEXT_TOTAL_CHAR_CAP:,} total — not the smaller block the "
+        f"synthesizer read. That is correct for context precision/recall, which "
+        f"measure retrieval; it makes faithfulness mildly generous, since a "
+        f"claim can be credited to a chunk that never fit into the prompt.",
+        "",
+        f"3. **23 of FinanceBench's 150 questions are excluded**: their evidence "
+        f"is an 8-K or an earnings release, which has no single served HTML "
+        f"filing to retrieve from. Scoring them would measure corpus coverage, "
+        f"not the agent.",
+        "",
+    ]
+
+
 def final_report(
     outputs_path: Union[str, Path] = DEFAULT_OUTPUT,
     ragas_scores: Optional[dict] = None,
@@ -324,6 +424,20 @@ def final_report(
     Path(metrics_json).parent.mkdir(parents=True, exist_ok=True)
     Path(metrics_json).write_text(json.dumps(report, indent=2))
 
+    # Every behaviour metric is reported in two columns: all questions the run
+    # covered, and the evidence-recoverable subset. Both, always — one without
+    # the other invites reading a parsing limit as an agent failure, or the
+    # reverse.
+    rec = behaviour.get("recoverable")
+    all_col = f"all ({behaviour['questions']})"
+    rec_col = f"evidence-recoverable ({rec['questions']})" if rec else None
+
+    def _row(label, key, fmt=str):
+        cells = [fmt(behaviour.get(key))]
+        if rec:
+            cells.append(fmt(rec.get(key)))
+        return f"| {label} | " + " | ".join(cells) + " |"
+
     lines = [
         "# FinAgent — final evaluation metrics",
         "",
@@ -331,14 +445,21 @@ def final_report(
         "",
         "## System behaviour",
         "",
-        "| metric | value |",
-        "|---|---|",
-        f"| answer rate | {behaviour['answer_rate']} |",
-        f"| refusal rate | {behaviour['refusal_rate']} |",
-        f"| error rate | {behaviour['error_rate']} |",
-        f"| numeric accuracy (gold in answer, 1% tol) | {behaviour.get('numeric_accuracy')} |",
+        "| metric | " + all_col + (f" | {rec_col} |" if rec else " |"),
+        "|---|---|" + ("---|" if rec else ""),
+        _row("answer rate", "answer_rate"),
+        _row("refusal rate", "refusal_rate"),
+        _row("error rate", "error_rate"),
+        _row("numeric accuracy (gold in answer, 1% tol)", "numeric_accuracy"),
         "",
     ]
+    if rec:
+        lines += [
+            f"*evidence-recoverable* = the {rec['questions']} questions whose gold "
+            "evidence survives HTML parsing — the set every retrieval number is "
+            "quoted against. The rest are answerable only from XBRL or not at all.",
+            "",
+        ]
     if behaviour.get("latency"):
         lat, tok = behaviour["latency"], behaviour.get("tokens") or {}
         lines += ["## Latency & tokens", "", "| metric | value |", "|---|---|",
@@ -348,9 +469,12 @@ def final_report(
             lines.append(f"| tokens mean per question / total | "
                          f"{tok['mean_per_question']:,} / {tok['total']:,} |")
         lines.append("")
-    num_detail = behaviour.get("numeric_accuracy_detail") or {}
-    if num_detail.get("by_type"):
-        lines += ["## Numeric accuracy (deterministic, judge-free)", "",
+    for scope, src in (("all questions", behaviour),
+                       ("evidence-recoverable subset", rec)):
+        num_detail = (src or {}).get("numeric_accuracy_detail") or {}
+        if not num_detail.get("by_type"):
+            continue
+        lines += [f"## Numeric accuracy, {scope} (deterministic, judge-free)", "",
                   "| qtype | correct | n | accuracy |", "|---|---|---|---|"]
         for qt, d in sorted(num_detail["by_type"].items()):
             lines.append(f"| {qt} | {d['correct']} | {d['n']} | {d['accuracy']} |")
@@ -360,8 +484,13 @@ def final_report(
         lines.append("")
     if ragas_scores:
         overall = ragas_scores.get("overall", {})
-        lines += ["## RAGAS (overall)", "", "| metric | score |", "|---|---|"]
-        lines += [f"| {k} | {v} |" for k, v in overall.items()]
+        n_scored = ragas_scores.get("n_scored")
+        per_metric = ragas_scores.get("scored_per_metric") or {}
+        lines += ["## RAGAS (overall)", "",
+                  f"| metric | score | rows scored (of {n_scored}) |",
+                  "|---|---|---|"]
+        lines += [f"| {k} | {v} | {per_metric.get(k, n_scored)} |"
+                  for k, v in overall.items()]
         # Answered-subset: RAGAS zeroes non-answers by construction, so this
         # is the answer-quality signal with the abstention cost factored out.
         answered = ragas_scores.get("answered_only") or {}
@@ -371,6 +500,14 @@ def final_report(
                       f"{ragas_scores.get('n_answered')}/{ragas_scores.get('n_scored')} plainly answered)",
                       "", "| metric | score |", "|---|---|"]
             lines += [f"| {k} | {v} |" for k, v in answered.items()]
+        recoverable = ragas_scores.get("recoverable_only") or {}
+        if recoverable:
+            lines += ["",
+                      f"## RAGAS (evidence-recoverable subset — "
+                      f"{ragas_scores.get('n_recoverable')}/{ragas_scores.get('n_scored')}; "
+                      f"the set the retrieval numbers are quoted against)",
+                      "", "| metric | score |", "|---|---|"]
+            lines += [f"| {k} | {v} |" for k, v in recoverable.items()]
         by_type = ragas_scores.get("by_type", {})
         if by_type:
             metrics = sorted({m for d in by_type.values() for m in d})
@@ -391,12 +528,18 @@ def final_report(
                   "|---|---|---|"]
         for m in sorted(set(before) | set(after)):
             lines.append(f"| {m} | {before.get(m)} | {after.get(m)} |")
-    lines += ["", "## Coverage by question type", "",
-              "| qtype | questions | answered | refused | errors |",
-              "|---|---|---|---|---|"]
-    for qt, b in sorted(behaviour["by_type"].items()):
-        lines.append(f"| {qt} | {b['questions']} | {b['answered']} | "
-                     f"{b['refused']} | {b['errors']} |")
+    for scope, src in (("all questions", behaviour),
+                       ("evidence-recoverable subset", rec)):
+        if not src:
+            continue
+        lines += ["", f"## Coverage by question type, {scope}", "",
+                  "| qtype | questions | answered | refused | errors |",
+                  "|---|---|---|---|---|"]
+        for qt, b in sorted(src["by_type"].items()):
+            lines.append(f"| {qt} | {b['questions']} | {b['answered']} | "
+                         f"{b['refused']} | {b['errors']} |")
+
+    lines += _limitations(outputs_path, behaviour)
     Path(metrics_md).write_text("\n".join(lines) + "\n")
     _log(f"final metrics → {metrics_json} / {metrics_md}")
     return report
@@ -407,11 +550,29 @@ def final_report(
 # --------------------------------------------------------------------------- #
 
 def _load_all_questions():
-    """The full tagged FinanceBench set (dev + heldout — the eval now covers
-    every question instead of a slice, since the 8-key pool makes it cheap)."""
-    from finagent.evaluation.dataset import load_eval_dataset
+    """The FinanceBench questions this corpus can actually answer.
 
-    return load_eval_dataset()
+    Not all 150. The eval corpus is the ORIGINAL SEC HTML production serves, and
+    8-K / earnings-release docs have no single served HTML filing (their evidence
+    lives in exhibits) — so 23 questions have no document to retrieve from and
+    would score as retrieval failures that aren't. `restrict_to_served_docs`
+    drops exactly those, leaving 127. Runs before Jul 2026 used all 150 and are
+    not comparable on any per-question rate.
+
+    A further 28 of the 127 have evidence `partition_html` cannot recover from
+    the filing at all (the ~23% parsing ceiling in RETRIEVAL_EXPERIMENTS.md);
+    those stay IN — a numeric question can still be answered from XBRL without
+    its prose evidence — and are reported separately as the 99-question subset
+    every retrieval number is quoted against.
+    """
+    from finagent.evaluation.dataset import load_eval_dataset
+    from finagent.evaluation.financebench.dataset import restrict_to_served_docs
+
+    df = load_eval_dataset()
+    served = restrict_to_served_docs(df)
+    _log(f"questions: {len(served)} served-HTML of {len(df)} "
+         f"({len(df) - len(served)} dropped — 8-K/earnings, no served filing)")
+    return served
 
 
 class _Tee:
@@ -490,7 +651,14 @@ def main() -> None:
                 outputs_path=args.output,
                 scores_csv=str(Path(args.output).with_suffix("")) + "_ragas.csv",
                 judge_provider=args.provider, judge_model=args.judge_model,
-                max_workers=1, timeout=300, batch_size=8,
+                # 4 concurrent judge calls. The free tier's 12k tokens/minute
+                # per key is the binding limit either way — a five-metric score
+                # over real filing chunks costs ~40k tokens per question — but
+                # concurrency overlaps the waiting, and measured it is what
+                # matters: 4 workers scored 41 questions before the pool
+                # latched; 1 worker scored none in three minutes. Expect the run
+                # to stop on exhaustion and need re-running; it resumes.
+                max_workers=4, timeout=300, batch_size=8,
             )
         except AllKeysExhaustedError:
             print("\nLIMIT EXHAUSTED — re-run this command once your daily quota resets.")

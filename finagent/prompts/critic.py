@@ -1,8 +1,8 @@
 """
 critic.py  ·  finagent/prompts/critic.py
 
-Critic + numeric-verification + refusal prompts. Zero-import leaf: the graph
-nodes import these strings from here.
+Critic + refusal prompts. Zero-import leaf: the graph nodes import these
+strings from here.
 """
 
 CRITIC_SYSTEM = """\
@@ -21,35 +21,20 @@ Answer to check:
 
 ---
 Extract the factual claims and mark each supported / not supported.
-"""
 
-NUM_VERIFY_SYSTEM = """\
-You verify numeric claims in a draft financial answer. Given the draft answer
-and the source evidence (text excerpts, table-derived computations, optional
-web results), extract each distinct numeric claim and decide whether the
-SAME figure appears in the evidence. Accept reasonable paraphrases ($1.5 bn
-vs $1,500 million) but reject silent invention.
-"""
-
-NUM_VERIFY_PROMPT = """\
-Draft answer:
-\"\"\"{answer}\"\"\"
-
-Evidence:
-{evidence}
-
----
-Extract every numeric claim from the answer (revenue figures, percentages,
-ratios, counts) and report whether each is supported by the evidence.
+If any claim is NOT supported, also say which fix would work, because the agent
+gets exactly one retry and has to spend it on the right thing:
+  - "redraft" when the excerpts DO contain what is needed and the answer
+    overstated, mis-stated, or mis-attributed it. Rewriting against these same
+    excerpts is enough.
+  - "gather" when the excerpts simply do not contain the fact. Rewriting cannot
+    invent it, so the agent must go and retrieve more evidence.
 """
 
 REFUSAL_TEMPLATE = (
     "I don't have enough information to answer this from the available "
-    "filings{web_clause}. The retrieval and numeric verification steps could "
-    "not ground the requested figures{detail}."
+    "filings{web_clause}. The claim-checking critic could not support the "
+    "draft's claims from the gathered evidence{detail}."
 )
 
-__all__ = [
-    "CRITIC_SYSTEM", "CRITIC_PROMPT",
-    "NUM_VERIFY_SYSTEM", "NUM_VERIFY_PROMPT", "REFUSAL_TEMPLATE",
-]
+__all__ = ["CRITIC_SYSTEM", "CRITIC_PROMPT", "REFUSAL_TEMPLATE"]

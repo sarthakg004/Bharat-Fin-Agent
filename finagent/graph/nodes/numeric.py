@@ -7,6 +7,7 @@ Split out of `finagent.graph.agent` (methods are unchanged); mixed into
 from __future__ import annotations
 
 import re
+from datetime import date
 from typing import Optional
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -23,10 +24,12 @@ exact reported line-item figure (revenue, net income, total assets, gross
 profit, R&D expense, diluted EPS, cash, long-term debt, …) for ONE company — if
 so set answerable=true and fill ticker and concept (plain words).
 
-Period rules (important):
+Period rules (important). Today's date is {today} — resolve any relative period
+against it, never against your training data.
 - Set `period` to a fiscal YEAR (e.g. 'FY2022') ONLY if the question names a
   specific year. If NO year is mentioned, leave period EMPTY — do NOT guess a
-  year; the tool then returns the LATEST available data.
+  year; the tool then returns the LATEST available data, which is more reliable
+  than dating it yourself (filing lag and non-calendar fiscal years both bite).
 - Set `quarterly`=true if the question asks for a quarter ('last quarter', 'most
   recent quarter', 'Q3', 'quarterly EPS') — the tool returns the latest 10-Q
   figure instead of the annual one.
@@ -70,11 +73,13 @@ names: "FY2021 inventory turnover using average inventory between FY2020 and
 FY2021" → periods ['FY2020','FY2021'] (the LAST period is the target year; the
 earlier one only feeds the averaged input — never return just the earlier year).
 
-Period rules (important):
+Period rules (important). Today's date is {today} — resolve any relative period
+against it, never against your training data.
 - List ONLY fiscal years the sub-query itself names. If it names NONE — or says
   'latest', 'most recent', 'prior fiscal year', 'year-over-year' — leave periods
-  EMPTY; the tool resolves the newest filed periods itself. NEVER fill in a year
-  from your training data; your memory of "recent" years is stale.
+  EMPTY; the tool resolves the newest filed periods itself, which is more
+  reliable than dating them yourself (filing lag and non-calendar fiscal years
+  both bite).
 - Set quarterly=true when the metric is asked for a QUARTER ('last quarter',
   'Q1', 'most recent 10-Q') rather than a full fiscal year.
 
@@ -136,11 +141,6 @@ _DEFINES_RE = re.compile(r"\b(?:defined|calculated|computed|measured)\s+as\b", r
 # single-period formula planner doesn't handle these.
 _MULTIPERIOD_RE = re.compile(r"\b(growth|cagr|trend|compound annual)\b", re.I)
 
-# Year parsing is shared with the retrieval filter (`retrieval.filters`): both
-# read the SAME planner-written sub-query, so they have to agree on what counts
-# as a named year — a local 4-digit-only regex here read "FY22" as no year and
-# dropped every extracted period as a guess.
-
 # The sub-query asks for a period-over-period comparison of the metric
 # ("year-over-year", "vs prior year", "improve/decline", "change").
 _COMPARE_RE = re.compile(
@@ -149,19 +149,6 @@ _COMPARE_RE = re.compile(
 
 # The sub-query is about a quarter, not a fiscal year.
 _QUARTERLY_RE = re.compile(r"\bq[1-4]\b|quarter|10[\s-]?q\b", re.I)
-
-
-def _named_periods_only(sub_q: str, periods: list[str]) -> list[str]:
-    """Keep only periods whose year the sub-query itself names.
-
-    The extraction LLM must not guess: "latest fiscal year vs prior fiscal
-    year" has NO named year, so every extracted period is a stale-training-data
-    guess and gets dropped (the calculator then resolves the newest filed
-    periods itself)."""
-    from finagent.retrieval.filters import parse_years
-
-    named = set(parse_years(sub_q))
-    return [p for p in (periods or []) if set(parse_years(p)) & named]
 
 
 class NumericNodes:
@@ -205,7 +192,7 @@ class NumericNodes:
             )
             try:
                 out = self._get_router_llm().with_structured_output(batch_schema).invoke([
-                    SystemMessage(content=system),
+                    SystemMessage(content=system.format(today=date.today().isoformat())),
                     HumanMessage(content=history_block + batch_prompt),
                 ])
                 queries = list(out.queries or [])
@@ -223,7 +210,7 @@ class NumericNodes:
         for sub_q in sub_queries:
             try:
                 q = extractor.invoke([
-                    SystemMessage(content=system),
+                    SystemMessage(content=system.format(today=date.today().isoformat())),
                     HumanMessage(content=history_block + single_prompt.format(sub_query=sub_q)),
                 ])
             except Exception as e:
@@ -321,18 +308,6 @@ class NumericNodes:
         for sub_q, q in extracted:
             if q is None or not q.is_derived or not (q.ticker and q.metric):
                 continue
-            # Deterministic period guard: drop any extracted year the sub-query
-            # itself doesn't name. Observed failure: "latest fiscal year vs
-            # prior fiscal year" extracted as ['FY2022','FY2023'] from the
-            # LLM's stale training memory — the calculator then computed the
-            # wrong years' figures, which the synthesizer treats as
-            # authoritative and nothing downstream can catch.
-            kept = _named_periods_only(sub_q, q.periods)
-            if kept != list(q.periods or []):
-                self._log(state, f"dropped guessed period(s) "
-                                 f"{[p for p in q.periods if p not in kept]} "
-                                 f"for {sub_q!r}")
-                q.periods = kept
             redefined = bool(_DEFINES_RE.search(sub_q))
             multiperiod = bool(_MULTIPERIOD_RE.search(q.metric)
                                or _MULTIPERIOD_RE.search(sub_q))

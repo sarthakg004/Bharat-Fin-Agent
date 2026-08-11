@@ -57,9 +57,15 @@ RUN pip install --no-cache-dir -r requirements.txt
 # fetch and a write to /opt/venv mid-answer, so bake it here.
 RUN python -m spacy download en_core_web_sm
 
-# Bake the bge models into the venv-side HF cache so cold start loads from disk.
-RUN python -c "from sentence_transformers import SentenceTransformer, CrossEncoder; \
-SentenceTransformer('BAAI/bge-large-en-v1.5'); \
+# Bake the cross-encoder into the venv-side HF cache so cold start loads from
+# disk. It is the fallback for the Cohere reranker, so it has to be present even
+# though the default reranker is an API call.
+#
+# The bge-large EMBEDDER used to be baked here too and no longer is: embeddings
+# are served by the Gemini API now, so nothing in the image loads it and it was
+# ~1.3 GB of dead weight. If EMBEDDING_MODEL is ever pointed back at a local
+# model, bake it again or the first query dies under HF_HUB_OFFLINE=1.
+RUN python -c "from sentence_transformers import CrossEncoder; \
 CrossEncoder('BAAI/bge-reranker-v2-m3')"
 
 # Bake the BM25 sparse encoder (~0.1 MB) that produces the lexical half of

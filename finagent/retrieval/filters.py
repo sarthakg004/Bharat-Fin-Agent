@@ -174,10 +174,19 @@ def build_company_vocab(metadatas) -> tuple[dict, dict]:
     # company becomes an alias for it ("jpmorgan" → JPMORGAN CHASE & CO,
     # "verizon" → Verizon Communications Inc.) — that's how questions actually
     # name companies. Generic words and short tokens never qualify.
+    # Three characters, not five. Five silently excluded every SHORT
+    # distinctive name in the corpus — "Ulta Beauty" was reachable only as the
+    # full two-word phrase, so "What was Ulta's revenue?" matched no company at
+    # all, the filter was dropped, and the question competed against every other
+    # filing. Same for AES, CVS and MGM (MGM had to be hand-written into
+    # COMPANY_ALIASES to work around exactly this). The safety does not come
+    # from token length — it comes from the two conditions below: the token must
+    # belong to exactly ONE company, and must not be a generic word. Matching is
+    # whole-word, so a short alias cannot fire on a substring.
     token_owner: dict[str, set] = {}
     for name, canon in list(vocab.items()):
         for tok in name.split():
-            if len(tok) >= 5 and tok not in _GENERIC_TOKENS:
+            if len(tok) >= 3 and tok not in _GENERIC_TOKENS:
                 token_owner.setdefault(tok, set()).add(canon)
     for tok, owners in token_owner.items():
         if len(owners) == 1 and tok not in vocab:

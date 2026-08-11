@@ -14,7 +14,7 @@ downstream nodes can treat them uniformly whether or not a lane ran.
 
 from __future__ import annotations
 
-from typing import Any, TypedDict
+from typing import Any, Literal, TypedDict
 
 from pydantic import BaseModel, Field
 
@@ -39,22 +39,21 @@ class AgentState(TypedDict, total=False):
     errors: list[str]                  # non-fatal problems logged along the way
     needs_retry: bool                  # critic flag; drives the critic-retry loop
 
-    # --- Corrective-RAG additions (graded retrieval + rewrite loop) -------- #
-    grades: list[int]                  # grader: per-chunk relevance score (1-5)
-    avg_grade: float                   # grader: mean of grades
+    # --- Corrective-RAG additions (critic retry loop) ---------------------- #
     company_in_corpus: bool            # retrieve: question's company is indexed → trust the filing
-    rewrite_history: list[str]         # past rewritten sub-queries
-    critic_iterations: int             # critic-retry counter (cap = max_critic_retries)
+    critic_iterations: int             # recovery counter (cap = max_critic_retries)
     critic_feedback: list[str]         # unsupported claims, fed to an active re-draft
+    critic_remedy: str                 # critic's fix: "redraft" | "gather"
 
     # --- Router (v3) ------------------------------------------------------- #
     query_routes: list[str]            # one of "narrative" | "numeric" | "external" per sub-query
 
-    # --- v4 additions: i18n, web search, numeric verification, refusal ----- #
-    numeric_verification: dict         # {"claims": [...], "unverified": [...], "score": 0..1}
-    verification_report: dict          # #5: {numeric, cross_source, units, sources}
-    verify_iterations: int             # how many times verify_numbers has run (bounds re-route)
+    # --- v4 additions: web search, refusal --------------------------------- #
     refused: bool                      # set when the agent explicitly declines to answer
+    # Retrieval was skipped because the embedding pool is out of daily quota.
+    # The answer still gets written from the tool lanes; this is what lets the
+    # API tell the user why the filing evidence is missing.
+    embeddings_unavailable: bool
 
     # --- Market-data tool results ----------------------------------------- #
     market_data: list[dict]            # one entry per tool call (quote/history/...)
@@ -138,48 +137,21 @@ class CriticReport(BaseModel):
     verdicts: list[ClaimVerdict] = Field(
         description="One entry per factual claim found in the answer."
     )
-
-
-# --------------------------------------------------------------------------- #
-# Corrective-RAG schemas
-# --------------------------------------------------------------------------- #
-
-class ChunkScore(BaseModel):
-    """Per-excerpt relevance score from the grader."""
-
-    score: int = Field(
-        ge=1, le=5,
-        description="1 = irrelevant, 3 = related, 5 = directly answers the question",
-    )
-    reason: str = Field(description="Brief justification for the score.")
-
-
-class GraderReport(BaseModel):
-    """Grader output: one score per excerpt, in the same order as presented."""
-
-    scores: list[ChunkScore] = Field(
-        description="Per-excerpt scores, in input order."
-    )
-
-
-class RewrittenQuery(BaseModel):
-    """Rewriter output: a single reformulated, retrieval-friendly question."""
-
-    query: str = Field(
+    remedy: Literal["redraft", "gather"] = Field(
+        default="redraft",
         description=(
-            "The reformulated question. Self-contained, ideally with "
-            "domain-specific synonyms (e.g. 'net profit attributable to "
-            "shareholders' instead of 'earnings')."
-        )
+            "What would fix the unsupported claims. 'redraft' = the evidence "
+            "IS sufficient but the answer overstated it, so rewriting against "
+            "the same evidence fixes it. 'gather' = the evidence genuinely "
+            "does not contain the fact, so more retrieval is needed. Ignored "
+            "when every claim is supported."
+        ),
     )
 
 
 # --------------------------------------------------------------------------- #
 # Router schemas
 # --------------------------------------------------------------------------- #
-
-from typing import Literal
-
 
 class QueryRoute(BaseModel):
     """Per-sub-query routing verdict."""
@@ -241,26 +213,7 @@ class QueryPlan(BaseModel):
 
 
 # --------------------------------------------------------------------------- #
-# v4 schemas (translation, numeric verification)
-# --------------------------------------------------------------------------- #
-
-class NumericClaim(BaseModel):
-    """One numeric claim extracted from the draft answer."""
-
-    claim: str = Field(description="The full claim, including the figure and what it refers to.")
-    number: str = Field(description="The numeric value as written (e.g. '₹9,14,472 crore', '23.4%').")
-    matched: bool = Field(description="True if the figure appears verbatim or as a close paraphrase in the supplied evidence.")
-    evidence: str = Field(description="Short quote from the evidence that supports the figure, or '' if matched is False.")
-
-
-class NumericVerification(BaseModel):
-    """Verifier output for all numeric claims in the draft answer."""
-
-    claims: list[NumericClaim] = Field(description="One entry per distinct numeric claim.")
-
-
-# --------------------------------------------------------------------------- #
-# Market-data tool selection
+# Tool-extraction schemas (XBRL, calculator, EDGAR, market data)
 # --------------------------------------------------------------------------- #
 
 class XBRLQuery(BaseModel):

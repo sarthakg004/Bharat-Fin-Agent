@@ -16,9 +16,9 @@ class ProviderConfig(BaseModel):
     The frontend Settings modal collects these from the user (with the API
     key stored in their browser's localStorage and posted per-request — never
     persisted server-side). When absent, the agent uses the server-default
-    provider (Groq) with the keys baked into the Space's environment.
+    provider (Gemini) with the keys baked into the Space's environment.
     """
-    provider: Literal["groq", "gemini", "openai", "anthropic"] = "groq"
+    provider: Literal["groq", "gemini", "openai", "anthropic"] = "gemini"
     synth_model: Optional[str] = Field(
         default=None,
         description="Model name for the synthesizer / critic. None → provider default.",

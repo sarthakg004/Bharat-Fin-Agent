@@ -12,24 +12,25 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 
-from finagent.runtime import DEFAULTS, RuntimeContext, current_context
+from finagent.runtime import (
+    DEFAULTS, ROUTER_PIN, RuntimeContext, current_context)
 
 
 def test_model_for_resolves_roles_and_overrides():
     ctx = RuntimeContext(provider="groq")
     assert ctx.model_for("synth") == DEFAULTS["groq"]["synth"]
     # Derived roles follow the role they were defined against.
-    assert ctx.model_for("router") == ctx.model_for("synth")
-    assert ctx.model_for("market_planner") == ctx.model_for("grader")
-    assert ctx.model_for("verifier") == ctx.model_for("critic")
-    # The grader is deliberately a DIFFERENT model from the 120B roles, so a
-    # long run cannot exhaust every role's quota in lockstep.
-    assert ctx.model_for("grader") != ctx.model_for("synth")
+    assert ctx.model_for("market_planner") == ctx.model_for("synth")
+    # `router` is pinned to the free Groq pool rather than derived — the
+    # extractors behind it are one-shot structured calls, and the pin keeps the
+    # small Gemini per-day budget for the reasoning roles.
+    assert ctx.model_for("router") == ROUTER_PIN[1] != ctx.model_for("synth")
 
-    # The UI's "model" overrides the synth family only — not the planner.
+    # The UI's "model" overrides the synth family only — not the planner, and
+    # not the pinned extractor tier.
     over = RuntimeContext(provider="groq", synth_model="my-model")
     assert over.model_for("synth") == "my-model"
-    assert over.model_for("router") == "my-model"
+    assert over.model_for("router") == ROUTER_PIN[1]
     assert over.model_for("planner") == DEFAULTS["groq"]["planner"]
 
 

@@ -29,14 +29,11 @@ export interface QueryMetadata {
   sub_queries?: string[];
   query_routes?: string[];
   grading_score?: number | null;
-  avg_grade?: number | null;
-  rewrite_iterations?: number;
   critic_iterations?: number;
   needs_retry?: boolean | null;
   refused?: boolean;
   answer_status?: string | null;
-  numeric_verification_score?: number | null;
-  unverified_count?: number;
+  unsupported_claims?: string[];
   web_hits?: number;
   table_computations?: number;
   market_calls?: number;

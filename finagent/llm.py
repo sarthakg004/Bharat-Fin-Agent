@@ -30,6 +30,10 @@ API_KEY_ENV = {
     "gemini": "GEMINI_API_KEY",
     "openai": "OPENAI_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
+    # Not a chat provider — `build_llm` will reject it. It is here so the
+    # reranker adapter can reuse `collect_provider_keys` (the bare + numbered +
+    # consolidated key scan, deduped) rather than re-implement key discovery.
+    "cohere": "COHERE_API_KEY",
 }
 
 
@@ -614,6 +618,27 @@ class RotatingChatModel(BaseChatModel):
     # ------------------------------------------------------------------ #
 
     def with_structured_output(self, schema, **so_kw) -> Runnable:
+        # Qwen 3.x on Groq emits its tool calls in an XML-ish form whose scalars
+        # all arrive as STRINGS, so Groq's own validator rejects the call before
+        # it reaches us:
+        #
+        #     tool call validation failed: parameters for tool XBRLQuery did not
+        #     match schema: `/answerable`: expected boolean, but got string
+        #
+        # LangChain's default `method="function_calling"` therefore fails EVERY
+        # structured extraction on this model. Measured on the XBRL and
+        # calculator lanes: it killed the numeric path outright, and the agent
+        # fell back to web search and answered 3M's FY2022 revenue off a
+        # stock-tip page — a wrong number reached the user with no error shown.
+        # `json_schema` uses Groq's native structured-output mode and returns a
+        # correctly typed object. (`json_mode` is not an option: Groq also
+        # requires the literal word "json" somewhere in the prompt.)
+        #
+        # Set here, at the one choke point every extractor funnels through,
+        # because the constraint belongs to the MODEL rather than to any of the
+        # seven call sites. An explicit `method=` from a caller still wins.
+        if self.provider == "groq" and self.chat_model.startswith("qwen/"):
+            so_kw.setdefault("method", "json_schema")
         return _RotatingBound(self, "with_structured_output", (schema,), so_kw)
 
     def bind_tools(self, tools, **kw) -> Runnable:
@@ -658,6 +683,7 @@ def build_llm(
     temperature: float = 0.0,
     max_retries: int = 3,
     rotate: bool = True,
+    **model_kwargs,
 ):
     """Instantiate a LangChain chat model for the given provider + model.
 
@@ -670,11 +696,23 @@ def build_llm(
 
     Pass `rotate=False` when the caller needs a real `BaseChatModel` (e.g.
     ragas `LangchainLLMWrapper`, which type-checks).
+
+    `model_kwargs` go straight to the provider's chat class — that is how the
+    RAGAS judge turns Qwen's reasoning off (`reasoning_effort="none"`) without
+    changing the agent's own roles.
     """
     provider = provider.lower()
     if provider not in API_KEY_ENV:
         raise ValueError(
             f"Unknown provider {provider!r}. Choose one of {list(API_KEY_ENV)}."
+        )
+    if provider == "cohere":
+        # `_build_single` falls through to ChatGroq for anything unrecognised,
+        # so without this a cohere chat request would authenticate a Cohere key
+        # against Groq and fail with a confusing 401.
+        raise ValueError(
+            "cohere is a reranking provider here, not a chat provider — see "
+            "finagent.retrieval.reranker.CohereReranker."
         )
 
     if api_key:
@@ -696,35 +734,38 @@ def build_llm(
             chat_kwargs={
                 "temperature": temperature,
                 "max_retries": min(max_retries, 2),
+                **model_kwargs,
             },
         )
     return _build_single(provider, model, keys[0],
-                         temperature=temperature, max_retries=max_retries)
+                         temperature=temperature, max_retries=max_retries,
+                         **model_kwargs)
 
 
 def _build_single(provider: str, model: str, api_key: str,
-                  *, temperature: float = 0.0, max_retries: int = 3):
+                  *, temperature: float = 0.0, max_retries: int = 3,
+                  **model_kwargs):
     """One chat instance for one key. Imports are local per provider."""
     if provider == "gemini":
         from langchain_google_genai import ChatGoogleGenerativeAI
 
         return ChatGoogleGenerativeAI(
             model=model, google_api_key=api_key,
-            temperature=temperature, max_retries=max_retries,
+            temperature=temperature, max_retries=max_retries, **model_kwargs,
         )
     if provider == "openai":
         from langchain_openai import ChatOpenAI
 
         return ChatOpenAI(
             model=model, api_key=api_key,
-            temperature=temperature, max_retries=max_retries,
+            temperature=temperature, max_retries=max_retries, **model_kwargs,
         )
     if provider == "anthropic":
         from langchain_anthropic import ChatAnthropic
 
         return ChatAnthropic(
             model=model, api_key=api_key,
-            temperature=temperature, max_retries=max_retries,
+            temperature=temperature, max_retries=max_retries, **model_kwargs,
         )
     # default: groq
     from langchain_groq import ChatGroq
@@ -735,6 +776,7 @@ def _build_single(provider: str, model: str, api_key: str,
         # block to every plain-text completion, which would leak into rewritten
         # queries and judged answers. "hidden" strips it server-side.
         kwargs["reasoning_format"] = "hidden"
+    kwargs.update(model_kwargs)
     return ChatGroq(
         model=model, api_key=api_key,
         temperature=temperature, max_retries=max_retries, **kwargs,

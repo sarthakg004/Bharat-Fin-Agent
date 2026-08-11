@@ -26,12 +26,21 @@ from typing import Optional, Union
 
 import pandas as pd
 
-from finagent.vectorstore import build_store
+from finagent.vectorstore import DEFAULT_EMBED_MODEL, build_store
 
 from .dataset import load_questions, tag_question_types
 from .indexing import DEFAULT_CORPUS_DIR, EVAL_COLLECTION, corpus_path
 
-DEFAULT_GOLD_PATH = "results/financebench_gold.json"
+# Gold chunks are the *text* of the best-matching chunk, so the map is only
+# valid for the collection it was built from — a re-index with different chunk
+# geometry (or the §12 context headers, which prefix every chunk) makes every
+# stored text a stale string that nothing will ever match. Name the file after
+# the collection so switching corpora rebuilds instead of silently scoring 0.
+DEFAULT_GOLD_PATH = (
+    "results/financebench_gold.json"
+    if EVAL_COLLECTION == "financebench_eval"
+    else f"results/financebench_gold_{EVAL_COLLECTION}.json"
+)
 
 
 def _one_filing_filter(local_path: str):
@@ -51,6 +60,7 @@ def build_gold_map(
     corpus_dir: Union[str, Path] = DEFAULT_CORPUS_DIR,
     gold_path: Union[str, Path] = DEFAULT_GOLD_PATH,
     reuse: bool = True,
+    embedding_model: str = DEFAULT_EMBED_MODEL,
 ) -> dict:
     """Map every question to its gold chunk text(s); persist to `gold_path`.
 
@@ -85,7 +95,11 @@ def build_gold_map(
         print(f"gold map: {len(questions)} served-doc questions "
               f"({dropped} dropped — 8-K/earnings not served as HTML)")
 
-    store = build_store(collection_name)
+    # The embedder MUST match the one the collection was built with: this
+    # embeds the evidence text to find its chunk, and a bge query vector
+    # against a Gemini collection is a dimension mismatch at best and silent
+    # nonsense at worst. It defaulted to bge-large regardless of collection.
+    store = build_store(collection_name, embedding_model=embedding_model)
 
     gold: dict = {}
     n_unmatched = 0

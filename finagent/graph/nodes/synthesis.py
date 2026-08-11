@@ -1,7 +1,8 @@
-"""Evidence assembly, analyst-voice synthesis, and the claim-checking critic.
+"""Evidence assembly, analyst-voice synthesis, the claim-checking critic, and
+the refusal it can trigger.
 
-Split out of `finagent.graph.agent` (methods are unchanged); mixed into
-`AgenticRAGv4` ahead of `AgenticRAGv3` in the MRO.
+Split out of `finagent.graph.agent`; mixed into `AgenticRAGv4` ahead of
+`AgenticRAGv3` in the MRO.
 """
 
 from __future__ import annotations
@@ -10,6 +11,7 @@ import re
 
 from finagent.graph.state import AgentState
 from finagent.graph.full import SYNTH_V3_SYSTEM
+from finagent.prompts.critic import REFUSAL_TEMPLATE
 
 SYNTH_ANALYST_SYSTEM = """\
 You are a senior equity research analyst writing for a financial professional.
@@ -137,6 +139,8 @@ Mark each claim supported / not supported with a brief reason.
 """
 
 
+
+
 class SynthesisNodes:
     """Evidence assembly, analyst-voice synthesis, and the claim-checking critic."""
 
@@ -144,8 +148,7 @@ class SynthesisNodes:
     # how authoritative the source is for a financial claim: exact filed XBRL is
     # ground truth; deterministic math over it is nearly as good; filing text and
     # tables are strong; live market data is fresh-but-point-in-time; EDGAR FTS
-    # locates filers; web is the weakest. Retrieved-chunk items refine this with
-    # their own grader score where available.
+    # locates filers; web is the weakest.
     _EVIDENCE_BASE_CONF = {
         "xbrl": 0.98, "calc": 0.95, "table": 0.85, "filing": 0.75,
         "market": 0.90, "edgar": 0.70, "web": 0.55,
@@ -214,16 +217,12 @@ class SynthesisNodes:
                 citation=f"<Calc: {r.get('metric','')}>",
                 sub_query=r.get("sub_query", ""))
 
-        # Filing text excerpts — per-chunk grader score becomes its confidence.
-        chunks = state.get("retrieved_chunks", []) or []
-        grades = state.get("grades", []) or []
-        for i, c in enumerate(chunks):
-            conf = ((grades[i] - 1) / 4.0) if i < len(grades) else \
-                self._EVIDENCE_BASE_CONF["filing"]
+        # Filing text excerpts — the reranker already ordered them, so they all
+        # carry the same source-level confidence.
+        for c in state.get("retrieved_chunks", []) or []:
             add("filing", c.get("text", "")[:300],
                 source=c.get("source", ""),
                 citation=c.get("source", ""),
-                confidence=max(0.0, min(1.0, conf)),
                 sub_query=c.get("sub_query", ""))
 
         # Live market data (yfinance) — one item per successful tool call.
@@ -257,8 +256,8 @@ class SynthesisNodes:
         """Normalise all lane outputs into one `evidence` list (#3).
 
         Runs after the tool lanes and before synthesis, so the structured view
-        is available to the verifier, the audit
-        trail, and (later) cross-source validation — without disturbing the
+        is available to the critic, the audit
+        trail, and cross-source validation — without disturbing the
         synthesizer's existing numbered-evidence assembly.
         """
         try:
@@ -299,7 +298,7 @@ class SynthesisNodes:
         the evidence pool. Without this, a claim grounded in a Tavily hit or
         a yfinance quote looks "unsupported" to the critic (which only sees
         text + table chunks by default), triggers a retry, and ends up refused
-        even though the verifier accepts it.
+        even though the evidence supports it.
         """
         pseudo_chunks: list[dict] = []
 
@@ -384,15 +383,40 @@ class SynthesisNodes:
         can't answer, and the web lane hasn't run yet — so route to web search
         and re-synthesize instead of shipping an "I couldn't find it" answer
         while a whole tool lane sits unused. `used` latches so a question the
-        web genuinely can't answer either doesn't loop."""
+        web genuinely can't answer either doesn't loop.
+
+        This spends the SAME recovery budget as a re-draft or a re-retrieve. It
+        used to be free, which is how a question could run three synthesize
+        passes while `_retrieval_status` reported one. The counter is derived
+        from `state`, not from the dict this update is merged into, so it lands
+        on the same value whichever recovery the router ends up choosing.
+        """
         draft = state.get("draft_answer", "") or ""
         if (not state.get("web_results")
                 and not state.get("web_fallback_used")
+                and state.get("critic_iterations", 0) < self.max_critic_retries
                 and self._INSUFFICIENT_RE.search(draft)):
             self._log(state, "draft admits the evidence can't answer; "
                              "escalating to web search")
-            return {"web_fallback_pending": True, "web_fallback_used": True}
+            return {"web_fallback_pending": True, "web_fallback_used": True,
+                    "critic_iterations": state.get("critic_iterations", 0) + 1}
         return {"web_fallback_pending": False}
+
+    def refuse_node(self, state: AgentState) -> dict:
+        """Replace the final answer with an explicit refusal.
+
+        Reached from `_critic_router` when the critic could support less than
+        `REFUSE_BELOW_SUPPORT` of the draft's claims and every retry is spent —
+        shipping a draft that is mostly unsupported is worse than declining.
+        """
+        claims = state.get("critic_feedback") or []
+        detail = ""
+        if claims:
+            detail = " (unsupported: " + "; ".join(c[:80] for c in claims[:2]) + ")"
+        web_clause = "" if state.get("web_results") else " or recent web sources"
+        return {"final_answer": REFUSAL_TEMPLATE.format(
+                    web_clause=web_clause, detail=detail),
+                "refused": True, "needs_retry": False, "status": "refused"}
 
     def synthesize_node(self, state: AgentState) -> dict:
         """v3 synth + web results, presented as one unified numbered evidence list.
@@ -687,29 +711,4 @@ single item is irrelevant."""
             lines.append(str(r["source"]))
         return "\n".join(lines)
 
-    @staticmethod
-    def _build_evidence_block(state: AgentState) -> str:
-        parts: list[str] = []
-        # XBRL facts are the strongest grounding for any numeric claim.
-        for f in state.get("xbrl_facts", []) or []:
-            parts.append(
-                f"[XBRL] {f.get('entity', f.get('ticker',''))} {f.get('concept','')} "
-                f"{f.get('period_label','FY'+str(f.get('fy','?')))} = {f.get('value_str','')} ({f.get('value')})\n"
-                f"{f.get('source','')}"
-            )
-        # Derived metrics computed from those exact XBRL inputs.
-        for r in state.get("calc_results", []) or []:
-            parts.append(f"[Calc] {SynthesisNodes._format_calc_result(r)}")
-        for c in state.get("retrieved_chunks", []):
-            parts.append(f"[Text] {c.get('source', '')}\n{c.get('text', '')[:1500]}")
-        for h in state.get("web_results", []):
-            parts.append(f"[Web/{h.get('source', '')}] {h.get('title', '')}\n"
-                         f"{(h.get('content') or '')[:600]}")
-        # Live market data (yfinance) is structured but legitimate evidence
-        # for any numeric claim about prices, ranges, returns.
-        for m in state.get("market_data", []) or []:
-            if not m.get("ok"):
-                continue
-            parts.append(f"[Market/{m.get('tool')}] {str(m.get('data',''))[:1200]}")
-        return ("\n\n".join(parts))[:8000] or "(no evidence)"
 

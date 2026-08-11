@@ -193,8 +193,6 @@ _STEP_LABELS = {
     "router":         "Routing the sub-questions…",
     "fetch_filing":   "Fetching latest filing…",
     "retrieve":       "Searching the filings…",
-    "grader":         "Weighing the evidence…",
-    "rewrite":        "Refining the search…",
     "xbrl":           "Looking up exact figures…",
     "calculator":     "Computing the metrics…",
     "market_data":    "Pulling market data…",
@@ -203,7 +201,6 @@ _STEP_LABELS = {
     "evidence_builder": "Organising the evidence…",
     "synthesize":     "Writing the answer…",
     "critic":         "Fact-checking the draft…",
-    "verify_numbers": "Verifying every figure…",
 }
 
 # Canonical pipeline order (for the UI progress bar). The agent skips most of
@@ -356,15 +353,35 @@ def _swallow(task: asyncio.Future) -> None:
 def _classify_provider_error(e: Exception, pc) -> dict:
     """Classify a provider failure into a user-facing SSE error event
     (shared by /api/query and /api/research)."""
-    from finagent.llm import (format_wait, is_daily_quota_error,
+    from finagent.llm import (_chain, format_wait, is_daily_quota_error,
                               is_rate_limit_error, is_request_too_large,
                               retry_after_seconds)
+    from finagent.vectorstore import EmbeddingQuotaExhausted
 
     # Log the error type for debugging, but NOT the full exception value —
     # provider auth errors can echo the API key into logs.
     print(f"[query error] {type(e).__name__}", flush=True)
 
-    provider = (pc.provider if pc else "groq")
+    provider = (pc.provider if pc else "gemini")
+
+    # The embedding pool is metered separately from the chat pool and is NOT a
+    # chat rate limit, so it has to be classified before the generic branches
+    # or it would surface as a raw "EmbeddingQuotaExhausted: All 8 keys…".
+    # Retrieval degrades to the tool lanes on its own (see
+    # `FetchNodes.hybrid_retrieve_node`), so reaching here means something that
+    # genuinely cannot proceed without embeddings, such as ingesting a fetched
+    # filing or an uploaded document.
+    if any(isinstance(c, EmbeddingQuotaExhausted) for c in _chain(e)):
+        return {
+            "type": "error", "code": "rate_limit",
+            "message": (
+                "The shared Gemini embedding quota is used up for today, so "
+                "new filings cannot be indexed right now. Questions answered "
+                "from SEC XBRL, live market data, or the web still work. The "
+                "quota resets daily, or you can add your own Gemini API key "
+                "from the model picker to keep going now."
+            ),
+        }
     # Checked before the rate-limit branch: the provider reports an over-sized
     # prompt with `code: rate_limit_exceeded`, and telling the user to wait for
     # a reset that will never help is worse than saying nothing.
@@ -435,7 +452,7 @@ async def _run_rag(request: QueryRequest, hist: list[dict],
                    on_step=None, on_step_done=None) -> dict:
     loop = asyncio.get_event_loop()
     pc = request.provider_config
-    provider = (pc.provider if pc else "groq")
+    provider = (pc.provider if pc else "gemini")
     synth_model = (pc.synth_model if pc else None)
     planner_model = (pc.planner_model if pc else None)
     planner_provider = (pc.planner_provider if pc else None)
@@ -597,7 +614,7 @@ def _validate_provider(request) -> None:
     # Both, because the planner may name its own provider — a Gemini answer
     # model with a Groq planner needs BOTH keys resolvable, and failing here is
     # far better than dying in the middle of a graph run.
-    pairs = [((pc.provider if pc else "groq"), (pc.api_key if pc else None))]
+    pairs = [((pc.provider if pc else "gemini"), (pc.api_key if pc else None))]
     if pc and pc.planner_provider and pc.planner_provider != pc.provider:
         pairs.append((pc.planner_provider, pc.planner_api_key))
     for provider, key in pairs:
@@ -668,7 +685,7 @@ async def _stream_research(request: ResearchRequest) -> AsyncGenerator[str, None
         loop.call_soon_threadsafe(events.put_nowait, evt)
 
     pc = request.provider_config
-    provider = (pc.provider if pc else "groq")
+    provider = (pc.provider if pc else "gemini")
     synth_model = (pc.synth_model if pc else None)
     planner_model = (pc.planner_model if pc else None)
     planner_provider = (pc.planner_provider if pc else None)

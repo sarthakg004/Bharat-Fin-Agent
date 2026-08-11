@@ -1,296 +1,241 @@
-# FinAgent · Agentic RAG over financial filings
+# FinAgent
 
-FinAgent answers questions about **SEC filings and listed companies**. A
-LangGraph agent plans and routes the query in one pass, retrieves from the
-filings, pulls **exact XBRL figures** from SEC company-facts, computes derived
-metrics **deterministically**, fetches **live
-market data** (Yahoo Finance) and **web results** (Tavily) when needed, and
-**verifies every figure against the evidence** — refusing rather than
-fabricating when it can't ground a claim. A React UI streams the answer with
-live agent progress and the source chunks shown alongside.
+FinAgent answers questions about SEC filings and listed companies. A LangGraph agent
+plans the question, routes each part of it to whichever source can actually answer it,
+and writes a cited answer that a fact checking critic then reviews before you see it.
 
----
+The point of the design is that a language model should not be asked to recall a
+number. Figures come from SEC XBRL as filed, ratios are computed in Python from those
+figures, prices come from Yahoo Finance, and prose comes from the filings themselves.
+The model decides what to look up and how to explain it.
 
-## Features
+## What it does
 
-- **Grounded answers over filings** — hybrid retrieval (BM25 + dense `bge-small` +
-  cross-encoder rerank) with company/year metadata filtering and inline `[N]`
-  citations linking to the source chunk.
-- **Deep Research Mode** — a second, user-selectable execution path that
-  produces a full cited investment report (overview, financials, valuation,
-  risks, sentiment, bull/bear/base thesis) by running specialist research
-  tasks through the same production agent and merging the findings, with a
-  live agent timeline in the UI and markdown export. See
+* **Grounded answers over filings.** Hybrid retrieval, meaning BM25 and dense vectors
+  fused server side by Qdrant, then reranked. Every claim carries a `[N]` citation
+  that points at the passage it came from.
+* **Exact numbers.** Numeric questions go to SEC XBRL company facts first, so the
+  answer quotes the figure as filed rather than a paraphrase of it. Derived metrics
+  such as margins, ratios, growth, CAGR and working capital days are computed
+  deterministically from those same figures.
+* **A corpus that grows itself.** Ask about a company that is not indexed and the
+  agent fetches its 10-K from EDGAR, walking back far enough to cover the fiscal year
+  you asked about, then keeps it.
+* **Live market data.** Price, return and market cap questions hit Yahoo Finance, and
+  history requests render an inline candlestick chart.
+* **Cross document search.** Questions of the form "which companies disclosed X" run
+  EDGAR full text search across all filers.
+* **Web search.** Tavily covers events after the filings, and escalates automatically
+  when the draft admits the gathered evidence cannot answer.
+* **Your own documents.** Attach a PDF or DOCX in the chat. It is parsed with Docling,
+  ranked against your question alongside the corpus, and held in memory for about an
+  hour. It is never written to the shared index.
+* **Deep Research mode.** A second execution path that produces a full cited report by
+  running specialist tasks through the same agent and merging them. See
   [`docs/deep-research.md`](docs/deep-research.md).
-- **Exact numbers, not paraphrases** — numeric questions hit SEC **XBRL
-  company-facts** first (the figure as filed), then a deterministic
-  **calculator** for derived metrics (margins, ratios, growth, CAGR, working-
-  capital days). The 10-K prose retrieved for the same sub-query supplies any
-  figure XBRL doesn't tag.
-- **Corrective RAG** — each chunk is graded 1–5; weak ones are dropped and the
-  query is rewritten + retried when retrieval is poor.
-- **Self-expanding corpus** — a company missing from the index gets its 10-K
-  fetched from EDGAR on the fly (in-memory on Cloud Run, ingested locally),
-  walking back enough filings to cover the fiscal year asked about.
-- **Bring your own documents** — attach a PDF/DOCX in the chat; it's parsed
-  with **Docling** (layout-aware, tables preserved as markdown, no OCR — so
-  scanned/image-only files won't work), ranked against your question alongside
-  the corpus, and kept in memory for ~1 hour only (never indexed server-side).
-- **Cross-document search** — "which companies disclosed X" runs EDGAR
-  full-text search across all filers.
-- **Live market data + charts** — price / return / market-cap questions hit
-  Yahoo Finance; history requests render an inline candlestick chart.
-- **Web search fallback** — Tavily (trusted finance domains, recency windows),
-  with automatic escalation when retrieval comes back empty or the draft
-  admits it can't answer.
-- **Anti-hallucination** — a claim-checking critic, a deterministic numeric
-  verifier (every figure must trace to the evidence or derive from it), and a
-  hard refusal when a figure can't be traced to the evidence.
-- **Per-session memory** — multi-chat threads kept in the browser; the agent
-  gets the last few turns for follow-ups and pronouns.
-- **Bring-your-own-key** — Groq by default; switch to OpenAI / Anthropic /
-  Gemini per-request from the model picker (keys stay in your browser).
 
----
+## Architecture
 
-## Agent architecture
+```mermaid
+flowchart TD
+    Q[Question] --> P[plan and route]
+    P --> D{route}
 
-The pipeline is a LangGraph `StateGraph`, built as an inheritance ladder where each
-layer adds a capability ([`finagent/graph/`](finagent/graph/)):
+    D -->|any narrative part| F[fetch filing from EDGAR<br/>if the company is missing]
+    F --> R[hybrid retrieve<br/>BM25 + dense, RRF fused, reranked]
+    R --> X
+    D -->|purely numeric, market<br/>or cross document| X[XBRL facts]
 
-| File | Class | Adds |
-|---|---|---|
-| `base.py` | `AgenticRAG` | planner → retrieve → synthesize → critic |
-| `corrective.py` | `AgenticRAGv2` | hybrid retrieval, relevance grader, rewrite loop |
-| `full.py` | `AgenticRAGv3` | fused **plan+route** call, query router |
-| `agent.py` | `AgenticRAGv4` | XBRL facts, calculator, dynamic SEC fetch, EDGAR FTS, market data, web search, numeric verifier |
+    X --> C[calculator<br/>margins, ratios, growth]
+    C --> M[market data]
+    C --> W[web search]
+    C --> E[EDGAR full text]
 
-`AgenticRAGv4` is the deployed agent. The runtime graph:
+    M --> B[evidence builder]
+    W --> B
+    E --> B
 
-```
-START → planner(+routes) → router ─┬─ retrieval path: fetch_filing → retrieve → grader → {rewrite ↺ | proceed}
-                                   └─ tools path (no narrative sub-query): skip retrieval
-      → xbrl → calculator → market_data ∥ web_search ∥ edgar_search   (parallel fan-out)
-      → evidence_builder → synthesize → critic → verify_numbers
-      → {answer | refuse}
-                   ↘ refuse (ungrounded figures)                         → END
+    B --> S[synthesize]
+    S --> K[critic<br/>checks every claim<br/>against the evidence]
+
+    K -->|all claims supported| DONE([answer])
+    K -->|overstated the evidence| S
+    K -->|evidence is missing| R
+    K -->|web lane unused| W
+    K -->|still unsupported<br/>after one retry| REF([refuse])
 ```
 
-**One planning call does everything up front.** The planner decomposes the
-question into sub-queries *and* tags each as
-`narrative | numeric | market | external | cross_document` in a single
-structured-output call; each lane then self-selects, so a lane only does work
-when the question needs it. Purely numeric/market questions skip retrieval
-entirely.
+One planning call does the work of two. It splits the question into sub-questions and
+tags each one as narrative, numeric, market, external or cross document in a single
+structured call, so every lane downstream selects itself. A purely numeric question
+never touches retrieval.
 
-**Numbers are verified deterministically.** Every figure in the draft must
-match the evidence (scale-insensitively) or be derivable from it in one
-arithmetic step; an LLM verifier runs only as a rescue when figures fail to
-ground. Ungrounded figures re-route, then refuse.
+The critic is the only thing that can suppress an answer. It extracts each factual
+claim from the draft, checks it against the evidence, and when something does not hold
+up it also says which fix would work. If the evidence is there and the draft overstated
+it, the answer is rewritten against the same evidence. If the evidence is genuinely
+missing, the agent retrieves again using the failed claims as the new queries. There is
+exactly one retry. A draft that is still mostly unsupported after it is refused rather
+than shipped.
 
-Retrieval uses a remote **Qdrant** collection (`finagent/vectorstore.py`) with
-hybrid dense + BM25-sparse search fused server-side by RRF;
-embeddings and the reranker run on GPU when available, else CPU
-(`finagent/device.py`). The FastAPI layer (`finagent/api/`) streams the answer
-over SSE — with live per-node progress events driving the UI's thinking trace —
-and serves the React SPA.
+### Models
 
-### Models (Groq, free tier)
-
-Each role runs the cheapest model that holds its quality bar; roles start on
-different keys of the rotating pool so rate limits don't hit in lockstep.
+Each role runs the cheapest model that holds its quality bar, and the roles sit on
+different providers so one rate limit does not stop everything.
 
 | Role | Model | Why |
 |---|---|---|
-| plan+route, tool extraction (XBRL/calc/EDGAR/market/gate) | `openai/gpt-oss-120b` | tool selection and decomposition sit on the quality path; weak models mis-route |
-| grader, rewriter | `qwen/qwen3.6-27b` | structured scoring; separate quota bucket from the 120B roles (replaced the deprecated `llama-3.3-70b`; reasoning is stripped server-side so `<think>` never leaks) |
-| synthesizer, critic, verifier, table-agent codegen | `openai/gpt-oss-120b` | long-form writing, claim checking, pandas codegen |
+| Planner, retrieval query writer | `gemini-3.6-flash` | Decides what retrieval searches for, which is the highest leverage call in the pipeline. |
+| Synthesizer | `gemini-3.6-flash` | Long form writing over the assembled evidence. |
+| Critic | `gemini-3.5-flash` | Claim checking, on a separate quota bucket from the synthesizer. |
+| Tool extraction (XBRL, calculator, formula planner, EDGAR, corpus gate) | `qwen/qwen3.6-27b` on Groq | One shot structured output. Good enough here, free, and it keeps the small Gemini daily budget for the roles that need it. |
+| Embeddings | `gemini-embedding-2` at 1536 dims | Matryoshka truncated from 3072 to halve storage. Its 7000 character window keeps whole tables intact, which the previous 512 token encoder could not. |
+| Reranker | `cohere:rerank-v4.0-pro` | Falls back to a local `bge-reranker-v2-m3` when the Cohere quota is spent, so an exhausted key pool costs ranking quality rather than the request. |
+
+Bring your own key from the model picker to switch providers per request. Keys stay in
+your browser and are sent per request, never stored server side.
+
+### Layout
 
 ```
 finagent/
-  graph/         the LangGraph agent (base → corrective → full → agent)
-  tools/         XBRL, calculator, SEC fetch, EDGAR FTS, market, web search
-  retrieval/     hybrid retriever (RRF-fused sparse+dense + rerank), filters, reranker
-  api/           FastAPI: SSE streaming + agent service
-  vectorstore.py · runtime.py · device.py · llm.py
-  ingestion/     corpus builders (PDF parse, chunk, embed)
-  evaluation/    FinanceBench + RAGAS harness (incl. parallel multi-key runner)
-frontend/        React + TypeScript + Vite + Tailwind SPA
+  graph/         the LangGraph agent (base -> corrective -> full -> agent)
+  tools/         XBRL, calculator, SEC fetch, EDGAR search, market data, web search
+  retrieval/     hybrid retriever, filters, reranker
+  api/           FastAPI, SSE streaming, agent service
+  ingestion/     corpus builders (parse, chunk, embed)
+  evaluation/    FinanceBench and RAGAS harnesses
+  vectorstore.py  runtime.py  llm.py  device.py
+frontend/        React, TypeScript, Vite, Tailwind
 ```
 
----
+The pipeline is built as an inheritance ladder, each layer adding one capability:
+`AgenticRAG` does plan, retrieve, synthesize and critique; `AgenticRAGv2` adds hybrid
+retrieval and the critic retry loop; `AgenticRAGv3` adds the fused plan and route call;
+`AgenticRAGv4` adds XBRL, the calculator, dynamic SEC fetch, EDGAR search, market data
+and web search. `AgenticRAGv4` is what the API serves.
+
+## Status of the served index
+
+The corpus is being rebuilt on the new embedder. Gemini's free tier meters embedded
+chunks rather than requests, at roughly 1000 per key per day, so a full corpus is a
+multi day build. The served collection currently holds a seed filing plus whatever
+dynamic EDGAR fetch has added since. Questions answered from XBRL, the calculator,
+market data, EDGAR search and the web are unaffected, since none of them touch the
+vector index.
 
 ## Evaluation
 
-The agent is measured end-to-end on **FinanceBench** (150 open-source
-questions over US filings), scored with RAGAS plus system-behaviour metrics.
-With 12 Groq keys the full set runs in parallel:
+The agent is measured on FinanceBench, 150 open source questions over US filings.
+Retrieval is scored separately from answers, because they fail for different reasons
+and fixing one does not fix the other.
 
 ```bash
-# answer all 150 questions across the key pool (resumable)
+# answer the question set across the key pool (resumable)
 python -m finagent.evaluation.financebench.parallel --workers 3 \
     --output results/financebench_full_outputs.json
 
-# RAGAS-score the outputs and write the final metrics report
+# score those answers and write the metrics report
 python -m finagent.evaluation.financebench.parallel --score \
     --output results/financebench_full_outputs.json
+
+# retrieval only, one arm
+python -m finagent.evaluation.evaluate_retrieval --stage one \
+    --parent 2500 --child 600 --mode served
 ```
 
-This produces **one aggregate metrics list** — `results/final_metrics.json` /
-`.md` — covering answer/refusal/error rates, RAGAS
-(faithfulness, answer relevancy, context precision/recall) overall and per
-question type (numeric / comparison / narrative).
+Answers are scored with RAGAS on faithfulness, groundedness, answer relevancy, context
+precision, context recall and answer correctness. Only the last of those compares the
+answer to the gold answer, which matters because every other metric can score a
+confidently wrong answer perfectly as long as it is faithful to the chunk it came from.
 
-The eval answers from the dedicated **`financebench_eval`** collection —
-the benchmark's own filings, ingested through the production pipeline and covering
-the historical years the questions ask about. (Production serves `us_filings`
-plus on-demand SEC fetch; the eval pins the corpus so it measures retrieval, not
-EDGAR availability.) See **Bottleneck analysis & fixes** in `STRUCTURE.md` for
-how a corpus-wiring bug — the eval previously searched the recent-only
-`us_filings` and refused ~⅓ of questions — was found and fixed.
+Retrieval is scored on hit@k and MRR against evidence coverage. The current baseline is
+79 of 99 answerable questions at hit@8. `results/RETRIEVAL_EXPERIMENTS.md` records every
+change that was tried, including the ones that lost, which is most of them. Two results
+worth knowing: giving each chunk a context header of company, year, form and section
+took hit@8 from 40 to 57, and rewriting the question into the filing's own vocabulary
+before searching took it from 75 to 79.
 
-### Results — v3 (150 questions; v1 baseline in parentheses)
-
-**Correctness & behaviour**
-
-| Metric | v3 | v1 baseline |
-|---|---|---|
-| Numeric accuracy (gold figure in answer, 1% tol, judge-free) | **74.6%** | 61.2% |
-| Answer rate | 74.7% | 100% |
-| Refusal rate (explicit "insufficient evidence" abstentions) | 25.3% | 0% |
-| Error rate | 0% | 0% |
-
-v1's 100% answer rate was an anti-feature: it never abstained, so a third of
-its "answers" were confident fabrications. v3 trades those for explicit
-abstentions — numeric accuracy (+13.4 pts) is the honest correctness signal.
-
-**RAGAS scores** (judge: `qwen/qwen3.6-27b`)
-
-| Question type | Faithfulness | Answer Relevancy | Context Precision | Context Recall |
-|---|---|---|---|---|
-| Numeric (71) | 0.63 | 0.53 | 0.60 | 0.64 |
-| Comparison (22) | 0.53 | 0.44 | 0.29 | 0.41 |
-| Narrative (57) | 0.51 | 0.36 | 0.38 | 0.29 |
-| **Overall (150)** | **0.57** | **0.45** | **0.50** | **0.47** |
-
-RAGAS scores non-answers as zeros by construction, so the abstentions cap the
-overall numbers. On the **79 plainly-answered questions** the same judge scores
-faithfulness **0.73**, relevancy **0.65**, precision **0.59**, recall **0.72**
-(the eval now reports this split automatically) — the gap between those two
-views is the refusal calibration, tracked as the main open item. The eval also
-reports per-question **latency and token cost**, and a **gold-chunk reranker
-ablation** (strict exact-chunk match): the cross-encoder lifts Hit@3 by 53%
-and MRR by 39% over the fused BM25+dense pool order
-(`results/retrieval_ablation.json`). `results/comparison.md` has the full v1 → v3 delta table, and
-`STRUCTURE.md` → *Bottleneck analysis & fixes* documents each root cause found
-along the way (corpus wiring, historical-year fetch, refusal scoring,
-mis-routing, web-escalation pollution — all fixed cost-neutrally).
-
-Runs are resilient to the free tier: per-minute limits rotate across the key
-pool, revoked keys are dropped from rotation, and when *every* key is
-exhausted the run stops with a clear `LIMIT EXHAUSTED` message — re-running
-the same command resumes where it stopped (the RAGAS scorer is also
-resumable: already-scored rows are skipped on the next run). The UI surfaces
-the same condition as "Limit exhausted" within seconds instead of hanging.
-
-### Parsing choice (upload pipeline)
-
-The document-upload parser (Docling) was benchmarked against the pypdf baseline
-on FinanceBench PDFs, scored by **evidence recall** against the human-annotated
-gold passages (judge-free fidelity). pypdf won — 1.0 recall at ~14 s/doc vs
-Docling's 0.92 at ~89 s/doc — so the batch corpus stays on pypdf; Docling is
-used only for user uploads, where its table reconstruction is worth the latency
-on a single document. The numbers live in `results/parsing_eval.md`. (The
-throwaway comparison harness that produced them was retired with the PDF eval
-corpus; the retrieval eval now runs on the served SEC **HTML**, see below.)
-
-### Why not a "true" multi-agent system?
-
-FinAgent already runs specialised LLM roles (planner-router, grader, synth,
-critic, verifier, market planner, codegen) orchestrated by a LangGraph state
-machine — the supervisor/specialist pattern without free-form agent chatter.
-A conversational multi-agent layer was evaluated and rejected: it multiplies
-LLM calls (latency + free-tier quota) for no measured quality gain, since the
-failure modes here (retrieval misses, ungrounded figures) are addressed by
-deterministic tools and verification, not by more agent dialogue.
-
----
+The eval reads a dedicated collection rather than the served one, so it measures
+retrieval instead of whatever EDGAR happened to have that day.
 
 ## Run it locally
 
-**Prerequisites:** Python ≥ 3.11, Node ≥ 20, and a free [Groq](https://console.groq.com) API key.
+You need Python 3.11 or newer, Node 20 or newer, and a Qdrant cluster. A Gemini key is
+required, and Groq and Cohere keys are recommended.
 
 ```bash
-# 1. Clone
 git clone https://github.com/<your-user>/FinAgent.git
 cd FinAgent
 
-# 2. Install the Python package (editable) + dev extras
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 
-# 3. Configure secrets
-cp .env.example .env          # then set GROQ_API_KEY (TAVILY_API_KEY optional)
+cp .env.example .env        # fill in the keys
 
-# 4. Start the backend (FastAPI, port 8000)
 uvicorn finagent.api.main:app --reload --port 8000
-
-# 5. Start the frontend (Vite, port 5173 — proxies /api to :8000)
 cd frontend && npm install && npm run dev
 ```
 
-Open **http://localhost:5173** and ask a question.
+Open http://localhost:5173 and ask something.
 
-**Vector store:** set `QDRANT_URL` + `QDRANT_API_KEY`, then build the corpus:
+To seed a collection with one filing:
 
 ```bash
 pip install -e ".[ingest]"
 python -m finagent.ingestion.fetchPDFs
-python -m finagent.ingestion.ingest        # parse + chunk + embed into Qdrant
+python scripts/seed_collection.py --ticker AAPL
 ```
 
-Ingestion is idempotent: point ids are derived from (filing, position, content),
-so re-running overwrites rather than duplicates.
+Ingestion is idempotent. Point ids are derived from the filing, the position and the
+content, so re-running overwrites instead of duplicating, and a local sqlite cache of
+embeddings means a re-run costs no API quota.
 
-**Tests:** `pytest`
-
----
-
-## Deployment
-
-CI/CD deploys on every push to `main` (`.github/workflows/deploy.yml`): the
-backend builds into a single Cloud Run image (SPA + API + baked encoder models,
-scale-to-zero; the corpus lives in Qdrant, not the image) and the frontend deploys to Firebase
-Hosting. The image stays CPU-only and within the existing 8 GiB / 2 vCPU
-service shape — none of the agent's lanes add resident memory beyond the
-shared encoder models.
+Run the tests with `pytest`.
 
 ## Configuration
 
-Set in `.env` (see `.env.example`):
-
 | Variable | Purpose |
 |---|---|
-| `GROQ_API_KEY` (+ `…2`–`…8`) | Default LLM provider; roles stagger across keys, rotate on rate-limit, drop revoked keys, and fail fast with "limit exhausted" when the whole pool is spent |
-| `TAVILY_API_KEY` | Web search (optional) |
-| `QDRANT_URL` / `QDRANT_API_KEY` | Qdrant cluster holding the corpus (required) |
-| `PERSIST_DYNAMIC_FETCH` | `true`: a dynamically fetched filing is upserted into the shared index |
-| `OPENAI_API_KEY` / `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` | Optional; usually set in the UI |
-| `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_BASE_URL` | [Langfuse](https://langfuse.com) tracing (optional; open source) |
-| `LANGCHAIN_*` | LangSmith tracing (optional) |
+| `GEMINI_API_KEYS` | Planner, synthesizer, critic and embeddings. Several keys separated by commas, rotated on rate limit. |
+| `GROQ_API_KEYS` | Tool extraction. Same consolidated format. |
+| `COHERE_API_KEYS` | Reranking. Falls back to the local cross encoder when spent. |
+| `QDRANT_URL`, `QDRANT_API_KEY` | The cluster holding the corpus. Required. |
+| `TAVILY_API_KEY` | Web search. Optional but recommended. |
+| `US_COLLECTION` | Which collection to serve. |
+| `EMBEDDING_MODEL` | Defaults to `gemini-embedding-2`. Must match how the collection was built. |
+| `RERANKER_MODEL` | Defaults to `cohere:rerank-v4.0-pro`. |
+| `PERSIST_DYNAMIC_FETCH` | When true, a fetched filing is written into the shared index. |
+| `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_BASE_URL` | Tracing. Optional. |
+
+The consolidated `*_API_KEYS` form exists so a whole key pool costs one Secret Manager
+version instead of one per key. The numbered form, `GEMINI_API_KEY1` through
+`GEMINI_API_KEY32`, works too and is easier locally.
+
+## Deployment
+
+Pushing to `main` runs the workflow in `.github/workflows/deploy.yml`. The backend
+builds into a single Cloud Run image that serves both the API and the SPA and scales to
+zero. The corpus lives in Qdrant rather than the image. The frontend deploys to Firebase
+Hosting. Authentication to GCP is keyless through Workload Identity Federation, so there
+is no service account JSON anywhere in the repo.
+
+Free tier limits shape a lot of this. Embedding quota is metered per chunk per day,
+Cohere rerank is metered per month, and the chat models are metered per minute and per
+day. Each of those has a fallback rather than an error path: embeddings degrade to
+answering from the tool lanes, reranking degrades to the local cross encoder, and chat
+rate limits surface as a message telling you when the limit resets and offering the
+model picker so you can supply your own key.
 
 ## Observability
 
-With `LANGFUSE_*` keys set, every query is traced to
-[Langfuse](https://langfuse.com) (open source): one `finagent-query` trace per
-question with nested per-node spans, every LLM generation (model, prompt,
-completion, token usage), retrieval inputs/outputs, and latency. Chat threads
-map to Langfuse **sessions** (follow-up turns group together); traces are
-tagged with the provider and collection, so production traffic and
-FinanceBench eval runs are separable in the UI. Traces are flushed
-synchronously before each response returns, so tracing survives Cloud Run's
-CPU throttling and scale-to-zero. Without keys, tracing is a no-op.
+With `LANGFUSE_*` set, every query produces one trace with a span per graph node, each
+LLM call with its prompt, completion and token usage, and the retrieval inputs and
+outputs. Chat threads map to Langfuse sessions so follow up turns group together.
+Traces are flushed before the response returns, which matters because Cloud Run
+throttles CPU after a response and would otherwise drop them. Without the keys, tracing
+is a no-op.
 
-The answer payload separately carries in-app metrics — token totals per model,
-per-node latencies, tool-lane health, and the verification audit —
-independent of any tracing backend.
+Every answer also carries its own metrics regardless of tracing: token totals per model,
+per node latencies, tool lane health, and the audit trail of which sources backed which
+claim.

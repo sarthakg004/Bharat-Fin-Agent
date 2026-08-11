@@ -31,7 +31,19 @@ env:
   # v4 = the first collection built with §12 context headers. The §13 retrieval
   # changes were measured on headed chunks and the cap-ranking rule REVERSES
   # without them, so this code must never be served against a pre-v4 index.
-  US_COLLECTION: us_filings_v4
+  #
+  # v5_gemini = embedded with `gemini-embedding-2` at 1536 dims. A collection
+  # and its embedder are ONE choice: querying this with the old bge-large model
+  # is not an error, it is silently empty results. That is why the collection
+  # name and EMBEDDING_MODEL below move in the same commit as the code.
+  US_COLLECTION: us_filings_v5_gemini
+  # Pinned rather than left to the code defaults, so a stray edit to
+  # `vectorstore.DEFAULT_EMBED_MODEL` or `config.DEFAULT_RERANKER` cannot
+  # silently re-point production at an embedder the collection was not built
+  # with. `cohere:` falls back to the baked local cross-encoder when its key
+  # pool is spent.
+  EMBEDDING_MODEL: gemini-embedding-2
+  RERANKER_MODEL: cohere:rerank-v4.0-pro
   DATA_BUCKET: gs://fin-agent-498211-data
   # Public Cloud Run URL — baked into the frontend bundle so the SPA calls the API.
   BACKEND_URL: https://finagent-237355589454.asia-south1.run.app
@@ -68,7 +80,12 @@ jobs:
         env:
           # The smoke tests build the agent (which requires a key to be
           # PRESENT) but never call the network — a dummy satisfies them.
+          # BOTH providers are needed: the default provider is gemini (the
+          # reasoning roles) while the `router` role is pinned to groq (the
+          # tool extractors), so the API's key check rejects a request unless
+          # each has something.
           GROQ_API_KEY: ci-dummy-key
+          GEMINI_API_KEY: ci-dummy-key
         run: pytest tests/ -q
 
       - name: Set up Node
@@ -160,7 +177,7 @@ jobs:
             --cpu-boost \
             --max-instances 1 \
             --timeout 3600 \
-            --update-env-vars "^@^US_COLLECTION=${US_COLLECTION}@QDRANT_URL=${QDRANT_URL}@ALLOWED_ORIGINS=${ALLOWED_ORIGINS}" \
+            --update-env-vars "^@^US_COLLECTION=${US_COLLECTION}@EMBEDDING_MODEL=${EMBEDDING_MODEL}@RERANKER_MODEL=${RERANKER_MODEL}@QDRANT_URL=${QDRANT_URL}@ALLOWED_ORIGINS=${ALLOWED_ORIGINS}" \
             --quiet
 
       - name: Set up Node

@@ -140,22 +140,18 @@ export function CitationsPanel() {
                 <span className="text-text-primary">{agenticMeta.sub_queries.length}</span>
               </>
             ) : null}
-            {agenticMeta.avg_grade != null && (
-              <>
-                <span className="text-text-secondary">Grader avg</span>
-                <span className="text-text-primary">{agenticMeta.avg_grade}</span>
-              </>
-            )}
-            {agenticMeta.rewrite_iterations != null && (
-              <>
-                <span className="text-text-secondary">Rewrites</span>
-                <span className="text-text-primary">{agenticMeta.rewrite_iterations}</span>
-              </>
-            )}
             {agenticMeta.critic_iterations != null && (
               <>
                 <span className="text-text-secondary">Critic loops</span>
                 <span className="text-text-primary">{agenticMeta.critic_iterations}</span>
+              </>
+            )}
+            {agenticMeta.grading_score != null && (
+              <>
+                <span className="text-text-secondary">Claims supported</span>
+                <span className="text-text-primary">
+                  {Math.round(agenticMeta.grading_score * 100)}%
+                </span>
               </>
             )}
           </div>

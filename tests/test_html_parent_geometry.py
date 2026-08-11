@@ -10,8 +10,9 @@ import importlib.util
 
 import pytest
 
+from finagent.vectorstore import DEFAULT_EMBED_MODEL
 from finagent.ingestion.ingest import (
-    EMBED_CHAR_CAP,
+    embed_char_cap,
     PARENT_TEXT_CAP,
     CorpusIngester,
 )
@@ -69,10 +70,15 @@ def test_embedded_text_stays_inside_the_encoder_window(tmp_path):
     docs = _ingest(tmp_path, html)
 
     assert docs, "no documents produced"
+    # Against the cap of the embedder ACTUALLY in use, not bge's. The window
+    # differs by an order of magnitude (1,900 chars for bge-large vs 7,000 for
+    # Gemini), so hardcoding one of them turns this into a test of which
+    # embedder is configured rather than of the chunker.
+    cap = embed_char_cap(DEFAULT_EMBED_MODEL)
     for d in docs:
-        assert len(d.page_content) <= EMBED_CHAR_CAP, (
-            f"{len(d.page_content)}-char chunk would be silently truncated by "
-            f"the embedder")
+        assert len(d.page_content) <= cap, (
+            f"{len(d.page_content)}-char chunk exceeds the {cap}-char window of "
+            f"{DEFAULT_EMBED_MODEL} and would be silently truncated")
 
 
 def test_html_geometry_is_not_hardcoded(tmp_path):

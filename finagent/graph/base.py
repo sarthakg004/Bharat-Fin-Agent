@@ -325,10 +325,15 @@ class AgenticRAG:
             verdicts = report.verdicts
         except Exception as e:
             self._log(state, f"critic failed ({e})")
-            return {"grading_score": None, "needs_retry": False}
+            # `critic_feedback` must be CLEARED, not left alone. A previous
+            # pass's claims surviving a failed critic would be re-injected into
+            # the next re-draft prompt as if they were fresh findings.
+            return {"grading_score": None, "needs_retry": False,
+                    "critic_feedback": []}
 
         if not verdicts:
-            return {"grading_score": None, "needs_retry": False}
+            return {"grading_score": None, "needs_retry": False,
+                    "critic_feedback": []}
 
         supported = sum(1 for v in verdicts if v.supported)
         score = supported / len(verdicts) if verdicts else None
@@ -344,6 +349,11 @@ class AgenticRAG:
             # The specific claims the critic could not support — fed to a focused
             # re-draft (active-critic recovery) so the synth fixes/drops them.
             "critic_feedback": list(unsupported),
+            # …and the critic's own verdict on WHICH recovery would fix them.
+            # It just read the draft against the evidence, so it is better
+            # placed than a downstream heuristic to tell "the answer overstated
+            # what we have" from "we never had this fact".
+            "critic_remedy": report.remedy,
         }
 
     # ------------------------------------------------------------------ #

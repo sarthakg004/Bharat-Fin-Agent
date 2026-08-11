@@ -1,35 +1,28 @@
-"""Checks for the wrong-fiscal-year failure class: guessed periods stripped,
-relative periods resolved to the newest FILED data, same-quarter YoY selection,
-and recency-aware retrieval filtering. No network, no LLM — fakes throughout.
+"""Checks for the wrong-fiscal-year failure class: relative periods resolved to
+the newest FILED data, same-quarter YoY selection, and recency-aware retrieval
+filtering. No network, no LLM — fakes throughout.
+
+The deterministic period guard that used to strip LLM-guessed years is gone —
+the extractors now get today's date and the tools resolve "latest" themselves
+(`_select_fact` with year=None, `infer_filter`'s recency branch), which is what
+these tests cover.
 """
 
-from finagent.graph.nodes.numeric import _named_periods_only
 from finagent.retrieval.filters import infer_filter, parse_years
 from finagent.tools.calculator import FinancialCalculator
 from finagent.tools.xbrl import XBRLClient
 
 
-def test_named_periods_only_drops_guessed_years():
-    sub_q = "ServiceNow operating margin, latest fiscal year vs prior fiscal year"
-    assert _named_periods_only(sub_q, ["FY2022", "FY2023"]) == []
-    # Named years survive.
-    assert _named_periods_only("Apple gross margin FY2021 vs FY2022",
-                               ["FY2021", "FY2022"]) == ["FY2021", "FY2022"]
-
-
 def test_short_fiscal_year_is_a_named_year():
     """The planner writes "FY22" as often as "FY2022" — sometimes both in one
     plan. The short form used to parse as NO year, which cost the retrieval
-    filter its year clause (44% of measured sub-queries) and made the numeric
-    lane discard every extracted period as a guess."""
+    filter its year clause (44% of measured sub-queries)."""
     assert parse_years("AMD Enterprise segment revenue FY22") == [2022]
     assert parse_years("AMD revenue FY 21") == [2021]
     assert parse_years("Apple gross margin FY2021 vs FY22") == [2021, 2022]
     assert parse_years("FY98 annual report") == [1998]
     # A bare 2-digit number is a quantity, not a year.
     assert parse_years("revenue grew across 22 states in 2022") == [2022]
-    # The numeric lane now agrees with the retrieval filter.
-    assert _named_periods_only("AMD revenue FY22", ["FY2021", "FY2022"]) == ["FY2022"]
 
 
 def test_infer_filter_reads_short_fiscal_years():

@@ -29,7 +29,7 @@ from finagent.vectorstore import build_store
 from .indexing import EVAL_COLLECTION
 
 POOL_DEPTH = 100    # candidates pulled from the fused (sparse+dense) search
-DEFAULT_RERANKER = "BAAI/bge-reranker-base"  # matches the deployed agent
+DEFAULT_RERANKER = "BAAI/bge-reranker-v2-m3"  # matches the deployed agent
 
 
 @dataclass

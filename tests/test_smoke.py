@@ -68,16 +68,30 @@ def test_image_bakes_every_model_loaded_offline():
     """
     from pathlib import Path
 
+    from finagent.config import settings
     from finagent.retrieval.hybrid import HybridRetriever
     from finagent.vectorstore import DEFAULT_EMBED_MODEL, SPARSE_MODEL
 
     text = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text()
     assert "HF_HUB_OFFLINE=1" in text
-    # The reranker is included because it is the model most likely to be swapped
-    # (it is env-configurable and was changed to v2-m3); a default that drifts
-    # from the Dockerfile reproduces the exact failure above.
-    for model in (DEFAULT_EMBED_MODEL, SPARSE_MODEL, HybridRetriever.DEFAULT_RERANKER):
-        assert model in text, f"{model} is loaded at runtime but never baked"
+    # Only LOCAL models need baking. An API-served model (Gemini embeddings,
+    # `cohere:` rerank) is an HTTPS call with no weights to cache, so requiring
+    # it in the Dockerfile would be nonsense — but the check still has to run
+    # for whatever local model remains, because that is the one that dies
+    # offline on the first query. `settings` is the value the SERVED path
+    # passes (rag_service), so it is the one that can actually reach the
+    # runtime unbaked; `HybridRetriever.DEFAULT_RERANKER` is the local
+    # fallback the Cohere path drops to and must always be present.
+    def is_local(model: str) -> bool:
+        return not (model.startswith("gemini-embedding")
+                    or model.startswith("cohere:"))
+
+    for model in (DEFAULT_EMBED_MODEL, SPARSE_MODEL,
+                  HybridRetriever.DEFAULT_RERANKER, settings.reranker_model):
+        if is_local(model):
+            assert model in text, f"{model} is loaded at runtime but never baked"
+    # The fallback cross-encoder is never API-served, so it is unconditional.
+    assert HybridRetriever.DEFAULT_RERANKER in text
 
 
 def _build_agent():
@@ -87,7 +101,7 @@ def _build_agent():
         collection_name="us_filings_v3",
         reranker_model="BAAI/bge-reranker-base",
         pool_top_k=16, final_top_k=5,
-        max_rewrites=2, max_critic_retries=1,
+        max_critic_retries=1,
         web_top_k=10,
     )
 
@@ -96,60 +110,37 @@ def test_agent_graph_has_expected_nodes():
     agent = _build_agent()
     nodes = {n for n in agent.graph.get_graph().nodes if not n.startswith("__")}
     expected = {
-        "planner", "router", "retrieve", "grader", "rewrite",
+        "planner", "router", "retrieve",
         "market_data", "web_search", "evidence_builder", "synthesize", "critic",
-        "verify_numbers", "refuse",
+        "refuse",
     }
     assert expected <= nodes, f"missing nodes: {expected - nodes}"
     # English-only: the bilingual translation nodes must be gone.
     assert not ({"detect_lang", "translate_in", "translate_out"} & nodes)
 
 
-def test_verifier_is_the_only_gate():
-    """The confidence gate is gone: it scored a good answer at 25% because its
-    citation sub-score could not read a markdown table, and a bad one at 90%.
-    `verify_numbers` — which checks figures against evidence rather than
-    guessing a number — is the only thing that may suppress an answer now."""
+def test_critic_is_the_only_gate():
+    """The confidence gate and the numeric verifier are both gone — the critic
+    is the only thing that may suppress an answer now. It reaches `refuse`
+    directly when it could not support the draft's claims."""
     agent = _build_agent()
     g = agent.graph.get_graph()
     nodes = {n for n in g.nodes if not n.startswith("__")}
-    assert not ({"confidence", "answer_with_warning", "low_confidence"} & nodes)
+    assert not ({"confidence", "answer_with_warning", "low_confidence",
+                 "verify_numbers", "grader", "rewrite"} & nodes)
     targets = {(e.source, e.target) for e in g.edges}
-    assert ("verify_numbers", "refuse") in targets       # hallucinated figures
-    assert any(s == "verify_numbers" and t.startswith("__end__") for s, t in targets)
+    assert ("critic", "refuse") in targets
+    assert any(s == "critic" and t.startswith("__end__") for s, t in targets)
     for gone in ("confidence_node", "answer_with_warning_node",
-                 "withhold_low_confidence_node", "_confidence_gate"):
+                 "withhold_low_confidence_node", "_confidence_gate",
+                 "verify_numbers_node", "grader_node", "rewrite_node"):
         assert not hasattr(agent, gone), gone
-
-
-def test_xbrl_derivation_is_not_falsely_refused():
-    """Regression: a correct XBRL-grounded growth answer that shows its working
-    (scale-free figures inside a formula, ×100 percent conversion) and uses
-    fullwidth 【N】 citations must verify clean — not get refused as ungrounded.
-    """
-    agent = _build_agent()
-    state = {
-        "draft_answer": (
-            "Amazon revenue grew +30.8% YoY 【3】.\n"
-            "FY2016 $135.987 billion 【1】; FY2017 $177.866 billion 【2】.\n"
-            "YoY = (177.866 - 135.987) / 135.987 × 100 = 30.8% 【3】."
-        ),
-        "xbrl_facts": [{"value": 135987000000}, {"value": 177866000000}],
-        "calc_results": [{"value": 0.30796, "inputs": [
-            {"value": 135987000000}, {"value": 177866000000}]}],
-    }
-    mags = agent._evidence_numbers(state)
-    figures = agent._extract_numbers(state["draft_answer"])
-    ungrounded = [d["raw"] for d in figures if not agent._grounded(d["magnitudes"], mags)]
-    assert not ungrounded, f"falsely ungrounded: {ungrounded}"
-    # 【N】 citation markers must not be mistaken for figures 1/2/3.
-    assert not any(d["raw"] in ("1", "2", "3") for d in figures)
 
 
 def test_evidence_builder_normalises_all_lanes():
     """#3: every lane projects into one {kind,fact,value,unit,source,citation,
     confidence,sub_query} shape, with per-source confidence ordering preserved
-    (XBRL > web) and filing items refined by their grader score."""
+    (XBRL > web)."""
     agent = _build_agent()
     state = {
         "xbrl_facts": [{"entity": "AMAZON", "concept": "revenue",
@@ -161,7 +152,6 @@ def test_evidence_builder_normalises_all_lanes():
                           "source": "computed", "sub_query": "amzn growth"}],
         "retrieved_chunks": [{"text": "Risk factors include competition.",
                               "source": "[AMZN 10-K 2017, p.5]", "sub_query": "risks"}],
-        "grades": [5],
         "web_results": [{"title": "Amazon hits new high", "source": "Reuters",
                          "url": "http://x", "sub_query": "news"}],
     }
@@ -176,48 +166,8 @@ def test_evidence_builder_normalises_all_lanes():
     by_kind = {e["kind"]: e for e in ev}
     assert by_kind["xbrl"]["value"] == 177866000000
     assert by_kind["calc"]["unit"] == "%"
-    assert by_kind["filing"]["confidence"] == 1.0          # grade 5 → (5-1)/4
+    assert by_kind["filing"]["confidence"] == agent._EVIDENCE_BASE_CONF["filing"]
     assert by_kind["xbrl"]["confidence"] > by_kind["web"]["confidence"]
-
-
-def test_market_label_tokens_are_not_verified_as_figures():
-    """#5 regression: window/year-range labels ("52-wk high", "FY2023-24",
-    "200-day"), incl. with Unicode hyphens, must not be extracted as claimed
-    figures — that was falsely refusing correct market answers."""
-    agent = _build_agent()
-    text = ("FY 2023‑24 Stock – 52‑wk high $316.94 ; 52‑wk low $194.30 ; "
-            "200-day moving average over 2023-2024")
-    raws = [d["raw"] for d in agent._extract_numbers(text)]
-    assert not any(x in ("24", "52", "200", "2023", "2024") for x in raws), raws
-    assert any("316.94" in x for x in raws) and any("194.30" in x for x in raws)
-
-
-def test_verification_report_cross_source_and_units():
-    """#5: the report attributes each grounded figure to the lanes that
-    corroborate it, flags a stated-scale/unit mismatch, and reports citation
-    coverage of numeric evidence — without driving refusals itself."""
-    agent = _build_agent()
-    # Revenue corroborated by BOTH an XBRL fact and a web snippet; plus a draft
-    # figure stated in the WRONG unit ("$136 million" for a $136bn value).
-    state = {
-        "draft_answer": "Revenue was $135.987 billion and also $136 million somewhere.",
-        "xbrl_facts": [{"value": 135987000000, "sub_query": "rev"}],
-        "web_results": [{"content": "Amazon revenue reached $135.987 billion.",
-                         "source": "Reuters"}],
-        "evidence": [{"kind": "xbrl", "value": 135987000000, "citation": "us-gaap:Revenues"}],
-    }
-    draft_nums = agent._extract_numbers(state["draft_answer"])
-    by_kind = agent._evidence_numbers_by_kind(state)
-    ungrounded = {d["raw"] for d in draft_nums
-                  if not agent._grounded(d["magnitudes"], agent._evidence_numbers(state))}
-    rep = agent._build_verification_report(state, draft_nums, ungrounded, by_kind)
-    # The billions figure is corroborated by ≥2 lanes (xbrl + web).
-    assert rep["cross_source"]["corroborated"] >= 1
-    # The "$136 million" form grounds only via a scale restatement → unit flag.
-    assert rep["units"]["scale_shifted_figures"] >= 1
-    # Citation coverage of numeric evidence is reported.
-    assert rep["sources"]["numeric_evidence_items"] == 1
-    assert rep["sources"]["with_citation"] == 1
 
 
 def test_audit_trail_has_all_required_sections():
@@ -231,14 +181,12 @@ def test_audit_trail_has_all_required_sections():
         "calc_results": [{"metric": "growth", "ticker": "AMZN", "value_str": "+30.8%",
                           "formula": "(b-a)/a",
                           "inputs": [{"concept": "revenue", "value_str": "$136B", "fy": 2016}]}],
-        "numeric_verification": {"score": 1.0, "numbers_total": 6, "numbers_grounded": 6,
-                                 "unverified": []},
-        "verification_report": {"cross_source": {"corroborated": 1}},
+        "grading_score": 1.0, "critic_feedback": [],
     }
     a = _build_audit(state)
     assert a["sources_used"] and a["sources_used"][0]["kind"] == "xbrl"
     assert a["calculations"] and a["calculations"][0]["result"] == "+30.8%"
-    assert a["verification"]["numeric_score"] == 1.0
+    assert a["verification"]["claims_supported"] == 1.0
     assert "confidence" not in a
 
 
@@ -296,15 +244,15 @@ def test_market_cache_is_bounded_and_ttl():
 
 
 def test_retrieval_status_caps_and_defers_refusal():
-    """#7: retrieval status reports attempts vs cap + mean grade and flags
-    exhaustion, but defers the refuse decision to the numeric verifier."""
+    """#7: status reports critic attempts vs cap and flags exhaustion, but
+    defers the refuse decision to `_critic_router`."""
     from finagent.api.rag_service import _retrieval_status
-    ex = _retrieval_status({"iteration_count": 2, "avg_grade": 1.5}, 2, 3.0)
-    assert ex["exhausted"] is True and ex["refusal_handled_by"] == "verify_numbers"
-    ok = _retrieval_status({"iteration_count": 0, "avg_grade": 4.5}, 2, 3.0)
+    ex = _retrieval_status({"critic_iterations": 2, "needs_retry": True}, 2)
+    assert ex["exhausted"] is True and ex["refusal_handled_by"] == "critic"
+    ok = _retrieval_status({"critic_iterations": 0, "grading_score": 0.9}, 2)
     assert ok["exhausted"] is False
-    # No grades at all (pure tool path) → not exhausted-with-grade, just capped check.
-    none = _retrieval_status({"iteration_count": 0, "avg_grade": None}, 2, 3.0)
+    # Pure tool path — the critic never ran.
+    none = _retrieval_status({}, 2)
     assert none["exhausted"] is False
 
 
@@ -328,25 +276,48 @@ def test_audit_degraded_summary():
     assert "market" in a["degraded"]["lanes"] and "xbrl" not in a["degraded"]["lanes"]
 
 
-def test_active_critic_router_severity_and_bound():
-    """#6: critic routes to a re-draft only when there are unsupported claims AND
-    evidence is rich; thin evidence defers to verify (heavy re-gather); the flag
-    disables it. The loop is bounded by the existing critic_iterations cap."""
-    agent = _build_agent()
+def test_critic_router_follows_the_remedy_and_spends_one_budget():
+    """The critic picks the recovery, and the agent gets exactly one.
+
+    Which recovery is the CRITIC's call now, not a guess from how much evidence
+    happens to be lying around. The old rule keyed on evidence richness, and
+    since `has_evidence` is true whenever any lane returned anything, the
+    `retrieve` branch was unreachable in production: every recovery was a
+    re-draft over byte-identical evidence.
+    """
+    agent = _build_agent()          # max_critic_retries=1
     agent._log = lambda s, m: None
-    # unsupported + rich evidence → light re-draft
-    assert agent._critic_router({"needs_retry": True, "xbrl_facts": [{"ok": True}]}) == "resynthesize"
-    # unsupported + thin evidence → defer to verify (heavy path)
-    assert agent._critic_router({"needs_retry": True}) == "verify"
-    # nothing unsupported → proceed
-    assert agent._critic_router({"needs_retry": False, "xbrl_facts": [1]}) == "verify"
-    # flag off → always proceed
-    agent.active_critic = False
-    assert agent._critic_router({"needs_retry": True, "xbrl_facts": [1]}) == "verify"
-    agent.active_critic = True
-    # critic edge offers both targets (bound comes from critic_iterations cap).
+
+    # The critic says the evidence is missing → go and get more.
+    assert agent._critic_router(
+        {"needs_retry": True, "critic_remedy": "gather"}) == "retrieve"
+    # The critic says the draft over-claimed → re-write, same evidence.
+    assert agent._critic_router(
+        {"needs_retry": True, "critic_remedy": "redraft"}) == "resynthesize"
+    # Rich evidence does NOT override a `gather` verdict any more.
+    assert agent._critic_router(
+        {"needs_retry": True, "critic_remedy": "gather",
+         "xbrl_facts": [{"ok": True}], "evidence": [1, 2]}) == "retrieve"
+    # Missing remedy degrades to the old behaviour rather than erroring.
+    assert agent._critic_router({"needs_retry": True}) == "resynthesize"
+    # Nothing unsupported → done.
+    assert agent._critic_router({"needs_retry": False, "xbrl_facts": [1]}) == "end"
+
+    # ONE recovery, enforced by the GATES rather than by this router: by the
+    # time the router runs, the counter already includes the recovery it is
+    # dispatching, so re-checking it here would veto the very pass that just
+    # incremented it. `critic_node` and `_web_fallback_signal` each refuse to
+    # raise their flag once the budget is spent.
+    spent = {"critic_iterations": 1}
+    assert agent._web_fallback_signal(
+        {"draft_answer": "not explicitly stated in the provided evidence", **spent}
+    ) == {"web_fallback_pending": False}
+    assert agent._critic_router(
+        {"needs_retry": False, "grading_score": 0.2, **spent}) == "refuse"
+
     targets = {(e.source, e.target) for e in agent.graph.get_graph().edges}
-    assert ("critic", "synthesize") in targets and ("critic", "verify_numbers") in targets
+    for t in ("synthesize", "retrieve", "web_search", "refuse"):
+        assert ("critic", t) in targets, t
 
 
 def test_xbrl_tag_relevance_guard_blocks_concept_mismatch():
@@ -381,17 +352,153 @@ def test_quick_ratio_metric_is_supported():
     assert _canonical_metric("cash ratio") == "cash_ratio" and "cash_ratio" in RATIOS
 
 
-def test_router_uses_strong_tool_tier():
-    """Tool selection / structured extraction must default to the strong synth
-    tier, not the fast planner model (mis-routing was sending M&A to filings).
+def test_exactly_one_recovery_then_refuse():
+    """Drive the real critic node twice and prove the budget holds.
 
-    Model choice moved off the agent onto the request context, so the tier
-    relationship is now asserted there."""
-    from finagent.runtime import RuntimeContext
+    The router alone cannot prove this: the bound lives in the gates
+    (`critic_node` and `_web_fallback_signal`), and the failure mode being
+    guarded is two recoveries slipping through because each mechanism counted
+    itself separately. So run the actual sequence.
+    """
+    from finagent.graph.state import ClaimVerdict, CriticReport
 
-    for provider in ("groq", "gemini", "openai", "anthropic"):
-        ctx = RuntimeContext(provider=provider)
+    agent = _build_agent()          # max_critic_retries=1
+    agent._log = lambda s, m: None
+
+    def stub_critic(remedy):
+        report = CriticReport(
+            verdicts=[ClaimVerdict(claim="Revenue was $9bn", supported=False,
+                                   reason="not in evidence")],
+            remedy=remedy)
+        agent._get_llm = lambda role: type(
+            "L", (), {"with_structured_output":
+                      lambda self, schema: type(
+                          "B", (), {"invoke": lambda self, msgs: report})()})()
+
+    state = {"question": "q", "draft_answer": "Revenue was $9bn [1].",
+             "retrieved_chunks": [{"text": "t", "source": "s"}], "errors": []}
+
+    # Pass 1: the critic wants more evidence, so one recovery is granted.
+    stub_critic("gather")
+    first = agent.critic_node(state)
+    assert first["needs_retry"] is True
+    assert first["critic_iterations"] == 1
+    assert agent._critic_router({**state, **first}) == "retrieve"
+    # It must search something NEW, not the query that already failed.
+    assert first["sub_queries"] != [state["question"]]
+    assert first["retrieval_query"] == ""
+
+    # Pass 2: same complaint, budget spent. No second recovery, and the draft
+    # is refused rather than shipped mostly-unsupported.
+    stub_critic("gather")
+    second = agent.critic_node({**state, **first})
+    assert second["needs_retry"] is False
+    assert agent._critic_router({**state, **first, **second}) == "refuse"
+
+    # A redraft recovery is bounded by the same single budget.
+    stub_critic("redraft")
+    only = agent.critic_node(state)
+    assert agent._critic_router({**state, **only}) == "resynthesize"
+    assert only["critic_iterations"] == 1
+    # …and it does NOT clobber the planner's decomposition, since a re-draft
+    # retrieves nothing.
+    assert "sub_queries" not in only
+
+
+def test_fetched_filing_is_not_diluted_with_web_results():
+    """A filing fetched on demand from EDGAR must NOT trigger a web escalation.
+
+    `fetch_filing` runs before retrieval and pulls a missing US company's 10-K,
+    but on the EPHEMERAL (cloud) path it leaves `company_in_corpus` False —
+    corpus retrieval was skipped in favour of the filing just fetched. Keying
+    the escalation on that flag therefore sent the authoritative filing to the
+    web anyway, which is how a stock-forecast page ($26,161M) beat the filed
+    figure ($34,229M) for 3M's FY2022 revenue.
+
+    Only genuinely empty retrieval may escalate; "chunks that don't answer" is
+    the critic's insufficient-draft path, not a guess made up front.
+    """
+    agent = _build_agent()
+    agent._log = lambda s, m: None
+    searched: list = []
+    agent._web = type("W", (), {"search": lambda self, q: searched.append(q) or []})()
+
+    base = {"question": "What was 3M's revenue in FY2022?",
+            "sub_queries": ["3M revenue FY2022"], "query_routes": ["narrative"],
+            "errors": []}
+
+    # Ephemeral fetch succeeded: chunks present, company_in_corpus False.
+    agent.web_search_node({**base, "company_in_corpus": False,
+                           "retrieved_chunks": [{"text": "Net sales $34,229M",
+                                                 "source": "[MMM 10-K 2022]"}],
+                           "fetch_status": {"decision": "fetch", "ephemeral": True}})
+    assert searched == [], f"fetched filing was diluted with web: {searched}"
+
+    # Nothing retrieved and nothing fetched (e.g. a non-US filer) → web is the
+    # only source left, so it must still escalate.
+    searched.clear()
+    agent.web_search_node({**base, "company_in_corpus": False,
+                           "retrieved_chunks": [], "fetch_status": {}})
+    assert searched, "an empty corpus with no fetch must still reach the web"
+
+
+def test_qwen_structured_output_uses_json_schema():
+    """Qwen 3.x on Groq returns tool-call scalars as STRINGS, so Groq rejects
+    the call ("`/answerable`: expected boolean, but got string") under
+    LangChain's default `method="function_calling"`.
+
+    That broke every structured extraction on the pinned router model: the XBRL
+    and calculator lanes both failed, the agent fell back to web search, and it
+    answered 3M's FY2022 revenue as $26,161M off a stock-tip page instead of
+    the filed $34,229M — a wrong number shown to the user with no error. The
+    request must therefore go out with `method="json_schema"`.
+    """
+    from finagent.graph.state import XBRLQuery
+    from finagent.llm import RotatingChatModel
+
+    def bound_kwargs(model: str) -> dict:
+        rot = RotatingChatModel(provider="groq", chat_model=model, keys=["k"])
+        return rot.with_structured_output(XBRLQuery).kw
+
+    assert bound_kwargs("qwen/qwen3.6-27b").get("method") == "json_schema"
+
+    # Non-Qwen models keep LangChain's default — this is a Qwen quirk, not a
+    # blanket preference, and gpt-oss's function calling works.
+    assert "method" not in bound_kwargs("openai/gpt-oss-120b")
+    # …and an explicit choice from the caller still wins.
+    rot = RotatingChatModel(provider="groq", chat_model="qwen/qwen3.6-27b", keys=["k"])
+    assert rot.with_structured_output(
+        XBRLQuery, method="function_calling").kw["method"] == "function_calling"
+
+
+def test_router_is_pinned_to_the_free_groq_pool():
+    """The `router` role (XBRL/calc/formula/EDGAR/corpus-gate extraction) is
+    one-shot structured output — good enough on Groq's free Qwen, and pinning
+    it there keeps the small Gemini per-day budget for the reasoning roles.
+
+    The pin must carry the PROVIDER and the KEY with it: sending a user's
+    Gemini key to Groq authenticates nothing."""
+    from finagent.runtime import ROUTER_PIN, RuntimeContext
+
+    ctx = RuntimeContext(provider="gemini", api_key="user-gemini-key")
+    assert ctx.provider_for("router") == ROUTER_PIN[0] == "groq"
+    assert ctx.model_for("router") == ROUTER_PIN[1]
+    assert ctx.key_for("router") is None          # never the Gemini key
+    assert ctx.model_for("router") != ctx.model_for("synth")
+
+    # A Groq request keeps its own key on the pinned role.
+    groq = RuntimeContext(provider="groq", api_key="user-groq-key")
+    assert groq.key_for("router") == "user-groq-key"
+
+    # With no Groq key anywhere the pin must fall back rather than 401.
+    import finagent.llm as _llm
+    real = _llm.collect_provider_keys
+    _llm.collect_provider_keys = lambda p: []
+    try:
+        assert ctx.provider_for("router") == "gemini"
         assert ctx.model_for("router") == ctx.model_for("synth")
+    finally:
+        _llm.collect_provider_keys = real
 
 
 def test_web_search_historical_vs_news():
@@ -411,61 +518,17 @@ def test_device_selection_returns_valid_value():
     assert get_device() in {"cpu", "cuda", "mps"}
 
 
-def test_derived_figures_are_not_falsely_refused():
-    """Regression (FinanceBench refusal sweep): figures the draft legitimately
-    COMPUTES from evidence values — a D&A margin, a 3-year average via chained
-    per-year ratios, a 365-day working-capital metric — must ground, while a
-    figure with no arithmetic path to the evidence must stay ungrounded."""
+def test_mostly_supported_answer_is_not_hard_refused():
+    """A mostly-supported draft ships as written; only one the critic could
+    barely support (< REFUSE_BELOW_SUPPORT) hard-refuses, and only once the
+    retries are spent."""
     agent = _build_agent()
-    by_kind = {"xbrl": [167e6, 3.991e9], "const": list(agent._MATH_CONSTANTS)}
-    base = agent._derivation_base(by_kind)
-    # margin = a / b (×100 percent form)
-    assert agent._derivable({4.2, 0.042}, base)
-    # DSO-style: 365 × a / b
-    ar, rev = 1.679e9, 16.865e9
-    assert agent._derivable({36.34}, agent._derivation_base({"xbrl": [ar, rev]}))
-    # two-period average, then a chained ratio over it (worked CCC steps)
-    inv18, inv19, cogs = 1.642e9, 1.560e9, 11.108e9
-    b = agent._derivation_base({"xbrl": [inv18, inv19, cogs]})
-    avg = (inv18 + inv19) / 2
-    assert agent._derivable({avg}, b)
-    assert agent._derivable({round(365 * avg / cogs, 2)}, b + [avg])
-    # a hallucinated figure must NOT be rescued
-    assert not agent._derivable({7.77, 0.0777},
-                                agent._derivation_base({"xbrl": [ar, rev]}))
-
-
-def test_label_tokens_are_not_extracted_as_figures():
-    """Regression: '8k'/'10K' form names, 'FY2015 - FY2017' ranges, and
-    '3 year average' period labels were extracted as numeric claims and caused
-    wrongful refusals ('unverified figures: 8k')."""
-    agent = _build_agent()
-    texts = [
-        "The key agenda of AMCOR's 8k filing dated 1 July 2022 was the merger.",
-        "Per the 10-K, 10K and 10 Q filings.",
-        "The FY2015 - FY2017 3 year average margin.",
-        "A 5-year CAGR per the 8-K.",
-    ]
-    for t in texts:
-        raws = [d["raw"] for d in agent._extract_numbers(t)
-                if d["raw"] not in ("1",)]          # bare day-of-month is a const
-        assert not raws, f"label tokens extracted as figures: {raws} in {t!r}"
-
-
-def test_mostly_grounded_answer_is_not_hard_refused():
-    """Partial ungrounding answers as drafted; only a substantially fabricated
-    answer (< refuse_below_grounding share grounded) still hard-refuses at the
-    retry cap."""
-    agent = _build_agent()
-    out_of_retries = {"critic_iterations": 99, "verify_iterations": 99}
-    mostly = {"numeric_verification": {
-        "numbers_total": 10, "unverified": [{"number": "7"}], "score": 0.9},
-        **out_of_retries}
-    assert agent._verify_router(mostly) == "end"
-    fabricated = {"numeric_verification": {
-        "numbers_total": 10, "unverified": [{"number": str(i)} for i in range(6)],
-        "score": 0.4}, **out_of_retries}
-    assert agent._verify_router(fabricated) == "refuse"
+    spent = {"critic_iterations": 99, "needs_retry": False}
+    assert agent._critic_router({"grading_score": 0.9, **spent}) == "end"
+    assert agent._critic_router({"grading_score": 0.2, **spent}) == "refuse"
+    # Same bad score with retries left never refuses — it retries first.
+    assert agent._critic_router(
+        {"grading_score": 0.2, "critic_iterations": 0, "needs_retry": False}) == "end"
 
 
 def test_working_capital_days_metrics_are_supported():
@@ -521,7 +584,10 @@ def test_insufficient_draft_escalates_to_web_once():
     insufficient = {"draft_answer": "The key agenda is not explicitly stated "
                                     "in the provided evidence."}
     sig = agent._web_fallback_signal(insufficient)
-    assert sig == {"web_fallback_pending": True, "web_fallback_used": True}
+    assert sig == {"web_fallback_pending": True, "web_fallback_used": True,
+                   # The escalation spends the single recovery budget like any
+                   # other retry; it used to be free and invisible.
+                   "critic_iterations": 1}
     assert agent._critic_router({**insufficient, **sig}) == "websearch"
     # latch spent → no second escalation
     assert agent._web_fallback_signal(
@@ -722,9 +788,11 @@ def test_free_tier_evidence_is_bounded():
     A user on their own key keeps the full context."""
     from finagent.runtime import RuntimeContext
 
-    shared = RuntimeContext()
+    shared = RuntimeContext(provider="groq")
     assert shared.evidence_budget() == RuntimeContext.FREE_TIER_EVIDENCE_CHARS
-    assert RuntimeContext(api_key="sk-own").evidence_budget() is None
+    assert RuntimeContext(provider="groq", api_key="sk-own").evidence_budget() is None
+    # The wall is Groq's, not everyone's — the default (Gemini) is unbounded.
+    assert RuntimeContext().evidence_budget() is None
     assert RuntimeContext(provider="gemini", api_key="k").evidence_budget() is None
 
     agent = _build_agent()
@@ -756,7 +824,9 @@ def test_planner_can_run_on_its_own_provider():
     assert ctx.provider_for("planner") == "groq"
     assert ctx.key_for("planner") is None          # → the server's Groq pool
     assert ctx.model_for("planner") == "openai/gpt-oss-120b"
-    for role in ("synth", "critic", "grader", "router"):
+    # Everything else follows the answer provider — except `router`, which is
+    # pinned to the free Groq pool (see test_router_is_pinned_to_the_free_groq_pool).
+    for role in ("synth", "critic"):
         assert ctx.provider_for(role) == "gemini", role
         assert ctx.key_for(role) == "gem-key", role
 
@@ -1126,12 +1196,11 @@ def test_retrieval_runs_on_the_rewrite_not_the_subqueries():
         "errors": []})
     assert searched == [], f"routed to market but still searched: {searched}"
 
-    # A retry re-searches its own rewritten query, so the stale §14 query must
-    # be cleared — otherwise the retry repeats the search that just failed.
+    # A retry re-searches the critic's own hint queries, so the stale §14 query
+    # must be cleared — otherwise the retry repeats the search that just failed.
     from finagent.graph.corrective import AgenticRAGv2
-    for node in (AgenticRAGv2.rewrite_node, AgenticRAGv2.critic_node):
-        assert '"retrieval_query"' in inspect.getsource(node), \
-            f"{node.__name__} must clear retrieval_query"
+    assert '"retrieval_query"' in inspect.getsource(AgenticRAGv2.critic_node), \
+        "critic_node must clear retrieval_query"
 
 
 def test_retrieval_query_rejects_an_answer_masquerading_as_a_query():
@@ -1245,3 +1314,130 @@ def test_averaged_ratio_targets_latest_named_year():
              "average inventory between FY2020 and FY2021.")
     res = agent._run_calc({}, sub_q, Q())
     assert res["ok"] and calls["period"] == "FY2021" and calls["metric"] == "inventory_turnover"
+
+
+def test_short_company_tokens_resolve():
+    """A distinctive SHORT name must resolve to its company.
+
+    The single-token alias rule used to require 5+ characters, which excluded
+    every short name in the corpus: "What was Ulta's revenue?" matched nothing,
+    the company filter was dropped, and the question competed against all 72
+    filings' near-identical accounting language. (MGM had been hand-written into
+    COMPANY_ALIASES to paper over exactly this.) The guards that keep it safe
+    are single-ownership and the generic-word list, not the length.
+    """
+    from finagent.retrieval.filters import build_company_vocab, infer_filter
+
+    metas = [{"company": c, "ticker": t, "year": "2022"} for c, t in (
+        ("Ulta Beauty", "ULTA"), ("AES Corporation", "AES"),
+        ("MGM Resorts", "MGM"), ("CVS Health", "CVS"),
+        ("American Express", "AXP"), ("American Water Works", "AWK"),
+        ("General Mills", "GIS"), ("3M", "MMM"))]
+    vocab, years = build_company_vocab(metas)
+
+    def co(q):
+        return (infer_filter(q, vocab, years) or {}).get("companies")
+
+    assert co("What was Ulta's revenue in FY2023?") == ["Ulta Beauty"]
+    assert co("AES total debt 2022") == ["AES Corporation"]
+    assert co("MGM occupancy 2022") == ["MGM Resorts"]
+    assert co("CVS pharmacy revenue") == ["CVS Health"]
+    # Longest-first, so the specific name beats the generic word it contains.
+    assert co("American Water Works capex") == ["American Water Works"]
+    # …and generic words still must NOT name a company on their own.
+    assert co("a general discussion of water works") is None
+    assert co("the company issued new shares") is None
+
+
+def test_refusal_is_not_a_retrieval_query():
+    """A LONG refusal must be rejected as a retrieval query.
+
+    `MIN_RETRIEVAL_QUERY_WORDS` only catches a rewrite that is too SHORT (the
+    model answering "Approximately 1.33."). A refusal is the other failure
+    shape and clears the floor easily — one FinanceBench generation returned
+    "I'm not able to retrieve the specific figures from Walmart's filings…",
+    which was then searched verbatim. Both must degrade to the sub-queries.
+    """
+    from finagent.graph.full import MIN_RETRIEVAL_QUERY_WORDS, _NOT_A_QUERY
+
+    refusal = ("I'm not able to retrieve the specific figures from Walmart's "
+               "filings needed to compute the EBITDA for FY2021")
+    assert len(refusal.split()) >= MIN_RETRIEVAL_QUERY_WORDS, "the floor lets it through"
+    assert _NOT_A_QUERY.search(refusal), "so this must catch it"
+
+    for bad in ("I cannot determine the value from the provided filings",
+                "Sorry, the document does not provide that figure",
+                "As an AI, I do not have access to that filing"):
+        assert _NOT_A_QUERY.search(bad), bad
+
+    # A real keyword query must NOT trip it — including captions containing
+    # words like "income" that appear in no refusal pattern.
+    for good in ("AMD 2022 consolidated balance sheets cash and cash equivalents "
+                 "inventories total current liabilities",
+                 "Boeing 2022 2021 note income taxes provision for income taxes",
+                 "Verizon 2022 Item 7 Liquidity and Capital Resources"):
+        assert not _NOT_A_QUERY.search(good), good
+
+
+def test_daily_quota_benches_a_key_but_not_the_run():
+    """A key whose DAILY budget is gone is retired, not treated as fatal.
+
+    The six Gemini keys are six separate projects and their daily counters
+    reset at different wall-clock times, so a build launched near the boundary
+    meets a mix of fresh and stale keys. Aborting on the first stale one killed
+    a run at 17 of 72 filings while five live keys could have finished it.
+
+    Only an all-keys-dead pool is fatal, and a dead key is never retried — the
+    request would be a guaranteed-wasted round trip against a budget already
+    spent.
+    """
+    from finagent.vectorstore import EmbeddingQuotaExhausted, GeminiEmbeddings
+
+    from finagent.vectorstore import _HttpError
+
+    emb = GeminiEmbeddings.__new__(GeminiEmbeddings)   # no API key needed
+    emb.model, emb.dim = "gemini-embedding-2", 8
+    emb.keys, emb._dead = ["dead1", "dead2", "live"], {}
+
+    calls: list[str] = []
+
+    def fake_post(key, texts, task):
+        calls.append(key)
+        if key != "live":
+            # The 429 body carries the quotaId; only that says PerDay vs
+            # PerMinute, which is why `_HttpError` keeps the body.
+            raise _HttpError(429, '{"error": {"details": [{"quotaId": '
+                             '"EmbedContentRequestsPerDayPerUserPerProjectPerModel-FreeTier"}]}}')
+        return [[1.0] + [0.0] * 7 for _ in texts]
+
+    emb._post = fake_post
+    try:
+        got = emb._embed_batch(["x"], "RETRIEVAL_DOCUMENT", 0)
+        assert len(got) == 1, "the live key must still serve the batch"
+        assert "dead1" in emb._dead and "live" not in emb._dead, emb._dead
+        assert calls.count("dead1") == 1, "a retired key is never retried"
+        assert calls[-1] == "live"
+        # Rotation skips the benched key, so a second batch costs no wasted
+        # round trip at all.
+        calls.clear()
+        emb._embed_batch(["y"], "RETRIEVAL_DOCUMENT", 0)
+        assert "dead1" not in calls, calls
+
+        # Every key benched -> fatal, and it names the cache as the way back.
+        import time as _t
+        emb._dead = {k: _t.time() + 900 for k in emb.keys}
+        try:
+            emb._embed_batch(["x"], "RETRIEVAL_DOCUMENT", 0)
+            raise AssertionError("an all-benched pool must raise")
+        except EmbeddingQuotaExhausted as e:
+            assert "embed_cache" in str(e)
+
+        # ...but the bench EXPIRES. A key that rolled over mid-build has to come
+        # back, otherwise a build started inside the reset stagger dies with a
+        # full quota available (measured: twice, at 17 of 72 filings).
+        emb._dead = {k: _t.time() - 1 for k in emb.keys}
+        calls.clear()
+        assert len(emb._embed_batch(["z"], "RETRIEVAL_DOCUMENT", 0)) == 1
+        assert "live" in calls
+    finally:
+        pass

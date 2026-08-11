@@ -64,7 +64,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Union
 
-from finagent.vectorstore import DEFAULT_EMBED_MODEL
+from finagent.vectorstore import DEFAULT_EMBED_MODEL, EmbeddingQuotaExhausted
 
 from tqdm import tqdm
 
@@ -85,10 +85,30 @@ _ITEM_RE = _re.compile(r"(?im)^\s*item\s+(\d{1,2}[ab]?)\s*[.:—–-]")
 # reached through their children and are read by the reranker and the LLM.
 EMBED_CHAR_CAP = 1900
 
+# …and the same cap for an embedder with a bigger window. Gemini's embedding
+# models take 2048 tokens against BGE's 512, so a financial statement that BGE
+# could only see the top of is embedded whole.
+#
+# This is the cap that actually bites. MEASURED on the 44,542-chunk eval index:
+# 671 chunks (1.5% of all chunks, but 6.8% of TABLES) sit at 1900 characters,
+# i.e. they were cut. Children are ~600 chars and never reach it — it is only
+# ever tables, which are indexed whole precisely so their rows stay together,
+# and which are the chunks numeric questions depend on.
+GEMINI_EMBED_CHAR_CAP = 7000
+
 # Hard cap on `parent_text`, stored on every child. The reranker scores the
 # parent at 1024 tokens (~4000 chars); beyond that the tail is invisible to
 # ranking and just costs payload storage on each of the parent's children.
 PARENT_TEXT_CAP = 4000
+
+
+def embed_char_cap(embedding_model: str) -> int:
+    """Characters an `embedding_model` can actually see in one chunk."""
+    from finagent.vectorstore import GEMINI_EMBED_PREFIX
+
+    return (GEMINI_EMBED_CHAR_CAP
+            if embedding_model.startswith(GEMINI_EMBED_PREFIX)
+            else EMBED_CHAR_CAP)
 
 
 # Lines that look like a heading but name nothing: page numbers, running
@@ -209,6 +229,7 @@ class CorpusIngester:
         html_overlap: int = PARENT_CHUNK_OVERLAP,
         parent_doc: bool = True,
         context_headers: bool = True,
+        table_format: str = "md",
     ):
         """
         Args:
@@ -229,6 +250,12 @@ class CorpusIngester:
         self.collection_name = collection_name
         self.market = market
         self.embedding_model = embedding_model
+        # What this embedder can see in one chunk, and the matching floor on
+        # `parent_text`: the parent must never be shorter than the child we
+        # embedded from it, or the reranker and the LLM read LESS of a table
+        # than the index matched on.
+        self.embed_char_cap = embed_char_cap(embedding_model)
+        self.parent_text_cap = max(PARENT_TEXT_CAP, self.embed_char_cap)
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self.unstructured_strategy = unstructured_strategy
@@ -251,6 +278,11 @@ class CorpusIngester:
         # statement name to match a query against. Kept as a flag so the
         # measurement in RETRIEVAL_EXPERIMENTS.md §12 stays reproducible.
         self.context_headers = context_headers
+        # How an HTML <table> is rendered into the text that gets embedded:
+        # "md" (GitHub-flavoured markdown) or "pipe" (bare `a | b | c` rows, the
+        # pre-existing behaviour). Kept as a flag so the A/B stays reproducible,
+        # exactly like `context_headers`.
+        self.table_format = table_format
 
         self.state_dir.mkdir(parents=True, exist_ok=True)
 
@@ -318,6 +350,15 @@ class CorpusIngester:
 
             try:
                 n_chunks = self.ingest_file(local_path, rec)
+            except EmbeddingQuotaExhausted:
+                # Not a per-file failure: the budget for the whole run is gone,
+                # and continuing would record 65 identical "failures" while each
+                # retry spends more of a quota that is already empty. Stop, and
+                # let the caller see how far the run actually got — the
+                # embedding cache makes the next attempt resume, not restart.
+                stats.total_seconds = time.time() - t0
+                self._print_summary(stats)
+                raise
             except Exception as e:
                 # Corrupt/unreadable file (e.g. broken PDF xref table).
                 stats.files_failed += 1
@@ -367,9 +408,25 @@ class CorpusIngester:
 
         store = self._get_vector_store()
         ids = [chunk_point_id(d.metadata, d.page_content) for d in docs]
-        store.add_documents(docs, ids=ids)
+        store.add_documents(docs, ids=ids, batch_size=self._upsert_batch())
 
         return len(docs)
+
+    def _upsert_batch(self) -> int:
+        """Texts handed to the embedder per call.
+
+        LangChain's default is 64, which is right for a local GPU encoder and
+        badly wrong for the Gemini API: that embedder fans a call out across the
+        key pool 32 texts at a time, so 64 only ever keeps TWO of the seven keys
+        busy. Handing it a full pool's worth per call saturates all seven and
+        took the measured corpus build from ~59 minutes to ~15.
+        """
+        from finagent.llm import collect_provider_keys
+        from finagent.vectorstore import GEMINI_EMBED_BATCH, GEMINI_EMBED_PREFIX
+
+        if not self.embedding_model.startswith(GEMINI_EMBED_PREFIX):
+            return 64
+        return GEMINI_EMBED_BATCH * max(1, len(collect_provider_keys("gemini")))
 
     def _base_meta(self, record: dict, file_path: Path) -> dict:
         """Metadata fields shared by all sources. Some are empty depending on
@@ -443,13 +500,13 @@ class CorpusIngester:
         child_split = self._get_child_splitter()
         docs: list = []
         for pid, ((ptext, extra), item) in enumerate(zip(parents, items)):
-            stored_parent = ptext[:PARENT_TEXT_CAP]
+            stored_parent = ptext[:self.parent_text_cap]
             children = [c.strip() for c in child_split.split_text(ptext) if c.strip()]
             for child in children or [ptext.strip()]:
                 if not child:
                     continue
                 docs.append(Document(
-                    page_content=child[:EMBED_CHAR_CAP],
+                    page_content=child[:self.embed_char_cap],
                     metadata={**base_meta, **extra, "item": item,
                               "parent_id": pid, "parent_text": stored_parent},
                 ))
@@ -552,7 +609,7 @@ class CorpusIngester:
         if not parent_doc:
             # Flat path: the chunk itself is what gets embedded, so it must stay
             # inside the embedder's 512-token (~2048 char) window.
-            return [Document(page_content=headed(c, m, EMBED_CHAR_CAP),
+            return [Document(page_content=headed(c, m, self.embed_char_cap),
                              metadata={**m, "item": item})
                     for (c, m, _), item in zip(prepared, items)]
 
@@ -564,17 +621,17 @@ class CorpusIngester:
             # The header goes on the parent too: the reranker and the LLM both
             # read `parent_text`, and both were seeing an untitled table.
             pmeta = {**meta, "item": item, "parent_id": pid,
-                     "parent_text": headed(content, meta, PARENT_TEXT_CAP)}
+                     "parent_text": headed(content, meta, self.parent_text_cap)}
             if is_table:
                 # A table is never split, so the child IS the embedded text and
                 # has to fit the embed window — unlike a text parent, which is
                 # only ever reached through its (small) children.
-                children = [content[:EMBED_CHAR_CAP]]
+                children = [content[:self.embed_char_cap]]
             else:
                 children = [c.strip() for c in child_split.split_text(content)
-                            if c.strip()] or [content[:EMBED_CHAR_CAP]]
+                            if c.strip()] or [content[:self.embed_char_cap]]
             for child in children:
-                docs.append(Document(page_content=headed(child, meta, EMBED_CHAR_CAP),
+                docs.append(Document(page_content=headed(child, meta, self.embed_char_cap),
                                      metadata=dict(pmeta)))
         return docs
 
@@ -592,18 +649,31 @@ class CorpusIngester:
             head = f"{head} · {caption}" if head else caption
         return head[:200]
 
-    @staticmethod
-    def _html_table_to_text(table_html: str) -> str:
-        """Render an HTML ``<table>`` as pipe-delimited rows, one row per line.
+    def _html_table_to_text(self, table_html: str) -> str:
+        """Render an HTML ``<table>`` as a GitHub-flavoured **markdown** table.
 
         Keeps cell adjacency (and therefore row/column relationships) that a flat
         ``element.text`` rendering destroys — far better for both embedding and
         for an LLM reading the chunk.
+
+        Markdown rather than raw HTML, and the reason is the character cap.
+        Everything embedded has to fit `EMBED_CHAR_CAP`, and the same table as
+        HTML is 3-5x the characters — `<td style="...">46,455</td>` against
+        `46,455`. Re-rendering as HTML would therefore fit far FEWER rows of a
+        financial statement under the cap, which makes the truncation this
+        pipeline already suffers strictly worse. Markdown costs 2 characters a
+        row over the bare pipe rows it replaces and buys the header delimiter,
+        which is what marks row 1 as column headings (the fiscal years) rather
+        than as data.
+
+        Empty cells are dropped before joining: SEC tables are padded with
+        spacer cells and lone `$` columns, and keeping them produced rows like
+        ``| Total assets | $ | 46,455 | | $ | 47,072 |``.
         """
         import html as _html
         import re
 
-        rows: list[str] = []
+        rows: list[list[str]] = []
         for tr in re.findall(r"<tr[^>]*>(.*?)</tr>", table_html, flags=re.S | re.I):
             cells = [
                 _html.unescape(re.sub(r"<[^>]+>", "", c)).strip()
@@ -611,8 +681,16 @@ class CorpusIngester:
             ]
             cells = [c for c in cells if c]
             if cells:
-                rows.append(" | ".join(cells))
-        return "\n".join(rows)
+                rows.append(cells)
+        if not rows:
+            return ""
+        if self.table_format == "pipe":
+            return "\n".join(" | ".join(r) for r in rows)
+        header, body = rows[0], rows[1:]
+        out = ["| " + " | ".join(header) + " |",
+               "|" + "|".join("---" for _ in header) + "|"]
+        out += ["| " + " | ".join(r) + " |" for r in body]
+        return "\n".join(out)
 
     def reset_collection(self) -> None:
         """Delete the collection. Useful when re-ingesting from scratch."""

@@ -1220,3 +1220,146 @@ Two dead ends worth recording so they are not re-attempted:
 `_collapse_to_parents` currently expands BEFORE reranking, so the cross-encoder
 reads 4x more text than the match justified. Same model, shorter input, and
 attention cost grows faster than linearly. Untested.
+
+## 16. A stronger rewriter, and three changes that did not survive measurement — August 2026
+
+Four things were tested in one session: the retrieval-query rewriter, the table
+renderer, the evidence metric itself, and the embedder. Only the first shipped.
+Everything below is `--mode served`, n=99, one index, `bge-reranker-v2-m3`,
+8-passage budget — only the named knob moves.
+
+### 16a. The harness had been scoring the wrong configuration
+
+Before any of it, a correction. `--mode served` never called
+`attach_subqueries`, so `Question.narrative` was False for every question and
+the harness gave the raw question `QUESTION_SLOTS = 2` — it was silently
+reporting §14c's PRE-fix row (71/99) while production ships
+`NARRATIVE_QUESTION_SLOTS = 8` (75/99). With the routes loaded (35 of 99 are
+narrative-routed, exactly §14c's count) the harness reproduces the shipped
+number exactly:
+
+| | pool | hit@5 | hit@8 | retention |
+|---|---|---|---|---|
+| harness before the fix | 0.9091 | 0.6768 (67) | 0.7172 (71) | 0.789 |
+| harness after, = §14c shipped | 0.9091 | 0.6667 (66) | **0.7576 (75)** | 0.833 |
+
+Third time this file records the harness disagreeing with the shipped code
+(§13d, §14b). Reproducing a KNOWN number before measuring a new one is the only
+thing that catches it.
+
+### 16b. Gemini 3.6 Flash writes a better retrieval query — 75 -> 79 of 99
+
+The §14b finding was that the LLM rewrite alone scored 67/99 against a
+hand-authored 80/99, and that "the hand-authored row is a ceiling, not a
+target". It was a model limit, not a prompt limit. Same prompt
+(`RETRIEVAL_QUERY_SYSTEM`), same everything else, only the model that writes the
+query changes:
+
+| rewriter | pool | hit@5 | hit@8 | num@8 | MRR | retention |
+|---|---|---|---|---|---|---|
+| `openai/gpt-oss-120b` (Groq) | 0.9091 (90) | 0.6667 (66) | 0.7576 (75) | 0.8313 | 0.4541 | 0.833 |
+| **`gemini-3.6-flash`** | 0.9192 (91) | **0.6869 (68)** | **0.7980 (79)** | **0.8662** | **0.4981** | **0.868** |
+
+**79 of 99, against the hand-authored ceiling of 80.** By question type:
+
+| type | n | Groq | Gemini |
+|---|---|---|---|
+| numeric | 60 | 47 | **51** |
+| narrative | 27 | 20 | 20 |
+| comparison | 12 | 8 | 8 |
+
+**The entire gain is numeric, and that is the mechanism working as designed.**
+§14b diagnosed the gap to the hand-authored ceiling as filing-specific
+vocabulary — the model writing "net sales" where AMD prints "Net revenue". A
+stronger model knows more real captions, so it writes queries that match printed
+statement text. Narrative is untouched because that lane is carried by the raw
+question at 8 slots, not by the keyword query. 51/60 numeric also beats the
+49/60 of §14c's rejected caption-grounding arm, which was the best numeric score
+previously measured, and costs no metadata scan and no extra prompt.
+
+MRR is reported here for the first time and moves 0.4541 -> 0.4981: the evidence
+is not just arriving inside the budget, it is landing higher in it.
+
+Cost: RPD is the binding free-tier limit for chat (20/day/key on the big Flash
+tier, 500 on Flash-Lite), not tokens. The eval CACHES rewrites per model
+(`results/financebench_retrieval_queries_<provider>_<model>.json`), so a re-run
+spends nothing — the A/B above re-generated 2 of 99 queries.
+
+### 16c. Markdown tables are WORSE than pipe rows — 75 -> 73
+
+Rendering each HTML `<table>` as a GitHub-flavoured markdown table (header row
+plus a `|---|` delimiter) instead of bare `a | b | c` rows:
+
+| renderer | pool | hit@5 | hit@8 | num@8 | MRR |
+|---|---|---|---|---|---|
+| **pipe rows (shipped)** | **0.9091 (90)** | **0.6667 (66)** | **0.7576 (75)** | 0.8313 | **0.4541** |
+| markdown | 0.8687 (86) | 0.6566 (65) | 0.7374 (73) | 0.8278 | 0.4297 |
+
+Pool recall falls 90 -> 86, so this is a first-stage loss, not a ranking one.
+The cause is `EMBED_CHAR_CAP`: markdown adds `| ` padding to every cell plus a
+whole delimiter row, and against a hard 1900-character embedding ceiling that
+overhead DISPLACES real table rows. Format richness is not free when the format
+competes with content for the same budget.
+
+Kept as `CorpusIngester(table_format=...)` because the conclusion is tied to the
+cap, not to markdown: an embedder with a larger window (Gemini's 2048 tokens →
+`GEMINI_EMBED_CHAR_CAP = 7000`) removes the displacement mechanism and could
+plausibly reverse it. That is measured as a 2x2, not assumed.
+
+### 16d. Digit-group normalisation makes the metric WORSE
+
+The evidence metric splits on every non-alphanumeric, so `394,328` and `394328`
+score as different content. Canonicalising digit groups looks strictly more
+correct. Ablated over all 127 served questions by mean parsing ceiling:
+
+| normalisation | mean ceiling | questions above 0.5 |
+|---|---|---|
+| **shipped (split on separators)** | **0.7640** | **99** |
+| + unicode separators / dashes | 0.7640 | 99 |
+| + accounting negatives `(1,234)` | 0.7640 | 99 |
+| + thousands joining | 0.7580 | 97 |
+| + decimal preservation | 0.7574 | 97 |
+| join ALL digit separators | 0.4456 | 54 |
+
+`partition_html` keeps each filing's own grouping where it can and SPLITS a
+figure across cells where it cannot — and splitting on the separator already
+matches both forms. Joining breaks exactly the split-across-cells case, which is
+the common one. Unicode and paren-negative handling changed nothing at all.
+
+So `normalize()` is unchanged, and the number canonicalisation moved into
+`figures()`/`numeric_recall`, where comparing NUMBERS rather than word sequences
+makes it correct. Two metrics were added rather than altered, so every hit@k in
+this file stays comparable:
+
+* `num@k` — fraction of the evidence's FIGURES present in the top-k, order
+  insensitive, which sees table evidence that 10-word shingles miss.
+* `mrr` — reciprocal rank of the first passage carrying the evidence.
+
+### 16e. Gemini embeddings: not measured, and why
+
+`gemini-embedding-001` is wired in (`GeminiEmbeddings`, 1536-d MRL with
+re-normalisation, asymmetric RETRIEVAL_QUERY/RETRIEVAL_DOCUMENT task types, and
+a disk cache so a rebuild costs nothing). The corpus build failed at 7 of 72
+filings, and the cause was ours, not the quota:
+
+* the free tier meters REQUESTS (100/min, 1000/day per key), not tokens;
+* the first retry loop answered every 429 by immediately re-issuing against the
+  next key, up to two full cycles — 12 real requests per throttled batch;
+* ~15,000 requests went to retries and drained all six keys.
+
+Same lesson as the Groq `_TOO_LARGE_HINTS` incident: a rate limit means slow
+down, and rotating instead of waiting converts a per-minute throttle into a
+daily outage. Now: batch 32 -> 100 (446 requests for a full build, not 1,392),
+sleep for the server's own `retryDelay`, and `EmbeddingQuotaExhausted` aborts
+the run instead of being swallowed once per file.
+
+Two traps worth recording for anyone using this API:
+
+1. **`gemini-embedding-2` silently merges a batch.** Given a list of N texts it
+   returns ONE vector (cosine 0.87 / 0.85 to the two true vectors — plausible
+   enough that nothing downstream looks broken). It must be called one text at a
+   time, which at 1000 requests/day makes a 44.5k-chunk corpus a ~6-day build.
+   `gemini-embedding-001` batches correctly. `_embed_batch` asserts the response
+   count against the batch it answered.
+2. **The SDK reports a 429 as "Cannot send a request, as the client has been
+   closed"**, which reads like a local bug. Raw HTTP shows the real quota error.

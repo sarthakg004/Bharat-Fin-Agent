@@ -218,6 +218,23 @@ class FetchNodes:
             self._log(state, f"corpus gate failed for {company!r}: {e}")
             return {"fetch_status": {}, **extra}
 
+        # A METADATA MISMATCH is as good as an absent filing, and it used to be
+        # invisible here. The gate answers "is this ticker in the collection?",
+        # while retrieval filters by matching the QUESTION TEXT against the
+        # collection's company vocabulary — and those two disagree whenever the
+        # corpus stores a name the question does not use. When they disagree the
+        # filter is dropped, the search runs unfiltered against every other
+        # company's near-identical accounting language, and the junk it returns
+        # reaches the synthesizer (after a full cross-encoder pass, with nothing
+        # left to catch it). Treat a name retrieval cannot resolve exactly like
+        # a filing that is not there: fetch it.
+        if gate["decision"] == "already_indexed" and not self._vocab_can_match(
+                company, gate.get("ticker"), gate.get("company")):
+            self._log(state, f"{company!r} is indexed but retrieval's metadata "
+                             f"vocabulary cannot match it; fetching rather than "
+                             f"searching every other company's filings")
+            gate = {**gate, "decision": "fetch", "vocab_mismatch": True}
+
         # Year-aware depth: a question about FY2019 can't be answered from the
         # LATEST 10-K alone — walk back enough annual filings that the asked
         # year is covered (each 10-K carries the prior year's comparatives,
@@ -337,6 +354,29 @@ class FetchNodes:
         return {"fetch_status": {**gate, "status": "fetched" if res.get("ok") else "error",
                                  **res}, **extra}
 
+    def _vocab_can_match(self, *names: Optional[str]) -> bool:
+        """Can retrieval's metadata filter resolve ANY of these names?
+
+        Asks the real `HybridRetriever.infer_filter` rather than re-implementing
+        the matching, so this cannot drift from the thing it is predicting. The
+        gate hands us three chances at the same entity — what the user typed
+        ('Amex'), the resolved ticker ('AXP') and the SEC registrant title
+        ('AMERICAN EXPRESS COMPANY') — and any one of them resolving means the
+        filter will hold.
+
+        Fails OPEN: if the vocabulary cannot be built (cold cluster, transient
+        error) we must not conclude "mismatch" and fetch a filing we already
+        have.
+        """
+        try:
+            for hyb in self._get_hybrids():
+                for name in names:
+                    if name and (hyb.infer_filter(name) or {}).get("companies"):
+                        return True
+        except Exception:
+            return True
+        return False
+
     def _indexed_years(self, ticker: str) -> set[str]:
         """Metadata `year` values indexed for `ticker` (empty when unknowable —
         e.g. baseline corpora keyed by company name rather than ticker)."""
@@ -351,14 +391,31 @@ class FetchNodes:
     def hybrid_retrieve_node(self, state: AgentState) -> dict:
         """Persistent-corpus retrieval, plus in-memory ranking of an ephemerally
         fetched filing (cloud path) so its chunks are usable without ever being
-        indexed."""
+        indexed.
+
+        A spent embedding quota degrades to NO retrieval rather than to a failed
+        request. Embedding the query is the only part of the pipeline that needs
+        the embedding API, so XBRL, the calculator, market data, EDGAR and web
+        search can all still answer; returning empty chunks lets them. The
+        alternative is a 500 on a question the tool lanes would have handled.
+        """
+        from finagent.vectorstore import EmbeddingQuotaExhausted
+
+        try:
+            return self._retrieve(state)
+        except EmbeddingQuotaExhausted as e:
+            self._log(state, f"embedding quota exhausted, skipping corpus "
+                             f"retrieval and answering from the tool lanes ({e})")
+            return {"retrieved_chunks": [], "company_in_corpus": False,
+                    "embeddings_unavailable": True}
+
+    def _retrieve(self, state: AgentState) -> dict:
         if self._corpus_lacks_company(state):
             # The gate resolved this question's company to a CIK and confirmed
             # the collection holds nothing for it. Searching the corpus anyway
             # returns the nearest OTHER company's filing — an Applied Materials
             # segment question came back with Walmart, Corning, General Mills
-            # and 3M chunks, which the grader then had to score 1/5 and throw
-            # away, after a multi-minute cross-encoder pass. Skip it: the
+            # and 3M chunks, after a multi-minute cross-encoder pass. Skip it: the
             # fetched filing below is the only in-corpus-shaped source there is.
             self._log(state, "company is not in the corpus; skipping corpus "
                              "retrieval (other companies' filings only)")

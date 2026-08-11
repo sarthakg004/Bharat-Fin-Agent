@@ -4,26 +4,19 @@ full.py  ·  finagent/graph/full.py
 Router-based agentic RAG (v3). Adds a query **router** to the corrective-RAG
 (v2) graph:
 
-    START → planner → router → retrieve → grader ── conditional ──┐
-                                  ▲                               │
-                                  │                               ▼
-                                  └── rewrite ◄── (avg_grade low,
-                                                    rewrites < cap)
-                                                                  │
-                                                                  ▼
-                                                  synthesize → critic ── conditional
-                                                                  │            │
-                                                                  └── retrieve ◄┘
-                                                          (needs_retry,
-                                                           critic_retries < cap)
-                                                                  │
-                                                                  ▼
-                                                                 END
+    START → planner → router → retrieve → synthesize → critic ── conditional
+                                  ▲                                    │
+                                  └───────────────────── retrieve ◄────┘
+                                                 (needs_retry,
+                                                  critic_retries < cap)
+                                                       │
+                                                       ▼
+                                                      END
 
 The **router** classifies every sub-query as `narrative`, `numeric`, or
-`external` (web). Retrieval feeds the hybrid retriever + grader/rewrite loop
-from v2; the synthesizer writes the answer over the retrieved excerpts and the
-critic checks it against them. (The v4 subclass adds the structured numeric
+`external` (web). Retrieval feeds the hybrid retriever from v2; the
+synthesizer writes the answer over the retrieved excerpts and the critic
+checks it against them. (The v4 subclass adds the structured numeric
 lanes — XBRL + calculator — and web search on top of this.)
 
 Usage as a library
@@ -69,6 +62,17 @@ from finagent.config import settings
 # one: the model answered the question or returned nothing. The shortest useful
 # real query is company + year + a caption, which clears this comfortably.
 MIN_RETRIEVAL_QUERY_WORDS = 6
+
+# …and the other failure shape, which the length floor cannot see. The model
+# sometimes REFUSES at length instead of writing a query — one FinanceBench
+# generation returned "I'm not able to retrieve the specific figures from
+# Walmart's filings needed to compute the EBITDA…", which is 20+ words, passes
+# the floor, and then gets searched verbatim. The prompt asks for keywords with
+# no verbs and no question words, so first-person prose is never a valid query.
+_NOT_A_QUERY = re.compile(
+    r"\b(i am|i'm|i cannot|i can't|i am not|i'm not|unable to|not able to|"
+    r"as an ai|sorry|apolog|there is no|cannot determine|insufficient "
+    r"information|does not (?:provide|contain))\b", re.I)
 
 
 def _first_line(text: str) -> str:
@@ -421,11 +425,17 @@ class AgenticRAGv3(AgenticRAGv2):
             self._log(state, f"retrieval-query rewrite failed ({e}); "
                              f"retrieving on the sub-queries")
             return ""
-        # Too short means the model answered the question instead of writing a
-        # query for it (one FinanceBench run produced "Approximately 1.33.") or
-        # returned nothing. Both would retrieve garbage; the sub-queries are a
-        # better fallback than a bad query.
-        return out if len(out.split()) >= MIN_RETRIEVAL_QUERY_WORDS else ""
+        # Two ways this comes back unusable, and BOTH have been observed on
+        # FinanceBench. Too short means the model answered the question instead
+        # of writing a query for it ("Approximately 1.33."). Refusal prose means
+        # it declined at length — long enough to clear the floor, and then
+        # searched verbatim. Either way the sub-queries are a better fallback
+        # than a bad query, so return "" and let retrieval degrade to them.
+        if len(out.split()) < MIN_RETRIEVAL_QUERY_WORDS or _NOT_A_QUERY.search(out):
+            self._log(state, f"discarded a non-query rewrite ({out[:60]!r}); "
+                             f"retrieving on the sub-queries")
+            return ""
+        return out
 
     def router_node(self, state: AgentState) -> dict:
         """Classify each sub-query as narrative / numeric / external.
@@ -515,28 +525,6 @@ class AgenticRAGv3(AgenticRAGv2):
     # Graph
     # ------------------------------------------------------------------ #
 
-    def _grade_router(self, state: AgentState) -> str:
-        """Return "proceed" when text retrieval is good enough (or there is no
-        narrative sub-query, or rewriting clearly won't help) — otherwise
-        "rewrite" and retry."""
-        routes = state.get("query_routes") or []
-        has_narrative = any(r != "numeric" for r in routes)
-        avg = state.get("avg_grade", 0.0)
-        kept = state.get("retrieved_chunks") or []
-
-        if not has_narrative:
-            return "proceed"
-        # Grader filtered every chunk away AND the average was very low →
-        # the entity isn't in the corpus; rewriting won't fix that. Proceed so
-        # any out-of-corpus evidence (web) can still answer.
-        if not kept and avg < self.very_poor_grade:
-            return "proceed"
-        if avg >= self.grade_threshold:
-            return "proceed"
-        if state.get("iteration_count", 0) >= self.max_rewrites:
-            return "proceed"
-        return "rewrite"
-
     def _build_graph(self):
         from langgraph.graph import END, START, StateGraph
 
@@ -544,20 +532,13 @@ class AgenticRAGv3(AgenticRAGv2):
         g.add_node("planner", self.planner_node)
         g.add_node("router", self.router_node)
         g.add_node("retrieve", self.hybrid_retrieve_node)
-        g.add_node("grader", self.grader_node)
-        g.add_node("rewrite", self.rewrite_node)
         g.add_node("synthesize", self.synthesize_node)
         g.add_node("critic", self.critic_node)
 
         g.add_edge(START, "planner")
         g.add_edge("planner", "router")
         g.add_edge("router", "retrieve")
-        g.add_edge("retrieve", "grader")
-        g.add_conditional_edges(
-            "grader", self._grade_router,
-            {"rewrite": "rewrite", "proceed": "synthesize"},
-        )
-        g.add_edge("rewrite", "retrieve")
+        g.add_edge("retrieve", "synthesize")
         g.add_edge("synthesize", "critic")
         g.add_conditional_edges(
             "critic", self._critic_router,
@@ -574,18 +555,12 @@ def _build_cli() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Run the router-based RAG (v3) graph.")
     p.add_argument("--collection", default=settings.us_collection)
     p.add_argument("--provider", choices=["groq", "gemini", "openai", "anthropic"],
-                   default="groq")
-    p.add_argument("--planner-model", default=None)
+                   default="gemini")
     p.add_argument("--synth-model", default=None)
-    p.add_argument("--critic-model", default=None)
-    p.add_argument("--grader-model", default=None)
-    p.add_argument("--router-model", default=None)
     p.add_argument("--embedding-model", default=DEFAULT_EMBED_MODEL)
     p.add_argument("--reranker-model", default=HybridRetriever.DEFAULT_RERANKER)
     p.add_argument("--pool-top-k", type=int, default=48)
     p.add_argument("--final-top-k", type=int, default=5)
-    p.add_argument("--grade-threshold", type=float, default=3.0)
-    p.add_argument("--max-rewrites", type=int, default=3)
     p.add_argument("--max-critic-retries", type=int, default=2)
     p.add_argument("--question", default=None)
     p.add_argument("--dataset", default=None)
@@ -610,8 +585,7 @@ def main():
 
     # LLM choice is per-run, not a property of the agent — build the context
     # from the CLI flags and inject it at run().
-    ctx = RuntimeContext(provider=args.provider, synth_model=args.synth_model,
-                         top_k=args.final_top_k)
+    ctx = RuntimeContext(provider=args.provider, synth_model=args.synth_model)
 
     agent = AgenticRAGv3(
         collection_name=args.collection,
@@ -619,8 +593,6 @@ def main():
         reranker_model=args.reranker_model,
         pool_top_k=args.pool_top_k,
         final_top_k=args.final_top_k,
-        grade_threshold=args.grade_threshold,
-        max_rewrites=args.max_rewrites,
         max_critic_retries=args.max_critic_retries,
     )
 
@@ -639,8 +611,6 @@ def main():
     print(f"Question:        {state['question']}")
     print(f"Sub-queries:     {state.get('sub_queries')}")
     print(f"Query routes:    {state.get('query_routes')}")
-    print(f"Grades:          {state.get('grades')}  (avg {state.get('avg_grade')})")
-    print(f"Rewrites used:   {state.get('iteration_count', 0)}")
     print(f"Critic retries:  {state.get('critic_iterations', 0)}")
     print(f"\nAnswer:\n{state.get('final_answer')}")
     print(f"\nCitations:       {state.get('citations')}")

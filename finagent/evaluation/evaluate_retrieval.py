@@ -163,6 +163,11 @@ RERANKERS = (
     # measured here regardless of their published scores.
     "mixedbread-ai/mxbai-rerank-base-v2",     # 494M / 1976 MB
     "cross-encoder/ms-marco-MiniLM-L12-v2",   # 33M / 133 MB — the cheap floor
+    # Hosted. Billed per "search unit" (one query + up to 100 documents), which
+    # is why it is affordable at pool depth 48 while a per-passage price would
+    # not be: one call scores the whole pool. Needs COHERE_API_KEY*; it holds no
+    # weights, so it costs no GPU and does not contend with the local arms.
+    "cohere:rerank-v4.0-pro",
 )
 
 
@@ -181,8 +186,70 @@ _NON_ALNUM = re.compile(r"[^a-z0-9]+")
 def normalize(text: str) -> str:
     """Alphanumeric content only. Parsers disagree on formatting, not content:
     unstructured renders a table as `a | b | c` rows while the FinanceBench
-    evidence carries the PDF's whitespace-joined cells."""
+    evidence carries the PDF's whitespace-joined cells.
+
+    Digit grouping is deliberately NOT canonicalised here, and that is a
+    measured decision rather than an oversight. Joining `394,328` into `394328`
+    on both sides looks strictly more correct and is worse on this corpus:
+    ablated over all 127 served questions, mean parsing ceiling fell 0.7640 ->
+    0.7580 and two questions dropped below the ceiling filter (joining ALL
+    digit separators, including spaces, collapsed it to 0.4456 / 54 questions).
+    The reason is that `partition_html` keeps each filing's own grouping where
+    it can and SPLITS a figure across cells where it cannot — and splitting on
+    the separator, which is what this does, already matches both. Unicode
+    separators and accounting negatives were ablated too and changed nothing
+    (0.7640 either way), so they are not folded in here either.
+
+    Figure-level comparison is a genuinely different question, and it lives in
+    `numeric_recall`, which does canonicalise — correctly, because it is
+    comparing numbers rather than word sequences.
+    """
     return _NON_ALNUM.sub(" ", (text or "").lower()).strip()
+
+
+# --- number canonicalisation, used ONLY by `numeric_recall` ---------------- #
+
+# A filing prints a negative as `(1,234)`; prose restating it writes `-1,234`.
+_PAREN_NEG = re.compile(r"\(\s*\$?\s*(\d[\d,.]*)\s*\)")
+# Thousands separators: a comma or a non-breaking/thin space between digits
+# with exactly three following. Never a PLAIN space — `46,455 | 47,072` is
+# two figures, not one.
+_THOUSANDS = re.compile("(?<=\\d)[,\u00a0\u2009\u202f](?=\\d{3}(?!\\d))")
+_NUMBER = re.compile(r"-?\d+(?:\.\d+)?")
+
+
+def figures(text: str) -> set:
+    """The distinct FIGURES in `text`, canonicalised.
+
+    `1,234`, `1 234` (NBSP) and `(1,234)` all reduce to the same token here,
+    which is right for comparing numbers and wrong for comparing word
+    sequences — hence the split from `normalize`.
+
+    Single digits are dropped: `2`, `8` and the like match by accident in any
+    table of numbers.
+    """
+    s = _PAREN_NEG.sub(r" -\1 ", text or "")
+    s = _THOUSANDS.sub("", s)
+    return {n for n in _NUMBER.findall(s) if len(n.lstrip("-0.")) >= 2}
+
+
+def numeric_recall(gold: str, text: str) -> float:
+    """Fraction of the FIGURES in `gold` present in `text`. 1.0 when the span
+    quotes no figure (nothing to miss).
+
+    Shingle recall is word-order sensitive, and a table is exactly where order
+    is not preserved: the evidence span reads `Total assets 46,455 47,072` while
+    the parsed chunk may render the caption, the currency marker and the two
+    figures in a different arrangement. One reordered word voids ten shingles.
+    This asks the question the answer actually depends on — did the numbers
+    reach the synthesizer — and is reported ALONGSIDE coverage rather than
+    replacing it, so the hit@k series stays comparable with every earlier run.
+    """
+    gold_nums = figures(gold)
+    if not gold_nums:
+        return 1.0
+    present = figures(text)
+    return sum(1 for n in gold_nums if n in present) / len(gold_nums)
 
 
 def shingle_recall(gold: str, parsed_norm: str, n: int = SHINGLE_WORDS) -> float:
@@ -221,6 +288,33 @@ def coverage(spans: list[str], texts: list[str]) -> float:
         return 0.0
     blob = normalize(" || ".join(texts))
     return statistics.mean(shingle_recall(s, blob) for s in spans)
+
+
+def numeric_coverage(spans: list[str], texts: list[str]) -> float:
+    """Mean `numeric_recall` over a question's evidence spans. Takes the RAW
+    text — `figures()` does its own canonicalisation, and running it over
+    `normalize`d text would have split every grouped figure first."""
+    if not spans:
+        return 0.0
+    blob = " || ".join(texts)
+    return statistics.mean(numeric_recall(s, blob) for s in spans)
+
+
+def first_hit_rank(spans: list[str], texts: list[str],
+                   threshold: float = 0.5) -> int:
+    """1-based rank of the first passage at which CUMULATIVE coverage clears
+    `threshold`; 0 when it never does.
+
+    hit@k only says whether the evidence arrived inside the budget. This says
+    how far down it sat, which is the axis a reranker actually moves — an arm
+    that puts the answer at rank 1 and one that puts it at rank 8 are
+    indistinguishable under hit@8 and very different to a synthesizer reading a
+    truncated context.
+    """
+    for k in range(1, len(texts) + 1):
+        if coverage(spans, texts[:k]) >= threshold:
+            return k
+    return 0
 
 
 # --------------------------------------------------------------------------- #
@@ -283,6 +377,9 @@ class Config:
     # this must too or a plain sweep measures a config that is not shipped.
     # Rows measured BEFORE §12 have no `_hdr` tag suffix and were built without.
     headers: bool = True
+    # HTML table rendering: 'md' (markdown, current) or 'pipe' (bare rows, what
+    # shipped before). Part of the index, so it needs its own tag.
+    table_format: str = 'md'
 
     @property
     def parent_overlap(self) -> int:
@@ -299,12 +396,26 @@ class Config:
     @property
     def tag(self) -> str:
         base = f"p{self.parent}_c{self.child}_{self.embed.split('/')[-1]}"
-        return f"{base}_hdr" if self.headers else base
+        if self.headers:
+            base += "_hdr"
+        # Rows measured before the renderer became a knob were all pipe and
+        # carry no suffix; tag both explicitly from here so two renderings
+        # can never collide on one row key.
+        return f"{base}_tbl-{self.table_format}"
 
 
-def grid(stage: str, parent: int, child: int) -> list[Config]:
+def grid(stage: str, parent: int, child: int,
+         embed: str = LARGE, table_format: str = 'md') -> list[Config]:
     """Staged sweep, not a cross product: 3^n configurations would each cost a
     full re-index for knobs that prior work already showed are near-orthogonal."""
+    if stage == "one":
+        # Exactly ONE configuration. Every other stage builds 3-5 indexes, which
+        # is the right shape for choosing a knob and the wrong shape for an A/B
+        # where the knob under test is somewhere else entirely (the table
+        # renderer, the retrieval query, the reranker arm). Pair it with
+        # `--rerankers` to score a single arm and a comparison costs one build.
+        return [Config(parent=parent, child=child, embed=embed,
+                       table_format=table_format)]
     if stage == "parent":
         return [Config(parent=p, child=child) for p in (1500, 2500, 4000)]
     if stage == "child":
@@ -408,9 +519,28 @@ def load_eval_questions(doc_names: Optional[set] = None,
 # Sub-query plans — the production decomposition, cached
 # --------------------------------------------------------------------------- #
 
+def retrieval_queries_path(provider: Optional[str], model: Optional[str]) -> Path:
+    """Where one rewriter's cached queries live.
+
+    Per-rewriter, because the queries ARE the arm under test when the rewriter
+    changes: sharing one file would silently score the new model against the old
+    model's cached output (they are keyed by question id, so nothing would look
+    wrong). The default path is unsuffixed so every pre-existing run and every
+    `--mode served` invocation that names no rewriter keeps reading the same
+    cache it always did.
+    """
+    if not provider and not model:
+        return RETRIEVAL_QUERIES_PATH
+    tag = "_".join(p.replace("/", "-") for p in (provider, model) if p)
+    return RETRIEVAL_QUERIES_PATH.with_name(
+        f"{RETRIEVAL_QUERIES_PATH.stem}_{tag}.json")
+
+
 def attach_retrieval_queries(questions: list[Question],
                              path: Path = RETRIEVAL_QUERIES_PATH,
-                             refresh: bool = False) -> int:
+                             refresh: bool = False,
+                             provider: Optional[str] = None,
+                             model: Optional[str] = None) -> int:
     """Write each question's retrieval query with the SERVED node and cache it.
 
     Same discipline as `attach_subqueries`, and for the same reason: the query
@@ -430,19 +560,30 @@ def attach_retrieval_queries(questions: list[Question],
 
     todo = [q for q in questions if q.id not in cache]
     if todo:
-        from finagent.graph import FinAgent
+        from contextlib import nullcontext
 
+        from finagent.graph import FinAgent
+        from finagent.runtime import RuntimeContext, use_context
+
+        # `_retrieval_query` asks for the `planner` role, so pointing the
+        # planner at another provider/model is all it takes to swap the
+        # rewriter. Held open for the whole loop; production reads the same
+        # context from the request.
+        scope = (use_context(RuntimeContext(planner_provider=provider,
+                                            planner_model=model))
+                 if (provider or model) else nullcontext())
         agent = FinAgent()
-        for q in tqdm(todo, desc="retrieval queries"):
-            state: dict = {"errors": []}
-            # `numeric` mirrors a filings-routed question: the real gate is the
-            # planner's routes, and every question in this set is answered from
-            # the filings by construction.
-            cache[q.id] = {"question": q.text,
-                           "retrieval_query": agent._retrieval_query(
-                               state, q.text, ["numeric"])}
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(cache, indent=2))   # resumable
+        with scope:
+            for q in tqdm(todo, desc=f"retrieval queries [{model or 'default'}]"):
+                state: dict = {"errors": []}
+                # `numeric` mirrors a filings-routed question: the real gate is
+                # the planner's routes, and every question in this set is
+                # answered from the filings by construction.
+                cache[q.id] = {"question": q.text,
+                               "retrieval_query": agent._retrieval_query(
+                                   state, q.text, ["numeric"])}
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps(cache, indent=2))   # resumable
 
     missing = 0
     for q in questions:
@@ -568,6 +709,7 @@ def build_index(cfg: Config, collection: str, manifest: Path) -> dict:
         html_overlap=cfg.parent_overlap,
         parent_doc=True,
         context_headers=cfg.headers,
+        table_format=cfg.table_format,
     )
     # ponytail: child geometry is a class constant, not a ctor argument — an
     # instance attribute shadows it, which is enough for a sweep. Promote it to
@@ -625,7 +767,9 @@ def cap_pool(question: str, chunks: list[tuple], reranker_model: Optional[str],
 
 
 def evaluate_index(cfg: Config, collection: str, questions: list[Question],
-                   mode: str = "served") -> list[dict]:
+                   mode: str = "served",
+                   rerankers: tuple = RERANKERS,
+                   rewriter: str = "") -> list[dict]:
     """Score one index, in two passes so only ONE model is on the GPU at a time.
 
     Pass 1 pulls every candidate pool (needs the embedder); pass 2 runs the
@@ -649,7 +793,7 @@ def evaluate_index(cfg: Config, collection: str, questions: list[Question],
     points = get_client().get_collection(collection).points_count
 
     cached: list[list[tuple[str, list]]] = []   # per question: [(sub, parents)]
-    pool_hit, pool_ms, n_subs = 0, [], []
+    pool_hit, pool_ms, n_subs, pool_num = 0, [], [], []
     for q in tqdm(questions, desc=f"{cfg.tag} pools", leave=False):
         if mode == "subquery":
             subs = q.subs
@@ -683,6 +827,7 @@ def evaluate_index(cfg: Config, collection: str, questions: list[Question],
         pool_texts = [score_text(t, m) for _, ps in pools for t, m in ps]
         if coverage(q.spans, pool_texts) >= HIT_THRESHOLD:
             pool_hit += 1
+        pool_num.append(numeric_coverage(q.spans, pool_texts))
 
     del pooler, store
     free_embedder()
@@ -690,8 +835,9 @@ def evaluate_index(cfg: Config, collection: str, questions: list[Question],
     # ---- Pass 2: one reranker arm at a time -------------------------------
     n = len(questions)
     acc = {r: {"cov": {k: 0.0 for k in FINAL_KS}, "hit": {k: 0 for k in FINAL_KS},
-               "ms": [], "ctx": [], "by_type": {}} for r in RERANKERS}
-    for r in RERANKERS:
+               "num": {k: 0.0 for k in FINAL_KS}, "rr": [],
+               "ms": [], "ctx": [], "by_type": {}} for r in rerankers}
+    for r in rerankers:
         # `rerank()` never touches the store — the embedder is freed by now.
         arm = None if r is None else HybridRetriever(
             None, reranker_model=r, pool_top_k=POOL_DEPTH,
@@ -728,9 +874,12 @@ def evaluate_index(cfg: Config, collection: str, questions: list[Question],
                 c = coverage(q.spans, texts[:k])
                 acc[r]["cov"][k] += c
                 acc[r]["hit"][k] += c >= HIT_THRESHOLD
+                acc[r]["num"][k] += numeric_coverage(q.spans, texts[:k])
                 if k == max(FINAL_KS):
                     bt["cov"] += c
                     bt["hit"] += c >= HIT_THRESHOLD
+            rank = first_hit_rank(q.spans, texts[:max(FINAL_KS)], HIT_THRESHOLD)
+            acc[r]["rr"].append(1.0 / rank if rank else 0.0)
         del arm
         free_reranker(r)
 
@@ -740,7 +889,7 @@ def evaluate_index(cfg: Config, collection: str, questions: list[Question],
     pool_recall = pool_hit / denom
 
     rows = []
-    for r in RERANKERS:
+    for r in rerankers:
         a = acc[r]
         top = max(FINAL_KS)
         rows.append({
@@ -748,7 +897,14 @@ def evaluate_index(cfg: Config, collection: str, questions: list[Question],
             "embed": cfg.embed, "dim": dim,
             "reranker": arm_label(r),
             "mode": mode,
+            # WHICH model wrote the retrieval query. Part of the row identity,
+            # not decoration: the queries are the arm under test when the
+            # rewriter changes, and without this in the key a Gemini run
+            # silently overwrote the Groq row it was supposed to be compared
+            # against (same failure the smoke-file split above exists to stop).
+            "rewriter": rewriter or "default",
             "headers": cfg.headers,
+            "table_format": cfg.table_format,
             "scored": "header stripped" if STRIP_HEADERS_IN_SCORING else "as served",
             # Which rule ordered the merged pool. §11 replaced the re-score
             # against the original question with the per-sub-query score, so
@@ -757,8 +913,16 @@ def evaluate_index(cfg: Config, collection: str, questions: list[Question],
             "n": n,
             "subqueries": round(statistics.mean(n_subs), 2) if n_subs else 0,
             "pool_recall": round(pool_recall, 4),
+            # Fraction of the evidence's FIGURES present in the pool / in the
+            # final budget. Order-insensitive, so it sees table evidence that
+            # shingle coverage scores as missing (see `numeric_recall`).
+            "pool_num": round(statistics.mean(pool_num), 4) if pool_num else 0.0,
+            # Mean reciprocal rank of the first passage that carries the
+            # evidence — how HIGH it lands, not just whether it arrived.
+            "mrr": round(statistics.mean(a["rr"]), 4) if a["rr"] else 0.0,
             **{f"cov@{k}": round(a["cov"][k] / denom, 4) for k in FINAL_KS},
             **{f"hit@{k}": round(a["hit"][k] / denom, 4) for k in FINAL_KS},
+            **{f"num@{k}": round(a["num"][k] / denom, 4) for k in FINAL_KS},
             # Of the questions whose evidence WAS retrievable, what fraction
             # survives ranking — isolates the reranker from first-stage recall.
             "retention": round((a["hit"][top] / denom) / pool_recall, 4)
@@ -779,16 +943,17 @@ def evaluate_index(cfg: Config, collection: str, questions: list[Question],
 # Reporting
 # --------------------------------------------------------------------------- #
 
-_COLUMNS = ["mode", "parent", "child", "embed", "dim", "reranker", "n",
-            "subqueries", "pool_recall", "cov@5", "hit@5", "cov@8", "hit@8",
-            "retention", "points", "vectors_mb", "ctx_chars@8", "pool_ms",
-            "rerank_ms"]
+_COLUMNS = ["mode", "rewriter", "parent", "child", "embed", "dim", "reranker", "n",
+            "subqueries", "pool_recall", "pool_num", "cov@5", "hit@5", "cov@8",
+            "hit@8", "num@8", "mrr", "retention", "points", "vectors_mb",
+            "ctx_chars@8", "pool_ms", "rerank_ms"]
 
 
 def render_table(data: dict) -> str:
     rows = sorted(data["rows"].values(),
-                  key=lambda r: (r.get("mode", ""), r["parent"], r["child"],
-                                 r["embed"], r["reranker"]))
+                  key=lambda r: (r.get("mode", ""), r.get("rewriter", ""),
+                                 r["parent"], r["child"], r["embed"],
+                                 r["reranker"]))
     meta = data.get("meta", {})
     out = [
         "# Retrieval sweep — served HTML pipeline",
@@ -812,7 +977,10 @@ def render_table(data: dict) -> str:
         "",
         "`coverage@k` = shingle recall of the verified evidence span in the top-k "
         "parents given to the synthesizer; `hit@k` = coverage ≥ "
-        f"{HIT_THRESHOLD}; `retention` = hit@8 / pool_recall.",
+        f"{HIT_THRESHOLD}; `retention` = hit@8 / pool_recall; "
+        "`num@k` = fraction of the evidence's FIGURES present (order-insensitive, "
+        "so it sees table evidence shingles miss); `mrr` = mean reciprocal rank "
+        "of the first passage carrying the evidence.",
         "",
         "| " + " | ".join(_COLUMNS) + " |",
         "|" + "|".join("---" for _ in _COLUMNS) + "|",
@@ -842,6 +1010,8 @@ def save(rows: list[dict], meta: dict, smoke: bool = False) -> None:
     data["meta"] = {**data.get("meta", {}), **meta}
     for r in rows:
         key = f"{r['mode']}|{r['config']}|{r['reranker']}"
+        if r.get("rewriter") and r["rewriter"] != "default":
+            key += f"|{r['rewriter']}"
         if r.get("scored") == "header stripped":
             key += "|stripped"
         data["rows"][key] = r
@@ -859,9 +1029,11 @@ def self_check() -> None:
     assert shingle_recall("Total net sales were $394,328 million in 2022, up 8%.", doc) == 1.0
     assert shingle_recall("Total  NET   sales; were: 394,328 (million) in 2022 — up 8%", doc) == 1.0, \
         "punctuation/case/whitespace must not count as missing content"
-    # Digit grouping is NOT normalised away — "394,328" and "394328" are
-    # different token streams. Both parsers keep the filing's own grouping, so
-    # this is only a limitation for evidence that reformats numbers.
+    # Digit grouping is NOT normalised away in `normalize` — ABLATED over all
+    # 127 served questions, joining it cost mean ceiling 0.7640 -> 0.7580 and
+    # two questions, because partition_html splits a figure across cells more
+    # often than the evidence reformats one. Figure comparison lives in
+    # `figures`/`numeric_recall` instead, which DOES canonicalise.
     assert shingle_recall("total net sales were 394328 million in 2022 up 8", doc) == 0.0
     assert shingle_recall("The board declared a quarterly dividend of $0.23", doc) == 0.0
     assert shingle_recall("net sales", doc) == 1.0, "short gold falls back to containment"
@@ -871,6 +1043,28 @@ def self_check() -> None:
     assert shingle_recall("Revenue 394,328 365,817", table) == 1.0
     assert coverage(["net sales", "no such text here at all"], [doc]) == 0.5
     assert coverage([], [doc]) == 0.0
+
+    # figures(): the canonicalisation `normalize` deliberately does not do.
+    assert figures("46,455") == figures("46\u00a0455") == figures("46455") == {"46455"}
+    assert figures("(1,234)") == figures("-1,234") == {"-1234"}
+    assert figures("$0.23 and 8%") == {"0.23"}, "single digits are ignored"
+    assert figures("46,455 | 47,072") == {"46455", "47072"}, \
+        "adjacent cells must stay two figures"
+
+    # numeric_recall: order-insensitive figure presence, which is what table
+    # evidence needs and what shingles cannot see.
+    row = "Consolidated Balance Sheets | 46,455 | Total assets | 47,072"
+    assert numeric_recall("Total assets 46,455 47,072", row) == 1.0
+    assert shingle_recall("Total assets 46,455 47,072", normalize(row)) == 0.0, \
+        "the reordered table row is exactly the case shingles miss"
+    assert numeric_recall("Total assets 46,455 99,999", row) == 0.5
+    assert numeric_recall("no figures in this span", row) == 1.0
+
+    # first_hit_rank: the rank the evidence actually landed at.
+    spans = ["Total net sales were $394,328 million"]
+    texts = ["irrelevant", "also irrelevant", "Total net sales were $394,328 million"]
+    assert first_hit_rank(spans, texts) == 3
+    assert first_hit_rank(spans, texts[:2]) == 0
 
     # A §12 header must not be able to satisfy the evidence metric by itself:
     # 67 of the 99 gold spans open with the statement caption the header adds.
@@ -909,7 +1103,25 @@ def self_check() -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[3])
-    ap.add_argument("--stage", choices=["parent", "child", "embedder", "embedder2", "headers"])
+    ap.add_argument("--stage", choices=["one", "parent", "child", "embedder",
+                                       "embedder2", "headers"])
+    ap.add_argument("--skip-build", action="store_true",
+                    help="score an EXISTING sweep collection instead of "
+                         "re-ingesting it. The index is a pure function of the "
+                         "config tag, so a query-side arm (a different rewriter, "
+                         "a different reranker) re-uses it as-is.")
+    ap.add_argument("--rewriter-provider", default=None,
+                    help="provider for the --mode served retrieval-query "
+                         "rewrite (e.g. gemini). Default: the planner's own.")
+    ap.add_argument("--rewriter-model", default=None,
+                    help="model for the retrieval-query rewrite. Queries are "
+                         "cached per rewriter, so switching model does not "
+                         "score the previous model's cached output.")
+    ap.add_argument("--table-format", choices=["md", "pipe"], default="md",
+                    help="how an HTML table is rendered into embedded text")
+    ap.add_argument("--embed", default=LARGE,
+                    help="embedding model for --stage one (default: the "
+                         "production embedder)")
     ap.add_argument("--mode",
                     choices=["served", "subquery", "question"],
                     default="served",
@@ -933,9 +1145,23 @@ def main() -> None:
                     help="score chunks with the §12 context header removed, so "
                          "the injected caption cannot satisfy the evidence "
                          "metric on its own")
+    ap.add_argument("--rerankers", default=None,
+                    help="comma-separated subset of the reranker arms to score "
+                         "(default: all). 'none' selects the RRF-order control. "
+                         "A single arm costs ~1/5 of a full config, which is "
+                         "what makes an A/B on the query or the embedder cheap.")
     ap.add_argument("--table-only", action="store_true")
     ap.add_argument("--self-check", action="store_true")
     args = ap.parse_args()
+
+    arms = RERANKERS
+    if args.rerankers:
+        want = [a.strip() for a in args.rerankers.split(",") if a.strip()]
+        arms = tuple(None if w.lower() == "none" else w for w in want)
+        unknown = [a for a in arms if a not in RERANKERS]
+        if unknown:
+            ap.error(f"unknown reranker(s) {unknown}; choose from "
+                     f"{[arm_label(r) for r in RERANKERS]}")
 
     if args.strip_headers_scoring:
         globals()["STRIP_HEADERS_IN_SCORING"] = True
@@ -975,10 +1201,26 @@ def main() -> None:
         print(f"Plans: {mean_subs:.2f} retrieved sub-queries/question, "
               f"{unretrieved} routed entirely away from the filings")
     elif args.mode == "served":
-        missing = attach_retrieval_queries(questions,
-                                           refresh=args.refresh_plans)
+        missing = attach_retrieval_queries(
+            questions, path=retrieval_queries_path(args.rewriter_provider,
+                                                   args.rewriter_model),
+            refresh=args.refresh_plans, provider=args.rewriter_provider,
+            model=args.rewriter_model)
+        # The ROUTES are still needed in served mode, even though the plan no
+        # longer drives retrieval: `NARRATIVE_QUESTION_SLOTS` gives a
+        # narrative-routed question the full 8-passage budget for the raw
+        # question (§14c), and `q.narrative` is the flag that selects it.
+        #
+        # Without this, `q.narrative` was False for every question and the
+        # harness silently scored the whole set at QUESTION_SLOTS=2 — i.e. it
+        # reported §14c's PRE-fix row (71/99) while production ships the 8-slot
+        # one (75/99). Same class of divergence as §13d, where the harness and
+        # the shipped code disagreed.
+        attach_subqueries(questions, refresh=args.refresh_plans)
+        n_narr = sum(1 for q in questions if q.narrative)
         print(f"Retrieval queries: 1/question, {missing} missing "
-              f"(fell back to the raw question)")
+              f"(fell back to the raw question); {n_narr} narrative-routed "
+              f"question(s) get {NARRATIVE_QUESTION_SLOTS} slots")
 
     from finagent.vectorstore import delete_collection
 
@@ -992,25 +1234,39 @@ def main() -> None:
             done = {k for k, v in json.loads(rp.read_text()).get("rows", {}).items()
                     if v.get("n") == len(questions)}
 
-    for cfg in grid(args.stage, args.parent, args.child):
+    for cfg in grid(args.stage, args.parent, args.child, args.embed,
+                    args.table_format):
         collection = f"sweep_{cfg.tag}"
-        if all(f"{args.mode}|{cfg.tag}|{arm_label(r)}" in done for r in RERANKERS):
+        if all(f"{args.mode}|{cfg.tag}|{arm_label(r)}" in done for r in arms):
             print(f"\n=== {cfg.tag} === already in {OUT_JSON}, skipping", flush=True)
             continue
         print(f"\n=== {cfg.tag} ===", flush=True)
-        stats = build_index(cfg, collection, manifest)
-        rows = evaluate_index(cfg, collection, questions, mode=args.mode)
+        if args.skip_build:
+            from finagent.vectorstore import count as _count
+
+            have = _count(collection)
+            if not have:
+                raise SystemExit(f"--skip-build: collection {collection!r} is "
+                                 f"empty or missing; run once without it.")
+            print(f"re-using {have} points in {collection}", flush=True)
+            stats = {"ingest_s": 0.0, "chunks": have, "files": "reused"}
+        else:
+            stats = build_index(cfg, collection, manifest)
+        rows = evaluate_index(cfg, collection, questions, mode=args.mode,
+                              rerankers=arms,
+                              rewriter=args.rewriter_model or "")
         for r in rows:
             r.update(ingest_s=stats["ingest_s"], chunks=stats["chunks"])
             print(f"  {r['reranker']:26} pool={r['pool_recall']:.4f} "
-                  f"cov@8={r['cov@8']:.4f} hit@8={r['hit@8']:.4f} "
-                  f"hit@5={r['hit@5']:.4f} ctx={r['ctx_chars@8']}")
+                  f"hit@5={r['hit@5']:.4f} hit@8={r['hit@8']:.4f} "
+                  f"num@8={r['num@8']:.4f} mrr={r['mrr']:.4f} "
+                  f"ctx={r['ctx_chars@8']}")
         save(rows, smoke=bool(args.docs), meta={"files": stats["files"],
                     "n_questions": len(questions),
                     "n_dropped": dropped, "n_unretrieved": unretrieved,
                     "pool_depth": POOL_DEPTH,
                     "docs_subset": args.docs or "all"})
-        if not args.keep:
+        if not args.keep and not args.skip_build:
             delete_collection(collection)
         free_embedder()
 

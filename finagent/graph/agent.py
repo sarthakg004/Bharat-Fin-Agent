@@ -12,22 +12,19 @@ Full agentic RAG (v4) — the deployed agent. Adds to v3:
     cut-off events, latest news) via Tavily (`TAVILY_API_KEY`). Escalates
     automatically when retrieval comes back empty/weak or the draft admits it
     can't answer.
-  * **Numeric verification** — every figure in the draft is deterministically
-    grounded against the evidence (with an LLM rescue pass only when figures
-    fail to ground). Ungrounded figures re-route, then refuse.
 
 Graph:
 
-    START → planner(+routes) → router → {fetch_filing → retrieve → grader → rewrite↺ | xbrl}
+    START → planner(+routes) → router → {fetch_filing → retrieve | xbrl}
           → xbrl → calculator → (market_data ∥ web_search ∥ edgar_search)
-          → evidence_builder → synthesize → critic → verify_numbers → END
-                                                     ↘ refuse → END
+          → evidence_builder → synthesize → critic → END
+                                             ↘ refuse → END
 
 The node implementations live in `finagent/graph/nodes/` as topical mixins —
 fetch (SEC fetch + retrieval), numeric (XBRL/calculator), external
-(market/web/EDGAR), synthesis (evidence + drafting + critic), verification
-(figure grounding + refusal). This module owns the constructor, the
-lane resources, the routing functions, and the graph wiring.
+(market/web/EDGAR), synthesis (evidence + drafting + critic + refusal). This
+module owns the constructor, the lane resources, the routing functions, and
+the graph wiring.
 """
 
 from __future__ import annotations
@@ -44,7 +41,7 @@ from finagent.tools.edgar_search import EdgarFullTextSearch
 from finagent.tools.sec_fetch import SecFilingFetcher
 from finagent.tools.xbrl import XBRLClient
 from finagent.graph.nodes import (
-    FetchNodes, NumericNodes, ExternalNodes, SynthesisNodes, VerificationNodes,
+    FetchNodes, NumericNodes, ExternalNodes, SynthesisNodes,
 )
 from finagent.vectorstore import DEFAULT_EMBED_MODEL
 from finagent.config import settings
@@ -55,8 +52,13 @@ from finagent.config import settings
 # --------------------------------------------------------------------------- #
 
 class AgenticRAGv4(FetchNodes, NumericNodes, ExternalNodes,
-                   SynthesisNodes, VerificationNodes, AgenticRAGv3):
-    """v3 + structured numeric lanes + web search + numeric verification."""
+                   SynthesisNodes, AgenticRAGv3):
+    """v3 + structured numeric lanes + web search."""
+
+    # Hard-refuse only when the critic could support LESS than this share of
+    # the draft's claims after every retry was spent; a mostly-supported
+    # answer is shown as drafted.
+    REFUSE_BELOW_SUPPORT = 0.5
 
     def __init__(
         self,
@@ -65,15 +67,10 @@ class AgenticRAGv4(FetchNodes, NumericNodes, ExternalNodes,
         # questions ("performance over the last year"); a single article rarely
         # covers the full ground. Tavily allows up to 20 per call.
         web_top_k: int = 10,
-        min_verify_score: float = 0.5,
         dispatch: bool = True,
         analyst_voice: bool = True,
         dedupe: bool = True,
         dedupe_threshold: float = 0.93,
-        strict_numeric: bool = True,
-        # Hard-refuse only when LESS than this share of the draft's figures is
-        # grounded; a mostly-grounded answer is shown as drafted.
-        refuse_below_grounding: float = 0.6,
         persist_fetch: bool = True,
         active_critic: bool = True,
         **kwargs,
@@ -91,12 +88,6 @@ class AgenticRAGv4(FetchNodes, NumericNodes, ExternalNodes,
         # before synthesis so the answer doesn't repeat itself. Set False to A/B.
         self.dedupe = dedupe
         self.dedupe_threshold = dedupe_threshold
-        # Phase 11 strict numeric verification: deterministically extract every
-        # figure in the draft and confirm each traces to XBRL / evidence; an
-        # ungrounded figure re-routes then refuses. Set False to A/B against the
-        # prior LLM-only numeric check.
-        self.strict_numeric = strict_numeric
-        self.refuse_below_grounding = refuse_below_grounding
         # Dynamic fetch: persist the fetched filing into the on-disk index (True,
         # local) or use it ephemerally in memory for this session (False, cloud).
         self.persist_fetch = persist_fetch
@@ -105,9 +96,8 @@ class AgenticRAGv4(FetchNodes, NumericNodes, ExternalNodes,
         # of a full re-retrieve — the draft over-claimed, not the evidence. Falls
         # back to the heavy re-gather path when evidence is thin. Bounded by the
         # existing critic_iterations cap. Set False to A/B against the prior
-        # "critic always proceeds to verify" behaviour.
+        # "critic always proceeds" behaviour.
         self.active_critic = active_critic
-        self.min_verify_score = min_verify_score
         self._web: Optional[WebSearcher] = None
         self._xbrl: Optional[XBRLClient] = None
         self._calc: Optional[FinancialCalculator] = None
@@ -159,76 +149,20 @@ class AgenticRAGv4(FetchNodes, NumericNodes, ExternalNodes,
             )
         return self._fetcher
 
-
-
-    # ------------------------------------------------------------------ #
-    # Nodes
-    # ------------------------------------------------------------------ #
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    # ------------------------------------------------------------------ #
-    # Evidence builder (#3)
-    # ------------------------------------------------------------------ #
-
-
-
-
-
-
-
-
-
-    # ------------------------------------------------------------------ #
-    # #5 — financial verification report (cross-source / units / sources)
-    # ------------------------------------------------------------------ #
-
-
-
-
-    # ------------------------------------------------------------------ #
-    # Confidence framework (#8/9)
-    # ------------------------------------------------------------------ #
-
-
-
-
-
-
-
-
     # ------------------------------------------------------------------ #
     # Routers
     # ------------------------------------------------------------------ #
-
 
     def _dispatch_router(self, state: AgentState) -> str:
         """Phase 7 query-type dispatcher — pick the cheapest path that answers.
 
         * any narrative sub-query (or no routing at all) → the **retrieval
-          path**: corpus-fetch gate → hybrid retrieve → grade → corrective loop.
+          path**: corpus-fetch gate → hybrid retrieve → corrective loop.
           This path also flows into the tool chain afterwards, so a mixed
           question (narrative + numeric) still gets XBRL/calc/EDGAR.
         * purely non-narrative (numeric / derived-metric / market /
           cross-document / external) → straight into the **tool chain**, skipping
-          the fetch gate, retrieval, and grading entirely. This is the
+          the fetch gate and retrieval entirely. This is the
           efficiency win: a numeric question never touches retrieval.
 
         With `self.dispatch` False the router always takes the retrieval path —
@@ -248,87 +182,55 @@ class AgenticRAGv4(FetchNodes, NumericNodes, ExternalNodes,
         has_narrative = (not routes) or any(r == "narrative" for r in routes)
         return "retrieval" if (not self.dispatch or has_narrative) else "tools"
 
-    def _verify_router(self, state: AgentState) -> str:
-        """After numeric verification: refuse, retry retrieval, or end.
-
-        The **verifier** is the source of truth for refusal: it does a precise
-        per-number match against ALL evidence (text + tables + web). The
-        critic is a cheaper retry trigger; if it disagrees with a passing
-        verifier (e.g. it didn't see the web hits) we trust the verifier.
-        """
-        nv = state.get("numeric_verification") or {}
-        score = nv.get("score")
-        ungrounded = nv.get("unverified") or []
-        # Bound the loop on BOTH counters: the critic increments
-        # `critic_iterations` only when IT wants a retry, but the verifier can
-        # re-route on its own, so `verify_iterations` is what actually caps the
-        # verify→retrieve→…→verify cycle (otherwise it spins to the recursion
-        # limit and the request errors out).
-        out_of_retries = (
-            state.get("critic_iterations", 0) >= self.max_critic_retries
-            or state.get("verify_iterations", 0) > self.max_critic_retries
-        )
-
-        # Phase 11: an ungrounded figure is a potential hallucination. Under
-        # strict numeric verification, re-route to try to ground it; once out of
-        # retries, hard-refuse ONLY when most of the draft's figures failed to
-        # ground (a substantially fabricated answer). A mostly-grounded draft
-        # is answered as drafted — a refusal there would throw away an answer
-        # whose figures overwhelmingly trace to sources.
-        if self.strict_numeric:
-            has_ungrounded = (nv.get("numbers_total", 0) > 0 and len(ungrounded) > 0)
-            if state.get("needs_retry") and not out_of_retries:
-                return "retrieve"
-            if has_ungrounded and not out_of_retries:
-                return "retrieve"          # re-route to re-ground the figure(s)
-            if has_ungrounded and out_of_retries:
-                severely_ungrounded = (
-                    score is not None and score < self.refuse_below_grounding)
-                return "refuse" if severely_ungrounded else "end"
-            return "end"
-
-        # Legacy LLM-only path.
-        claims = nv.get("claims") if isinstance(nv, dict) else None
-        if state.get("needs_retry"):
-            return "retrieve"
-        verify_failed = (score is not None and score < self.min_verify_score)
-        if out_of_retries and verify_failed and claims:
-            return "refuse"
-        return "end"
-
     def _evidence_router(self, state: AgentState) -> str:
         """After evidence_builder: proceed to synthesis, or (one-shot) fall back
         to corpus retrieval when the tools lanes all came back empty."""
         return "retrieve" if state.get("corpus_fallback_pending") else "synthesize"
 
     def _critic_router(self, state: AgentState) -> str:
-        """Active-critic recovery (#6). After the critic:
+        """One recovery attempt, chosen by the critic, then answer or refuse.
 
-        * no unsupported claims (or active_critic off) → proceed to verify;
-        * unsupported claims AND we already have substantial evidence → a focused
-          RE-DRAFT (`resynthesize`): the draft over-claimed, so re-writing against
-          the same evidence is cheap and usually fixes it;
-        * unsupported claims AND evidence is thin → proceed to verify, whose
-          router then re-routes to retrieve (the heavier re-gather path).
+        There are three ways to recover and the agent may use exactly ONE of
+        them per question, because a second pass over the same evidence with
+        the same models produces the same answer at twice the quota:
 
-        Bounded by the existing `critic_iterations` cap: the critic only keeps
-        `needs_retry` True while under the cap, so this can re-draft at most
-        `max_critic_retries` times before it must proceed.
+        * `websearch`  the draft ADMITS the evidence cannot answer and the web
+                       lane has not run. No amount of re-drafting fixes missing
+                       evidence, so this outranks the other two.
+        * `retrieve`   the critic says `gather`: the evidence genuinely lacks
+                       the fact. `AgenticRAGv2.critic_node` has already pointed
+                       `sub_queries` at the flagged claims and blanked
+                       `retrieval_query`, so the retry searches something new.
+        * `resynthesize` the critic says `redraft`: the evidence is sufficient
+                       and the draft overstated it. The synthesizer gets the
+                       flagged claims quoted back and rewrites against the same
+                       evidence.
+
+        All three count against `critic_iterations`, and each is gated on that
+        budget by the node that RAISES it, not here: `AgenticRAGv2.critic_node`
+        only leaves `needs_retry` True while under the cap, and
+        `_web_fallback_signal` only sets `web_fallback_pending` under the same
+        cap. Both increment the counter when they fire. Re-checking the budget
+        in this router would double-count, because by the time it runs the
+        counter already includes the recovery it is being asked to dispatch.
+        (The web-fallback pass used to skip the counter entirely, so a question
+        could run three synthesize passes while the API reported one.)
+
+        With the budget spent, a draft the critic still cannot mostly support
+        (`REFUSE_BELOW_SUPPORT`) is refused rather than shipped.
         """
-        # Insufficient-draft escalation outranks a re-draft: when the draft
-        # admits the evidence can't answer, re-writing over the SAME evidence
-        # can't help — gather web evidence first, then re-synthesize.
         if state.get("web_fallback_pending"):
             return "websearch"
-        if not self.active_critic or not state.get("needs_retry"):
-            return "verify"
-        has_evidence = bool(
-            state.get("evidence") or state.get("retrieved_chunks")
-            or state.get("xbrl_facts") or state.get("calc_results")
-            or state.get("market_data") or state.get("web_results")
-            or state.get("edgar_results")
-        )
-        return "resynthesize" if has_evidence else "verify"
+        if state.get("needs_retry"):
+            if state.get("critic_remedy") == "gather" or not self.active_critic:
+                return "retrieve"
+            return "resynthesize"
+
+        score = state.get("grading_score")
+        if (score is not None and score < self.REFUSE_BELOW_SUPPORT
+                and state.get("critic_iterations", 0) >= self.max_critic_retries):
+            return "refuse"
+        return "end"
 
     # ------------------------------------------------------------------ #
     # Graph
@@ -342,8 +244,6 @@ class AgenticRAGv4(FetchNodes, NumericNodes, ExternalNodes,
         g.add_node("router", self.router_node)
         g.add_node("fetch_filing", self.fetch_filing_node)
         g.add_node("retrieve", self.hybrid_retrieve_node)
-        g.add_node("grader", self.grader_node)
-        g.add_node("rewrite", self.rewrite_node)
         g.add_node("xbrl", self.xbrl_node)
         g.add_node("calculator", self.calculator_node)
         g.add_node("market_data", self.market_data_node)
@@ -352,7 +252,6 @@ class AgenticRAGv4(FetchNodes, NumericNodes, ExternalNodes,
         g.add_node("evidence_builder", self.evidence_builder_node)
         g.add_node("synthesize", self.synthesize_node)
         g.add_node("critic", self.critic_node)
-        g.add_node("verify_numbers", self.verify_numbers_node)
         g.add_node("refuse", self.refuse_node)
 
         g.add_edge(START, "planner")
@@ -367,19 +266,9 @@ class AgenticRAGv4(FetchNodes, NumericNodes, ExternalNodes,
         # Phase 5: corpus-membership gate before retrieval — fetch + ingest a
         # missing US company's 10-K so retrieval can find it on this turn.
         g.add_edge("fetch_filing", "retrieve")
-        g.add_edge("retrieve", "grader")
-        # Phase 3-4: numeric sub-queries hit XBRL first (exact structured facts),
-        # then the calculator (derived metrics over those facts). `_grade_router`
-        # returns "proceed" once retrieval is good enough (or rewriting won't
-        # help); we send that to `xbrl` and chain xbrl → calculator.
-        g.add_conditional_edges(
-            "grader", self._grade_router,
-            {"rewrite": "rewrite", "proceed": "xbrl"},
-        )
-        # Re-route after a rewrite: the rewritten query replaces sub_queries, so
-        # it must be re-classified or query_routes goes stale (which silently
-        # dropped the table/market lanes on the retry pass).
-        g.add_edge("rewrite", "router")
+        # Phase 3-4: numeric sub-queries hit XBRL next (exact structured facts),
+        # then the calculator (derived metrics over those facts).
+        g.add_edge("retrieve", "xbrl")
         # Numeric chain stays SEQUENTIAL: xbrl→calculator share the XBRL client
         # (facts + resolver cache). Keeping them ordered avoids the concurrent-
         # client segfault class this codebase already hit once (commit 71e6bda).
@@ -406,50 +295,21 @@ class AgenticRAGv4(FetchNodes, NumericNodes, ExternalNodes,
         )
         g.add_edge("synthesize", "critic")
         # #6: the critic can actively route to a focused re-draft (resynthesize)
-        # when the draft over-claimed against otherwise-good evidence, instead of
-        # always deferring recovery to the verify→retrieve path.
+        # when the draft over-claimed against otherwise-good evidence, fall back
+        # to a full re-gather (retrieve) when evidence is thin, and — as the
+        # only gate left — refuse a draft that stayed mostly unsupported after
+        # every retry.
         g.add_conditional_edges(
             "critic", self._critic_router,
-            {"resynthesize": "synthesize", "verify": "verify_numbers",
+            {"resynthesize": "synthesize", "retrieve": "retrieve",
              # Insufficient-draft escalation: gather web evidence, then the
              # existing web_search → evidence_builder → synthesize edges
              # re-draft with it.
-             "websearch": "web_search"},
-        )
-        # The verifier is the only gate left: it settles hard refusals
-        # (ungrounded figures) and retries. An answerable draft ends the run.
-        g.add_conditional_edges(
-            "verify_numbers", self._verify_router,
-            {"retrieve": "retrieve", "refuse": "refuse", "end": END},
+             "websearch": "web_search",
+             "refuse": "refuse", "end": END},
         )
         g.add_edge("refuse", END)
         return g.compile()
-
-    # ------------------------------------------------------------------ #
-    # Helpers
-    # ------------------------------------------------------------------ #
-
-
-
-    # ------------------------------------------------------------------ #
-    # Phase 11 — deterministic numeric grounding
-    # ------------------------------------------------------------------ #
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 # --------------------------------------------------------------------------- #
 # CLI
@@ -459,22 +319,14 @@ def _build_cli() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Run the full agentic RAG (v4).")
     p.add_argument("--collection", default=settings.us_collection)
     p.add_argument("--provider", choices=["groq", "gemini", "openai", "anthropic"],
-                   default="groq")
-    p.add_argument("--planner-model", default=None)
+                   default="gemini")
     p.add_argument("--synth-model", default=None)
-    p.add_argument("--critic-model", default=None)
-    p.add_argument("--grader-model", default=None)
-    p.add_argument("--router-model", default=None)
-    p.add_argument("--verifier-model", default=None)
     p.add_argument("--embedding-model", default=DEFAULT_EMBED_MODEL)
-    p.add_argument("--reranker-model", default="BAAI/bge-reranker-large")
+    p.add_argument("--reranker-model", default="BAAI/bge-reranker-v2-m3")
     p.add_argument("--pool-top-k", type=int, default=48)
     p.add_argument("--final-top-k", type=int, default=5)
     p.add_argument("--web-top-k", type=int, default=3)
-    p.add_argument("--grade-threshold", type=float, default=3.0)
-    p.add_argument("--max-rewrites", type=int, default=3)
     p.add_argument("--max-critic-retries", type=int, default=2)
-    p.add_argument("--min-verify-score", type=float, default=0.5)
     p.add_argument("--question", default=None)
     p.add_argument("--dataset", default=None)
     p.add_argument("--question-col", default="question")
@@ -498,8 +350,7 @@ def main():
 
     # LLM choice is per-run, not a property of the agent — build the context
     # from the CLI flags and inject it at run().
-    ctx = RuntimeContext(provider=args.provider, synth_model=args.synth_model,
-                         top_k=args.final_top_k)
+    ctx = RuntimeContext(provider=args.provider, synth_model=args.synth_model)
 
     agent = AgenticRAGv4(
         collection_name=args.collection,
@@ -508,10 +359,7 @@ def main():
         pool_top_k=args.pool_top_k,
         final_top_k=args.final_top_k,
         web_top_k=args.web_top_k,
-        grade_threshold=args.grade_threshold,
-        max_rewrites=args.max_rewrites,
         max_critic_retries=args.max_critic_retries,
-        min_verify_score=args.min_verify_score,
     )
 
     if args.dataset:
@@ -534,11 +382,8 @@ def main():
     for e in ev:
         kinds[e.get("kind")] = kinds.get(e.get("kind"), 0) + 1
     print(f"Evidence:         {len(ev)} items {kinds}")
-    print(f"Grades:           {state.get('grades')} (avg {state.get('avg_grade')})")
-    print(f"Rewrites:         {state.get('iteration_count', 0)}")
     print(f"Critic retries:   {state.get('critic_iterations', 0)}")
-    nv = state.get("numeric_verification") or {}
-    print(f"Numeric verify:   score={nv.get('score')}  unverified={len(nv.get('unverified', []))}")
+    print(f"Claims supported: {state.get('grading_score')}")
     print(f"Refused:          {state.get('refused', False)}")
     print(f"Status:           {state.get('status')}")
     print(f"\nAnswer:\n{state.get('final_answer')}")

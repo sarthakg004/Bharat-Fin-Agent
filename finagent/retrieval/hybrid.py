@@ -52,7 +52,6 @@ class HybridRetriever:
         # list now, so this is the total rather than a per-branch count.
         pool_top_k: int = 48,
         final_top_k: int = 5,
-        use_mmr: bool = False,
         auto_filter: bool = True,
         parent_doc: bool = True,
         # Append the underlying statement line items when the query names a
@@ -64,15 +63,6 @@ class HybridRetriever:
         self.reranker_model = reranker_model
         self.pool_top_k = pool_top_k
         self.final_top_k = final_top_k
-        # Maximal Marginal Relevance for pool diversity. OFF, because
-        # LangChain's MMR path is dense-only: it issues a NearestQuery with
-        # `using="dense"` and no prefetch, so the sparse vector and the RRF
-        # fusion below never run. Leaving this on silently reduced the whole
-        # hybrid retriever to a single dense search — BM25 vectors were written
-        # for every point at ingest and never read at query time. Do not flip it
-        # back without re-measuring: `tests/test_hybrid_is_hybrid.py` asserts the
-        # query that actually reaches Qdrant is the fused one.
-        self.use_mmr = use_mmr
         # Company/year metadata filtering inferred from the query text (no LLM).
         # Without it, one company's question competes against every other
         # filing's near-identical accounting language.
@@ -183,14 +173,16 @@ class HybridRetriever:
 
         qf = qdrant_filter(flt)
         try:
-            if self.use_mmr:
-                docs = self.store.max_marginal_relevance_search(
-                    query, k=self.pool_top_k,
-                    fetch_k=max(20, self.pool_top_k * 2), lambda_mult=0.5,
-                    filter=qf)
-            else:
-                docs = self.store.similarity_search(
-                    query, k=self.pool_top_k, filter=qf)
+            # `similarity_search`, never `max_marginal_relevance_search`. MMR
+            # for pool diversity was tried and removed: LangChain's MMR path is
+            # dense-only, issuing a NearestQuery with `using="dense"` and no
+            # prefetch, so the sparse vector and the RRF fusion never run. It
+            # silently reduced the whole hybrid retriever to a single dense
+            # search, with BM25 vectors written at ingest and never read.
+            # `tests/test_hybrid_is_hybrid.py` asserts the query that actually
+            # reaches Qdrant is the fused one.
+            docs = self.store.similarity_search(
+                query, k=self.pool_top_k, filter=qf)
         except Exception:
             # Collection missing/empty, or a transient cluster error: an empty
             # pool correctly hands off to the fetch/web fallbacks.

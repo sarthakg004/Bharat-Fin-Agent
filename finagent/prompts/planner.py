@@ -145,11 +145,20 @@ Rules:
 cannot be answered from one — a query that hedges across three statements
 retrieves more and ranks worse.
 - NEVER write the name of a derived figure. Filings do not print "operating
-margin", "gross margin", "quick ratio", "current ratio", "working capital",
-"free cash flow", "inventory turnover" or "EPS growth" — they print the inputs.
-Write those inputs instead. If the word you are about to write is a ratio, a
-margin, a turnover, or a growth rate, delete it and name the two or three
-captions it is computed from.
+margin", "gross margin", "net margin", "quick ratio", "current ratio", "working
+capital", "return on assets", "return on equity", "free cash flow", "inventory
+turnover", "asset turnover", "days sales outstanding", "days payable",
+"interest coverage", "debt to equity", "dividend payout", "book value",
+"EBITDA" or "EPS growth" — they print the inputs. Write those inputs instead.
+If the word you are about to write is a ratio, a margin, a turnover, a coverage,
+a per-day figure or a growth rate, delete it and name the two or three captions
+it is computed from. This replaces the phrase; it does not accompany it — do not
+write both the ratio and its inputs.
+- The exception is a phrase the filing itself PRINTS as a heading. "Liquidity
+and Capital Resources", "Effective Income Tax Rate Reconciliation", "Property,
+Plant and Equipment", "Dividends Paid" and the statement titles are real
+captions, so write those verbatim when the answer sits under them. The test is
+not "does this sound like a ratio" but "would this appear in the filing".
 - If the question asks what changed, what drove something, or how it grew or
 improved, write BOTH fiscal years as numbers ("2022 2021"). A filing prints the
 comparative year in the same table, and omitting it is the most common way this
@@ -167,10 +176,25 @@ more than a missing one.
 - One line. No preamble, no quotes, no explanation."""
 
 # One shot per question type, each pinned to that type's failure mode:
-# decomposing a derived metric into printed captions, landing on an Item heading
-# instead of restating the analyst's phrasing, and naming segment captions for
-# both years. Companies chosen to be uninformative about any particular filing.
+# decomposing a derived RATIO into printed captions, decomposing a derived metric
+# inside a comparison, landing on an Item heading instead of restating the
+# analyst's phrasing, and naming segment captions for both years. Companies
+# chosen to be uninformative about any particular filing.
+#
+# The ratio shot is the one that earns its place by measurement. Of the 99
+# FinanceBench questions, 36 name a metric a filing never prints, and both
+# rewriters leaked the phrase through on 4 of them — while none of the other
+# three shots shows a pure ratio question being decomposed. The alternative
+# considered was pasting all 36 entries of `expansion.METRIC_TERMS` into this
+# prompt; it was rejected because ~89% of rewrites already decompose correctly,
+# 8 of those 36 entries are captions filings genuinely print, and §14c measured
+# that padding this prompt with vocabulary costs hit@5. One example of the rule
+# in action is cheaper than a glossary.
 RETRIEVAL_QUERY_SHOTS = (
+    ("Does AMD have a healthy liquidity profile based on its quick ratio for "
+     "FY2022?",
+     "AMD 2022 consolidated balance sheets cash and cash equivalents short-term "
+     "investments accounts receivable net inventories total current liabilities"),
     ("Did Intel's inventory position grow faster than its cost of sales between "
      "FY2021 and FY2022?",
      "Intel 2022 2021 consolidated balance sheets inventories raw materials work "

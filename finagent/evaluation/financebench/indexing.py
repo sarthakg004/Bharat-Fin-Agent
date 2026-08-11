@@ -22,6 +22,7 @@ import json
 from pathlib import Path
 from typing import Union
 
+from finagent.config import settings
 from finagent.ingestion.ingest import CorpusIngester
 
 from .dataset import load_questions
@@ -34,7 +35,12 @@ from .html_source import HTML_DIR, fetch_html_for_docs
 DEFAULT_CORPUS_DIR = HTML_DIR
 DEFAULT_DOC_INFO = "data/us/eval/financebench/data/financebench_document_information.jsonl"
 DEFAULT_MANIFEST = "data/us/eval/financebench/eval_manifest.json"
-EVAL_COLLECTION = "financebench_eval"
+# One source of truth for "which collection is the eval corpus" — the same
+# FINANCEBENCH_COLLECTION the answer runner reads through `settings`. The gold
+# mapper and the retrieval eval used to hardcode the name, so pointing the run
+# at a re-ingested corpus silently scored answers on one index and retrieval on
+# another.
+EVAL_COLLECTION = settings.financebench_collection
 
 
 def corpus_path(doc_name: str, corpus_dir: Union[str, Path] = DEFAULT_CORPUS_DIR) -> Path:

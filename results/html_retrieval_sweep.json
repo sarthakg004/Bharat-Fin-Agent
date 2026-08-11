@@ -1,6 +1,6 @@
 {
   "meta": {
-    "files": 72,
+    "files": "reused",
     "n_questions": 99,
     "n_dropped": 28,
     "n_unretrieved": 0,
@@ -2369,6 +2369,105 @@
       },
       "ingest_s": 1264.6,
       "chunks": 44544
+    },
+    "served|p2500_c600_bge-large-en-v1.5_hdr_tbl-md|BAAI/bge-reranker-v2-m3": {
+      "config": "p2500_c600_bge-large-en-v1.5_hdr_tbl-md",
+      "parent": 2500,
+      "child": 600,
+      "embed": "BAAI/bge-large-en-v1.5",
+      "dim": 1024,
+      "reranker": "BAAI/bge-reranker-v2-m3",
+      "mode": "served",
+      "headers": true,
+      "table_format": "md",
+      "scored": "as served",
+      "rank_by": "sub-query score",
+      "n": 99,
+      "subqueries": 2,
+      "pool_recall": 0.8687,
+      "pool_num": 0.8912,
+      "mrr": 0.4297,
+      "cov@5": 0.6231,
+      "cov@8": 0.7014,
+      "hit@5": 0.6566,
+      "hit@8": 0.7374,
+      "num@5": 0.7549,
+      "num@8": 0.8278,
+      "retention": 0.8488,
+      "points": 44542,
+      "vectors_mb": 182.4,
+      "ctx_chars@8": 14543,
+      "pool_ms": 33,
+      "rerank_ms": 10586,
+      "by_type": {
+        "comparison": {
+          "n": 12,
+          "cov@8": 0.5847,
+          "hit@8": 0.5833
+        },
+        "narrative": {
+          "n": 27,
+          "cov@8": 0.702,
+          "hit@8": 0.7407
+        },
+        "numeric": {
+          "n": 60,
+          "cov@8": 0.7245,
+          "hit@8": 0.7667
+        }
+      },
+      "ingest_s": 1279.7,
+      "chunks": 44544
+    },
+    "served|p2500_c600_bge-large-en-v1.5_hdr_tbl-pipe|BAAI/bge-reranker-v2-m3": {
+      "config": "p2500_c600_bge-large-en-v1.5_hdr_tbl-pipe",
+      "parent": 2500,
+      "child": 600,
+      "embed": "BAAI/bge-large-en-v1.5",
+      "dim": 1024,
+      "reranker": "BAAI/bge-reranker-v2-m3",
+      "mode": "served",
+      "rewriter": "default",
+      "headers": true,
+      "table_format": "pipe",
+      "scored": "as served",
+      "rank_by": "sub-query score",
+      "n": 99,
+      "subqueries": 2,
+      "pool_recall": 0.9091,
+      "pool_num": 0.9048,
+      "mrr": 0.444,
+      "cov@5": 0.6203,
+      "cov@8": 0.708,
+      "hit@5": 0.6566,
+      "hit@8": 0.7475,
+      "num@5": 0.7441,
+      "num@8": 0.8238,
+      "retention": 0.8222,
+      "points": 44542,
+      "vectors_mb": 182.4,
+      "ctx_chars@8": 13990,
+      "pool_ms": 27,
+      "rerank_ms": 8411,
+      "by_type": {
+        "comparison": {
+          "n": 12,
+          "cov@8": 0.6252,
+          "hit@8": 0.6667
+        },
+        "narrative": {
+          "n": 27,
+          "cov@8": 0.6989,
+          "hit@8": 0.7407
+        },
+        "numeric": {
+          "n": 60,
+          "cov@8": 0.7287,
+          "hit@8": 0.7667
+        }
+      },
+      "ingest_s": 0.0,
+      "chunks": 44542
     }
   }
 }

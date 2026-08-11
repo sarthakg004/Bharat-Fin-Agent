@@ -276,22 +276,34 @@ class ExternalNodes:
         )
         if not external_subs and corpus_attempted:
             chunks = state.get("retrieved_chunks") or []
-            avg_grade = state.get("avg_grade")
-            # An in-corpus company with chunks in hand is answered from its
-            # filing — never escalate to the web (generic IR/marketing pages
-            # bury the real evidence and tank faithfulness, and the Tavily call
-            # is wasted cost). Escalate only when retrieval is genuinely empty,
-            # or the chunks are off-entity noise (company NOT in the corpus).
-            in_corpus = state.get("company_in_corpus")
-            retrieval_was_poor = (not chunks) or (
-                avg_grade is not None and avg_grade < 2.0 and not in_corpus
-            )
-            if retrieval_was_poor:
+            # Escalate ONLY when there is no filing evidence at all.
+            #
+            # Any chunk here is already known to be on-entity: `fetch_filing`
+            # runs before retrieval and pulls a missing US company's 10-K from
+            # EDGAR, and when the company is in neither the corpus nor EDGAR
+            # `_corpus_lacks_company` skips corpus retrieval outright rather
+            # than returning the nearest other company's filing. So "we have
+            # chunks" means "we have the right company's filing", and going to
+            # the web on top of it buries real evidence under IR/marketing
+            # pages — measured: that path answered 3M's FY2022 revenue off a
+            # stock-forecast page ($26,161M) instead of the filed $34,229M.
+            #
+            # `company_in_corpus` is NOT the right test here and using it was a
+            # bug: an ephemeral fetch (the cloud path) succeeds while leaving it
+            # False, because corpus retrieval was skipped in favour of the
+            # filing we just fetched.
+            #
+            # The remaining case — chunks in hand that turn out not to answer —
+            # belongs to `_web_fallback_signal`, which fires off the DRAFT
+            # admitting it can't answer. That reads what actually happened
+            # instead of guessing beforehand, and it latches so it can't loop.
+            if not chunks:
                 fallback = state["question"]
                 self._log(
                     state,
-                    f"web_search escalation: chunks={len(chunks)} "
-                    f"avg_grade={avg_grade}; searching web for {fallback!r}",
+                    f"web_search escalation: no filing evidence "
+                    f"(fetch_status={(state.get('fetch_status') or {}).get('decision')}); "
+                    f"searching web for {fallback!r}",
                 )
                 external_subs = [fallback]
 

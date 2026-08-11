@@ -25,7 +25,9 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional, Union
 
@@ -34,6 +36,42 @@ from tqdm import tqdm
 
 DEFAULT_OUTPUTS = "results/financebench_baseline_outputs.json"
 DEFAULT_SCORES = "results/financebench_baseline_ragas.csv"
+
+# Hard ceiling on ONE question. Not every network call the agent makes has a
+# timeout of its own (Tavily and yfinance both inherit their SDK defaults), and
+# a single blocked socket read stalled a 127-question run for 27 minutes with no
+# output and no error — the worker just sat in `wait_woken`. A question that
+# blows this is recorded as an error row and retried on the next resume, which
+# is strictly better than the run going quiet.
+QUESTION_TIMEOUT_S = int(os.getenv("FINAGENT_EVAL_QUESTION_TIMEOUT", "300"))
+
+
+class _QuestionTimeout(Exception):
+    pass
+
+
+@contextmanager
+def _time_limit(seconds: int):
+    """SIGALRM ceiling around one question.
+
+    A signal, not a worker thread: it interrupts the blocking syscall in place,
+    so nothing is left leaked and still holding the GPU. Main thread only —
+    which is where the eval runs the graph. A no-op where SIGALRM is missing.
+    """
+    if seconds <= 0 or not hasattr(signal, "SIGALRM"):
+        yield
+        return
+
+    def _fire(signum, frame):
+        raise _QuestionTimeout(f"question exceeded {seconds}s")
+
+    previous = signal.signal(signal.SIGALRM, _fire)
+    signal.alarm(seconds)
+    try:
+        yield
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
 
 
 def run_agent_outputs(
@@ -108,12 +146,13 @@ def run_agent_outputs(
             question_started = time.time()
             for attempt in (1, 2):
                 try:
-                    res = run_agentic(
-                        question=question,
-                        provider=provider,
-                        synth_model=synth_model,
-                        collection=eval_collection,
-                    )
+                    with _time_limit(QUESTION_TIMEOUT_S):
+                        res = run_agentic(
+                            question=question,
+                            provider=provider,
+                            synth_model=synth_model,
+                            collection=eval_collection,
+                        )
                     break
                 except Exception as e:
                     if (attempt == 1 and is_rate_limit_error(e)
@@ -210,9 +249,8 @@ def score_answers(
         scores_csv_path = Path(str(scores_csv))
         scores_df = pd.read_csv(str(scores_csv_path)) if scores_csv_path.exists() else pd.DataFrame()
 
-    metric_cols = [
-        "faithfulness", "answer_relevancy", "context_precision", "context_recall",
-    ]
+    from finagent.evaluation.ragas import METRIC_COLUMNS
+    metric_cols = list(METRIC_COLUMNS)
     per_q = scores_df[scores_df["question"] != "*** MEAN ***"].copy()
 
     # Attach qtype by joining back on the question text.
@@ -234,10 +272,53 @@ def score_answers(
     # (a non-answer has no relevant claims), so the overall means conflate
     # "answers badly" with "abstains". Splitting them shows answer quality and
     # refusal cost separately — the honest headline pair.
-    status_by_q = {o["question"]: o.get("answer_status", "") for o in outputs}
-    answered_mask = per_q["question"].map(status_by_q) == "answered"
+    # "Answered" = the agent did not refuse. It used to be read off
+    # `answer_status == "answered"`, but the graph only ever SETS a status on
+    # the refusal path (v5 dropped the confidence framework that wrote the
+    # other values), so that mask matched nothing and this whole view silently
+    # vanished from the report.
+    from finagent.evaluation.financebench.parallel import _is_refusal
+    answered_mask = ~per_q["question"].map(
+        {o["question"]: bool(_is_refusal(o.get("answer"))) for o in outputs}
+    ).fillna(False).astype(bool)
     answered_only = _means(per_q[answered_mask]) if answered_mask.any() else {}
+
+    # The subset whose evidence `partition_html` can actually recover — the 99
+    # questions every retrieval number in RETRIEVAL_EXPERIMENTS.md is quoted
+    # against. Scoring them separately separates "the agent answered badly" from
+    # "the evidence was never in the parsed filing".
+    recoverable = _recoverable_ids()
+    id_by_q = {o["question"]: o.get("financebench_id") for o in outputs}
+    recoverable_mask = per_q["question"].map(
+        lambda q: id_by_q.get(q) in recoverable) if recoverable else None
+    recoverable_only = (_means(per_q[recoverable_mask])
+                        if recoverable_mask is not None and recoverable_mask.any()
+                        else {})
+
+    # How many rows each metric actually produced a number for. A metric that
+    # timed out or was refused by the provider (an over-sized prompt 413s) is
+    # left as NaN and silently dropped from the mean — without this count the
+    # report can't tell "0.6 over 150 rows" from "0.6 over 40".
+    scored_per_metric = {
+        c: int(pd.to_numeric(per_q[c], errors="coerce").notna().sum())
+        for c in metric_cols if c in per_q.columns
+    }
 
     return {"overall": _means(per_q), "by_type": by_type,
             "answered_only": answered_only,
+            "recoverable_only": recoverable_only,
+            "n_recoverable": int(recoverable_mask.sum()) if recoverable_mask is not None else 0,
+            "scored_per_metric": scored_per_metric,
             "n_answered": int(answered_mask.sum()), "n_scored": len(per_q)}
+
+
+# The cached sub-query plans were built for exactly the ceiling-filtered set, so
+# its keys ARE the 99 ids — no re-parsing of 72 filings to recompute them.
+RECOVERABLE_IDS_PATH = "results/financebench_retrieval_queries.json"
+
+
+def _recoverable_ids() -> set:
+    try:
+        return set(json.loads(Path(RECOVERABLE_IDS_PATH).read_text()))
+    except Exception:
+        return set()
