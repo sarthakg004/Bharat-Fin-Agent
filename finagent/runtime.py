@@ -1,7 +1,4 @@
-"""
-runtime.py  ·  finagent/runtime.py
-
-Per-request execution context.
+"""Per-request execution context.
 
 The agent is a long-lived, shared, immutable object: compiled graph, retriever,
 reranker, embedder, vector store. Everything that varies per REQUEST — which
@@ -9,10 +6,10 @@ provider, which model, whose API key — lives here instead, in a frozen datacla
 created fresh for each question and thrown away after.
 
 It reaches the nodes through LangGraph's `configurable`, which is backed by a
-contextvar. That means a node's nested helpers read it without being handed it,
-and concurrent runs on the same compiled graph never see each other's values.
-Previously these fields lived on the agent and were overwritten per request —
-safe only because the API served one request at a time.
+contextvar, so a node's nested helpers read it without being handed it and
+concurrent runs on the same compiled graph never see each other's values. These
+fields used to live on the agent and be overwritten per request — safe only while
+the API served one request at a time.
 """
 
 from __future__ import annotations
@@ -43,10 +40,13 @@ DEFAULTS: dict[str, dict[str, str]] = {
         "synth":   "openai/gpt-oss-120b",
         "critic":  "openai/gpt-oss-120b",
     },
-    # Gemini free-tier picks. The binding limit is REQUESTS PER DAY, metered
-    # PER MODEL (~20 RPD/key on the big Flash tier — measure, don't assume,
-    # before sizing a long run). Splitting planner+synth (3.6) from the critic
-    # (3.5) keeps a run from draining one bucket in lockstep.
+    # Gemini free-tier picks. MEASURED 2026-08-12 off the 429 itself: the
+    # binding limit is 20 requests per MINUTE, per key, per model
+    # (`generate_content_free_tier_requests, limit: 20` with a ~10s
+    # retry-after) — NOT per day, as this comment previously guessed. A long
+    # run is therefore throughput-limited, not day-limited: it needs backoff,
+    # never an overnight wait. Splitting planner+synth (3.6) from the critic
+    # (3.5) doubles the pool by using two independent buckets.
     "gemini": {
         "planner": "gemini-3.6-flash",
         "synth":   "gemini-3.6-flash",

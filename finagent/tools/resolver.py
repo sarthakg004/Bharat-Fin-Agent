@@ -1,29 +1,17 @@
-"""
-resolver.py  ·  finagent/tools/resolver.py
+"""Ticker or company name → the SEC's zero-padded 10-digit CIK, which every SEC
+data API requires. Shared plumbing under the XBRL, dynamic-fetch and full-text
+search tools.
 
-Ticker → CIK resolver (Phase 2 — shared infrastructure).
+Source of truth is SEC's `company_tickers.json`, downloaded once, cached on disk
+(refreshed past `ttl_days`) and served from memory:
 
-Maps a ticker symbol *or* a company name to the SEC's zero-padded 10-digit CIK,
-the identifier every SEC data API (`data.sec.gov/api/xbrl/...`, EDGAR submissions,
-full-text search) requires. This is the plumbing the XBRL (Phase 3), dynamic
-fetch (Phase 5), and full-text search (Phase 6) tools all build on.
+    ticker match  exact, case-insensitive ("AAPL" / "aapl")
+    name exact    after normalising away corporate suffixes ("Apple Inc." →
+                  "apple"), so "Apple" resolves
+    name fuzzy    `difflib` close-match fallback ("Microsft" → "Microsoft Corp")
 
-Source of truth is SEC's published `company_tickers.json`:
-
-    {"0": {"cik_str": 320193, "ticker": "AAPL", "title": "Apple Inc."}, ...}
-
-We download it once, cache it on disk (default `data/cache/company_tickers.json`,
-refreshed when older than `ttl_days`), and serve lookups from memory:
-
-    * **ticker** match — exact, case-insensitive ("AAPL" / "aapl").
-    * **name exact** — after normalising away corporate suffixes ("Apple Inc." →
-      "apple"), so "Apple" resolves.
-    * **name fuzzy** — `difflib` close-match fallback for near-misses
-      ("Microsft" → "Microsoft Corp").
-
-SEC asks every request to identify itself in the User-Agent header; we read
-`SEC_UA_NAME` / `SEC_UA_EMAIL` from the environment (the same vars the notebook
-and ingestion layer use) and fall back to a generic contact string.
+SEC asks every request to identify itself; `SEC_UA_NAME` / `SEC_UA_EMAIL` fill
+the User-Agent, falling back to a generic contact string.
 """
 
 from __future__ import annotations

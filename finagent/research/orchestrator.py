@@ -1,29 +1,19 @@
-"""
-orchestrator.py  ·  finagent/research/orchestrator.py
+"""Deep Research orchestrator: scope → plan → run specialists → merge and
+cross-check findings → write the report.
 
-Deep Research Mode orchestrator.
-
-    scope → plan → run specialists (through the production agent) → merge +
-    cross-check findings → write the investment report.
-
-Design
-------
-* **One execution engine.** Every specialist task runs through the injected
-  `run_fn` — in production `finagent.api.rag_service.run_agentic`, i.e. the
-  full `AgenticRAGv4` pipeline with retrieval, XBRL, calculator, tables,
-  market data, web search, verification and citations. The orchestrator adds
-  scoping, sequencing, retry, caching, merging and report writing — nothing
-  the agent already does is reimplemented here.
-* **Injected runner.** `run_fn: (question: str) -> {answer, chunks, metadata}`
-  keeps the dependency direction clean (this module never imports the API
-  layer) and makes the orchestrator fully testable without a network.
-* **Citations stay auditable end to end.** Each specialist's `[N]` markers are
-  local to its own run; the merger shifts them onto one global numbering that
-  matches the concatenated evidence list, so every claim in the final report
-  still clicks through to its source chunk.
-* **Sequential by default.** The codebase serializes graph runs (reranker/
-  hnswlib + reranker thread-safety, see api/main.py); `RESEARCH_PARALLEL_AGENTS`
-  raises the specialist fan-out for deployments that can afford it.
+* One execution engine. Every specialist task runs through the injected `run_fn`
+  — in production `rag_service.run_agentic`, i.e. the full pipeline with
+  retrieval, XBRL, calculator, market data, web search and citations. This module
+  adds scoping, sequencing, retry, caching, merging and report writing, and
+  reimplements nothing the agent already does.
+* Injected runner. `run_fn: (question) -> {answer, chunks, metadata}` keeps the
+  dependency direction clean (this module never imports the API layer) and makes
+  the orchestrator testable without a network.
+* Citations stay auditable end to end. Each specialist's [N] markers are local to
+  its own run; the merger shifts them onto one global numbering matching the
+  concatenated evidence list, so every claim still clicks through to its chunk.
+* Sequential by default — graph runs are serialized for reranker/tokenizer
+  thread-safety. `RESEARCH_PARALLEL_AGENTS` raises the fan-out.
 """
 
 from __future__ import annotations
@@ -215,18 +205,11 @@ class Task:
 class DeepResearch:
     """Plan and run a multi-specialist research workflow.
 
-    Parameters
-    ----------
-    run_fn : Callable[[str], dict]
-        Executes ONE research question through the production agent and
-        returns `{"answer": str, "chunks": list[dict], "metadata": dict}`
-        (the `rag_service.run_agentic` contract).
-    provider / model / api_key
-        LLM used for the orchestrator's own calls (scoping, cross-check,
-        report). Defaults to the provider's synth tier.
-    max_agents / parallel
-        Bound the specialist fan-out; default from settings
-        (RESEARCH_MAX_AGENTS / RESEARCH_PARALLEL_AGENTS).
+    `run_fn` executes ONE research question through the production agent and
+    returns `{"answer", "chunks", "metadata"}` — the `run_agentic` contract.
+    provider/model/api_key configure the orchestrator's own calls (scoping,
+    cross-check, report) and default to the provider's synth tier.
+    max_agents/parallel bound the specialist fan-out, defaulting from settings.
     """
 
     def __init__(self, run_fn: Callable[[str], dict], provider: str = "groq",

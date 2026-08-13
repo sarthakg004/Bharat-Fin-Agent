@@ -1,21 +1,17 @@
-"""
-specialists.py  ·  finagent/research/specialists.py
-
-The Deep Research specialist registry.
+"""The Deep Research specialist registry.
 
 A specialist is DATA, not a class: an id, a UI label, the report section it
-feeds, and a focus-question template. Every specialist executes through the
-SAME production pipeline (`AgenticRAGv4`, injected into the orchestrator as a
-runner) — which already provides hybrid retrieval, XBRL facts, the
-deterministic calculator, the table agent, live market data, web search,
-EDGAR full-text search, numeric verification, and `[N]` citations. What makes
-a specialist a specialist is the scoped question it asks, so there is exactly
-one execution engine and no duplicated agent logic.
+feeds, and a focus-question template. Every specialist executes through the same
+production pipeline (injected into the orchestrator as a runner), which already
+provides hybrid retrieval, XBRL facts, the deterministic calculator, live market
+data, web search, EDGAR full-text search and [N] citations. What makes a
+specialist a specialist is the scoped question it asks, so there is one execution
+engine and no duplicated agent logic.
 
-Templates are phrased to steer the v4 planner into the right lanes: named
-metrics route `numeric` (XBRL + calculator), filings prose routes `narrative`
-(hybrid retrieval), and news/sentiment/insider/political topics route
-`market`/`external` (yfinance + Tavily).
+Templates are phrased to steer the planner into the right lanes: named metrics
+route `numeric` (XBRL + calculator), filings prose routes `narrative` (hybrid
+retrieval), and news/sentiment/insider/political topics route `market`/`external`
+(yfinance + Tavily).
 """
 
 from __future__ import annotations

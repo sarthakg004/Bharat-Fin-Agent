@@ -1,62 +1,22 @@
-"""
-full.py  ·  finagent/graph/full.py
+"""The query router and the retrieval query rewriter.
 
-Router-based agentic RAG (v3). Adds a query **router** to the corrective-RAG
-(v2) graph:
-
-    START → planner → router → retrieve → synthesize → critic ── conditional
-                                  ▲                                    │
-                                  └───────────────────── retrieve ◄────┘
-                                                 (needs_retry,
-                                                  critic_retries < cap)
-                                                       │
-                                                       ▼
-                                                      END
-
-The **router** classifies every sub-query as `narrative`, `numeric`, or
-`external` (web). Retrieval feeds the hybrid retriever from v2; the
-synthesizer writes the answer over the retrieved excerpts and the critic
-checks it against them. (The v4 subclass adds the structured numeric
-lanes — XBRL + calculator — and web search on top of this.)
-
-Usage as a library
-------------------
-    from finagent.graph.full import AgenticRAGv3
-
-    agent = AgenticRAGv3()  # collection defaults to settings.us_collection
-    state = agent.run("What was JPMorgan's net interest margin in FY23?")
-    print(state["final_answer"])
-    print(state["query_routes"])
-
-CLI
----
-    python -m finagent.graph.full \\
-        --collection us_filings \\
-        --question "What was JPMorgan's net interest margin in FY23?"
+Adds to `corrective.py`: one fused planner+router call that decomposes the
+question AND classifies each sub-query (`narrative` / `numeric` / `market` /
+`external` / `cross_document`), plus the rewrite that turns the question into
+one query in the filing's own vocabulary. `agent.py` builds on this.
 """
 
 from __future__ import annotations
 
-import argparse
 import re
 from typing import Optional
 
 from finagent.graph.corrective import AgenticRAGv2
-from finagent.retrieval import HybridRetriever
-from finagent.runtime import RuntimeContext
 from finagent.graph.state import AgentState, QueryPlan, RouterReport
-
-
-# --------------------------------------------------------------------------- #
-# Prompts
-# --------------------------------------------------------------------------- #
-
 from finagent.llm import text_of
-from finagent.prompts.planner import (  # noqa: F401
+from finagent.prompts.planner import (
     RETRIEVAL_QUERY_SHOTS, RETRIEVAL_QUERY_SYSTEM, ROUTER_PROMPT, ROUTER_SYSTEM,
 )
-from finagent.vectorstore import DEFAULT_EMBED_MODEL
-from finagent.config import settings
 
 # Below this, a "retrieval query" is a failed generation rather than a terse
 # one: the model answered the question or returned nothing. The shortest useful
@@ -232,24 +192,6 @@ When the evidence is thin or only partially answers the question:
   the evidence supports.
 """
 
-SYNTH_V3_PROMPT = """\
-Question: {question}
-
-Sub-queries researched:
-{sub_queries}
-
-Text excerpts (each begins with its citation tag):
-{text_context}
-
----
-Write the final answer now, with an inline citation after every fact.
-"""
-
-
-# --------------------------------------------------------------------------- #
-# Heuristic router (fallback when the LLM call fails)
-# --------------------------------------------------------------------------- #
-
 _NUMERIC_MARKERS = (
     "what was", "what is", "how much", "how many",
     "ratio", "margin", "growth", "yield", "return on",
@@ -307,19 +249,8 @@ def _heuristic_route(query: str) -> str:
     return "narrative"
 
 
-# --------------------------------------------------------------------------- #
-# AgenticRAGv3
-# --------------------------------------------------------------------------- #
-
 class AgenticRAGv3(AgenticRAGv2):
-    """Corrective RAG + query router.
-
-    Only the parts that change from v2 are overridden:
-      * `router_node` — new (per-sub-query classification with structured output)
-      * `hybrid_retrieve_node` — filters to narrative sub-queries only
-      * `synthesize_node` — writes the answer over the retrieved excerpts
-      * `_build_graph`, `_grade_router` — wire the router in
-    """
+    """Hybrid retrieval + a router that classifies each sub-query."""
 
     def _get_router_llm(self):
         return self._get_llm("router")
@@ -489,135 +420,3 @@ class AgenticRAGv3(AgenticRAGv2):
         for every sub-query; the structured numeric lanes (v4) supplement it.
         """
         return super().hybrid_retrieve_node(state)
-
-    def synthesize_node(self, state: AgentState) -> dict:
-        """Merge the retrieved text excerpts into the final answer."""
-        from langchain_core.messages import HumanMessage, SystemMessage
-
-        chunks = state.get("retrieved_chunks", [])
-        text_context = (
-            "\n\n".join(f"{c['source']}\n{c['text']}" for c in chunks) or "(none)"
-        )
-        sub_queries = "\n".join(f"- {q}" for q in state.get("sub_queries", []))
-
-        llm = self._get_llm("synth")
-        prompt = SYNTH_V3_PROMPT.format(
-            question=state["question"],
-            sub_queries=sub_queries,
-            text_context=text_context,
-        )
-        response = llm.invoke([
-            SystemMessage(content=SYNTH_V3_SYSTEM),
-            HumanMessage(content=prompt),
-        ])
-        from finagent.llm import text_of
-        answer = text_of(response)
-
-        citations = sorted(set(re.findall(r"\[[^\]]+\]", answer)))
-        return {
-            "draft_answer": answer,
-            "final_answer": answer,
-            "citations": citations,
-            "iteration_count": state.get("iteration_count", 0) + 1,
-        }
-
-    # ------------------------------------------------------------------ #
-    # Graph
-    # ------------------------------------------------------------------ #
-
-    def _build_graph(self):
-        from langgraph.graph import END, START, StateGraph
-
-        g = StateGraph(AgentState)
-        g.add_node("planner", self.planner_node)
-        g.add_node("router", self.router_node)
-        g.add_node("retrieve", self.hybrid_retrieve_node)
-        g.add_node("synthesize", self.synthesize_node)
-        g.add_node("critic", self.critic_node)
-
-        g.add_edge(START, "planner")
-        g.add_edge("planner", "router")
-        g.add_edge("router", "retrieve")
-        g.add_edge("retrieve", "synthesize")
-        g.add_edge("synthesize", "critic")
-        g.add_conditional_edges(
-            "critic", self._critic_router,
-            {"retrieve": "retrieve", "end": END},
-        )
-        return g.compile()
-
-
-# --------------------------------------------------------------------------- #
-# CLI
-# --------------------------------------------------------------------------- #
-
-def _build_cli() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Run the router-based RAG (v3) graph.")
-    p.add_argument("--collection", default=settings.us_collection)
-    p.add_argument("--provider", choices=["groq", "gemini", "openai", "anthropic"],
-                   default="gemini")
-    p.add_argument("--synth-model", default=None)
-    p.add_argument("--embedding-model", default=DEFAULT_EMBED_MODEL)
-    p.add_argument("--reranker-model", default=HybridRetriever.DEFAULT_RERANKER)
-    p.add_argument("--pool-top-k", type=int, default=48)
-    p.add_argument("--final-top-k", type=int, default=5)
-    p.add_argument("--max-critic-retries", type=int, default=2)
-    p.add_argument("--question", default=None)
-    p.add_argument("--dataset", default=None)
-    p.add_argument("--question-col", default="question")
-    p.add_argument("--sample", type=int, default=None)
-    p.add_argument("--output", default="results/full_rag_outputs.json")
-    return p
-
-
-def _load_dataset(path: str):
-    import pandas as pd
-
-    if path.endswith(".parquet"):
-        return pd.read_parquet(path)
-    if path.endswith((".jsonl", ".json")):
-        return pd.read_json(path, lines=path.endswith(".jsonl"))
-    raise ValueError(f"Unsupported dataset format: {path}")
-
-
-def main():
-    args = _build_cli().parse_args()
-
-    # LLM choice is per-run, not a property of the agent — build the context
-    # from the CLI flags and inject it at run().
-    ctx = RuntimeContext(provider=args.provider, synth_model=args.synth_model)
-
-    agent = AgenticRAGv3(
-        collection_name=args.collection,
-        embedding_model=args.embedding_model,
-        reranker_model=args.reranker_model,
-        pool_top_k=args.pool_top_k,
-        final_top_k=args.final_top_k,
-        max_critic_retries=args.max_critic_retries,
-    )
-
-    if args.dataset:
-        df = _load_dataset(args.dataset)
-        if args.sample:
-            df = df.head(args.sample)
-        agent.run_dataset(df, output_path=args.output, question_col=args.question_col)
-        return
-
-    if not args.question:
-        raise SystemExit("Provide --question or --dataset.")
-
-    state = agent.run(args.question, ctx)
-    print("\n" + "=" * 60)
-    print(f"Question:        {state['question']}")
-    print(f"Sub-queries:     {state.get('sub_queries')}")
-    print(f"Query routes:    {state.get('query_routes')}")
-    print(f"Critic retries:  {state.get('critic_iterations', 0)}")
-    print(f"\nAnswer:\n{state.get('final_answer')}")
-    print(f"\nCitations:       {state.get('citations')}")
-    print(f"Critic grade:    {state.get('grading_score')}  needs_retry={state.get('needs_retry')}")
-    if state.get("errors"):
-        print(f"\nErrors:          {state['errors']}")
-
-
-if __name__ == "__main__":
-    main()

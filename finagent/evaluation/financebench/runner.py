@@ -1,24 +1,17 @@
-"""
-runner.py  ·  finagent/evaluation/financebench/runner.py
+"""Run the production agent over a set of FinanceBench questions and score the
+answers with RAGAS.
 
-Run the *current production agent* over a set of FinanceBench questions and
-score the answers with RAGAS. This produces the `baseline_v0` answer-quality
-numbers — the "where we are today" measurement every later phase is compared
-against.
+    run_agent_outputs  calls the deployed entrypoint (`rag_service.run_agentic`)
+                       per question and saves rows in the shape RAGAS consumes.
+    score_answers      runs `RAGASEvaluator` over those rows, overall and per
+                       question type.
 
-Two steps:
-    run_agent_outputs(...)  — call the deployed entrypoint
-                              (`rag_service.run_agentic`) per question and save
-                              outputs in the shape the RAGAS harness consumes.
-    score_answers(...)      — run `RAGASEvaluator` over those outputs and return
-                              the four metrics overall *and* per question type.
+It deliberately calls the real `run_agentic`, so the answers are the ones a user
+would get, not a re-implementation.
 
-We deliberately call the real `run_agentic`, so the answers are the ones a user
-would actually get — not a notebook re-implementation.
-
-Output-row key convention (matches `finagent.evaluation.ragas.RAGASEvaluator`):
-    "answer"  -> the model's generated answer   (RAGAS `response`)
-    "gold"    -> FinanceBench verified answer    (RAGAS `reference`)
+Row keys (match `evaluation.ragas.RAGASEvaluator`):
+    "answer" -> generated answer (RAGAS `response`)
+    "gold"   -> FinanceBench verified answer (RAGAS `reference`)
 """
 
 from __future__ import annotations
@@ -215,19 +208,12 @@ def score_answers(
     timeout: int = 300,
     batch_size: int = 10,
 ) -> dict:
-    """RAGAS the saved outputs; return overall + per-qtype metric means.
+    """RAGAS the saved outputs; return overall + per-qtype metric means as
+    `{"overall": {...}, "by_type": {qtype: {...}}}`.
 
-    Reuses the production `RAGASEvaluator` (the reference is taken from the
-    `"gold"` key). Returns:
-        {
-          "overall": {faithfulness, answer_relevancy, context_precision,
-                      context_recall},
-          "by_type": {qtype: {...same four...}, ...},
-        }
-
-    On free-tier judges (Groq/Gemini) the default parallelism can trip
-    `TimeoutError`s; pass `max_workers=1` (serialize), a larger `timeout`, and
-    a smaller `batch_size` to keep the run stable.
+    Reuses the production `RAGASEvaluator`, taking the reference from "gold".
+    On free-tier judges the default parallelism can trip `TimeoutError`s — pass
+    `max_workers=1`, a larger `timeout` and a smaller `batch_size`.
     """
     from finagent.evaluation.ragas import RAGASEvaluator
     from finagent.llm import AllKeysExhaustedError

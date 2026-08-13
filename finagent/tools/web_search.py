@@ -1,24 +1,10 @@
-"""
-web_search.py  ·  finagent/tools/web_search.py
+"""Web search for out-of-corpus questions via Tavily (`TAVILY_API_KEY`). Without a
+key, or on error, it degrades to an empty result and the agent's other lanes
+carry the answer.
 
-Web search for out-of-corpus questions via Tavily (`TAVILY_API_KEY`).
-Without a key (or on error) the search degrades to an empty result and the
-agent's other lanes carry the answer.
-
-Results are a uniform list[dict] shape:
-
-    [{"title", "url", "content", "score", "source", "tier", "published_date"}]
-
-so the synthesizer can cite them identically.
-
-Usage as a library
-------------------
-    from finagent.tools.web_search import WebSearcher
-
-    ws = WebSearcher()
-    hits = ws.search("Apple Q3 FY24 results", k=3)
-    for h in hits:
-        print(h["tier"], h["title"])
+Results are a uniform list of
+`{title, url, content, score, source, tier, published_date}`, so the synthesizer
+cites them identically to filing chunks.
 """
 
 from __future__ import annotations

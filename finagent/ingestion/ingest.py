@@ -1,58 +1,20 @@
-"""
-ingest.py
+"""Ingestion pipeline for financial filings. Reads the manifest `fetchPDFs.py`
+writes, parses each document, chunks it, embeds the chunks and stores them in
+Qdrant.
 
-Unified ingestion pipeline for financial filings. Reads the manifest produced
-by fetch_pdfs.py, parses each document (PDF or SEC HTML),
-chunks the text, embeds the chunks, and stores everything in Qdrant.
+Both formats are handled: SEC HTML through unstructured's `partition()`, which
+returns Element objects carrying section metadata, and PDFs per-page with pypdf.
+pypdf rather than unstructured for PDFs because unstructured's "fast" strategy
+silently returned zero elements on several born-digital annual reports that pypdf
+reads fine. Page numbers are preserved in the payload so citations can point at
+them.
 
-Handles both formats — PDFs are parsed with pypdf, HTML (US SEC
-filings) with unstructured.io.
+The embedder is `vectorstore.DEFAULT_EMBED_MODEL`, the single source of truth — a
+collection is sized to whatever model writes it, so two embedders must never be
+mixed in one collection.
 
-Usage as a library
-------------------
-    from ingest import CorpusIngester
-
-    ing = CorpusIngester(
-        corpus_dir="data/us/pdfs",
-        collection_name="us_filings_v3",
-        market="us",
-    )
-    stats = ing.ingest_all(manifest_path="data/us/pdfs/sec_manifest.json")
-    print(stats)
-
-Usage as CLI
-------------
-    python ingest.py --manifest data/us/pdfs/sec_manifest.json \\
-                     --corpus-dir data/us/pdfs \\
-                     --collection us_filings \\
-                     --market us
-
-    python ingest.py --manifest data/us/sec_manifest.json \\
-                     --corpus-dir data/us \\
-                     --collection us_filings \\
-                     --market us
-
-Design notes
-------------
-* The same cluster holds multiple collections — one per corpus. The
-  agent can query a specific market by passing the right collection name.
-* Embeddings model: BAAI/bge-large-en-v1.5 (1024-dim) by default — see
-  finagent.vectorstore.DEFAULT_EMBED_MODEL, the single source of truth. It is
-  ~4x slower than bge-small on CPU but measurably better (results/
-  RETRIEVAL_EXPERIMENTS.md §6b). A collection is sized to whatever model
-  writes it, so the two must never be mixed in one collection.
-  Swap to OpenAI text-embedding-3-small if you have an API key — that's
-  cheaper than you'd think (~$0.50 for the whole 40-doc corpus) and faster.
-* Chunk size 1000 with 200 overlap is a sane default for financial prose.
-  Numeric-table-heavy sections benefit from larger chunks; we use the
-  RecursiveCharacterTextSplitter so chunks respect paragraph and sentence
-  boundaries when possible.
-* PDFs are extracted per-page with pypdf. unstructured.io's "fast" strategy
-  silently returned zero elements on several born-digital annual-report
-  PDFs that pypdf reads fine, so pypdf is the reliable choice here. HTML (SEC
-  filings) still goes through unstructured's `partition()`, which gives Element
-  objects with section metadata. Page numbers are preserved in the payload so the
-  retriever can show citations.
+One cluster holds several collections, one per corpus; the agent queries a
+specific one by name.
 """
 
 from __future__ import annotations
@@ -231,19 +193,11 @@ class CorpusIngester:
         context_headers: bool = True,
         table_format: str = "md",
     ):
-        """
-        Args:
-            corpus_dir: Where the source files live (output_dir from fetch_pdfs.py).
-            state_dir: Where the ingestion-stats JSON is written.
-            collection_name: Qdrant collection to write into (e.g. "us_filings_v3").
-            market: stored as document metadata (default "us").
-            embedding_model: sentence-transformers model name (the vector store
-                builds the shared HuggingFace embedder from it).
-            chunk_size: Characters per chunk before splitting.
-            chunk_overlap: Overlapping characters between adjacent chunks.
-            unstructured_strategy: "fast" (default, no OCR) or "hi_res" (slow,
-                better at tables — that is the strategy the offline table
-                pipeline uses). "fast" is correct for the main text corpus.
+        """Build an ingester over `corpus_dir`, writing into `collection_name`.
+
+        `market` is stored as document metadata. `unstructured_strategy` is
+        "fast" (no OCR) or "hi_res" (slow, better at tables); "fast" is correct
+        for the main text corpus. Ingestion stats are written to `state_dir`.
         """
         self.corpus_dir = Path(corpus_dir)
         self.state_dir = Path(state_dir)
@@ -404,10 +358,26 @@ class CorpusIngester:
         # Upsert with DETERMINISTIC ids: the same chunk of the same filing
         # always lands on the same point, so re-ingesting (or two writers racing
         # on the same filing) overwrites rather than duplicating.
-        from finagent.vectorstore import chunk_point_id
+        from finagent.vectorstore import (GEMINI_EMBED_PREFIX, chunk_point_id,
+                                          get_embeddings)
 
         store = self._get_vector_store()
         ids = [chunk_point_id(d.metadata, d.page_content) for d in docs]
+
+        # Embed the WHOLE file before a single point is written. `add_documents`
+        # embeds and upserts one batch at a time, so a metered embedder hitting
+        # its daily wall mid-file left the filing HALF-indexed — and because its
+        # source_url was then present, the next day's resumed build skipped it
+        # and truncated that filing permanently. Warming the disk cache first
+        # makes the file all-or-nothing: either this raises before anything is
+        # upserted, or every batch below is a cache hit.
+        #
+        # Gated on the cached API embedder, because a local encoder has no disk
+        # cache and cannot run out of quota — there it would just embed twice.
+        if self.embedding_model.startswith(GEMINI_EMBED_PREFIX):
+            get_embeddings(self.embedding_model).embed_documents(
+                [d.page_content for d in docs])
+
         store.add_documents(docs, ids=ids, batch_size=self._upsert_batch())
 
         return len(docs)

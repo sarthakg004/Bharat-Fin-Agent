@@ -1,99 +1,59 @@
-"""
-evaluate_retrieval.py  ·  finagent/evaluation/evaluate_retrieval.py
-
-Chunk-geometry x embedder x reranker sweep over the **served HTML pipeline** —
-the evidence behind "why this parent/child size, why this embedder, why this
+"""Chunk-geometry x embedder x reranker sweep over the SERVED HTML pipeline — the
+evidence behind "why this parent/child size, why this embedder, why this
 reranker".
 
-Why this exists (the old numbers do not transfer)
--------------------------------------------------
-`results/RETRIEVAL_EXPERIMENTS.md` settled those three choices on the *PDF*
-pipeline. Production now serves SEC HTML, and that is a different chunker, not
-just a different parser: the PDF path slides a `RecursiveCharacterTextSplitter`
+Why it exists: `results/RETRIEVAL_EXPERIMENTS.md` settled those choices on the
+PDF pipeline. Production serves SEC HTML, and that is a different CHUNKER, not
+just a different parser — the PDF path slides a RecursiveCharacterTextSplitter
 over pypdf page text, while the HTML path groups `partition_html` elements with
-`chunk_by_title(max_characters=..., overlap=...)`, which gives every table its
-own chunk (whole unless it exceeds `max_characters` — measured: 4 of 45 tables
-in a 3M 10-K do, so a table IS occasionally divided into `TableChunk`s).
-"parent = 2500" means a different thing on each. The old geometry harness also
-indexed **one filing per collection**, so no cross-company distractor could
-occur — which is exactly what separates a good reranker from a weak one.
+`chunk_by_title`, giving every table its own chunk (whole unless it exceeds
+max_characters; measured: 4 of 45 tables in a 3M 10-K do). "parent = 2500" means
+a different thing on each. The old harness also indexed ONE filing per
+collection, so no cross-company distractor could occur — which is exactly what
+separates a good reranker from a weak one.
 
-Ground truth
-------------
-NOT `results/financebench_gold.json`. That map picks "the chunk most similar to
-the evidence" by dense similarity, so it moves with both the chunk geometry and
-the embedder under test — it cannot compare configurations (it silently reported
-recall@100 = 0.027 once for exactly this reason). We score against FinanceBench's
-verified evidence span directly:
+Ground truth is NOT `results/financebench_gold.json`. That map picks "the chunk
+most similar to the evidence" by dense similarity, so it moves with both the
+geometry and the embedder under test and cannot compare configurations (it
+silently reported recall@100 = 0.027 once for exactly this reason). We score
+against FinanceBench's verified evidence span directly:
 
-    coverage@k = shingle recall of the evidence span in the union of the top-k
-                 PARENTS handed to the synthesizer (10-word shingles over
-                 alphanumeric-normalised text — unstructured renders tables as
-                 pipe-delimited rows, and a whitespace-only norm scores that
-                 formatting difference as missing content)
-    hit@k      = coverage >= 0.5
+    coverage@k  shingle recall of the evidence span in the union of the top-k
+                PARENTS handed to the synthesizer (10-word shingles over
+                alphanumeric-normalised text — unstructured renders tables as
+                pipe-delimited rows, and a whitespace-only norm scores that
+                formatting difference as missing content)
+    hit@k       coverage >= 0.5
 
-That is geometry-independent, embedder-independent, and is the thing we actually
-care about: how much of the answer-bearing text reaches the LLM.
+That is geometry- and embedder-independent, and it is the thing that matters:
+how much of the answer-bearing text reaches the LLM.
 
-The parsing ceiling
--------------------
-~23% of the served questions have evidence that `partition_html` never recovers
-from the primary filing (mostly table layout). No retriever can return it, so
-counting it as a retrieval miss would penalise every configuration by the same
-constant and compress the differences we are trying to measure. Questions whose
-evidence is not findable in the parsed document at all (`--ceiling`, default 0.5)
-are excluded from the headline and reported separately — that exclusion count is
-itself the parser's score.
+The parsing ceiling: ~23% of served questions have evidence `partition_html`
+never recovers from the primary filing (mostly table layout). No retriever can
+return it, so counting it as a retrieval miss would penalise every configuration
+by the same constant and compress the differences being measured. Those questions
+(`--ceiling`, default 0.5) are excluded from the headline and reported separately
+— that exclusion count is itself the parser's score.
 
-Everything runs against the LOCAL eval Qdrant (`QDRANT_EVAL_URL`, default
-http://localhost:6333) through the **real** `CorpusIngester` and the **real**
-`HybridRetriever`, with all 72 filings in one collection, so distractors and the
-company/year metadata filter are live.
+Everything runs against the LOCAL eval Qdrant (`QDRANT_EVAL_URL`) through the
+REAL `CorpusIngester` and `HybridRetriever`, with all 72 filings in one
+collection, so distractors and the company/year metadata filter are live.
 
-Query modes (`--mode served`, the default)
------------------------------------------
-The planner still decomposes the question into 1-8 routed sub-queries, but since
-§14 those route the tool lanes rather than the retriever. `hybrid_retrieve_node`
-searches the filings with ONE retrieval query, plus the raw question at
-`QUESTION_SLOTS`, and only when at least one sub-query is routed
-`narrative`/`numeric` (a `market`/`external`/`cross_document` question is
-answered by its own tool and retrieves nothing). `_cap_pool` then re-ranks the
-merged pool against the ORIGINAL question down to `retrieve_cap=8`, reserving
-each query's best passage first so one entity cannot crowd out the other in a
-comparison. This harness reproduces that whole path, so what it scores is what
-the synthesizer receives.
+Query modes:
+  `--mode served`   the default, and what production does since §14: ONE
+                    retrieval query per question in the filing's own vocabulary,
+                    plus the raw question at QUESTION_SLOTS. Both the queries and
+                    the sub-query plans are produced ONCE by the served nodes and
+                    cached — regenerating them per configuration would fold the
+                    planner's nondeterminism into the geometry deltas.
+  `--mode subquery` retrieve on the planner's decomposition, what production did
+                    before §14, kept so that regression stays visible.
+  `--mode question` retrieve on the bare question. Cheapest baseline.
 
-`--mode served` (the DEFAULT) is what production does since §14: retrieval runs
-on ONE query per question written in the filing's own vocabulary (company +
-fiscal year + statement caption + the line items a filing prints) plus the raw
-question at `QUESTION_SLOTS`. Both the retrieval queries and the sub-query plans
-are produced ONCE by the served nodes and cached
-(`results/financebench_retrieval_queries.json`,
-`results/financebench_subqueries.json`); re-generating per configuration would
-fold the planner's LLM nondeterminism into the geometry deltas we are trying to
-measure. They are upstream of retrieval, so they are held fixed, exactly like
-the corpus.
-
-Two controls, both LLM-free at measurement time:
-  `--mode subquery`  retrieve on the planner's decomposition — what production
-                     did before §14, kept so that regression stays visible.
-  `--mode question`  retrieve on the bare question. Cheapest possible baseline.
-
-Usage
------
-    export QDRANT_EVAL_URL=http://localhost:6333
-    python -m finagent.evaluation.evaluate_retrieval --self-check
-    python -m finagent.evaluation.evaluate_retrieval --stage parent --docs 3   # smoke
-    python -m finagent.evaluation.evaluate_retrieval --stage parent
-    python -m finagent.evaluation.evaluate_retrieval --stage child    --parent 2500
-    python -m finagent.evaluation.evaluate_retrieval --stage embedder --parent 2500 --child 600
-    python -m finagent.evaluation.evaluate_retrieval --table-only
-
-Each run appends its rows to `results/html_retrieval_sweep.json` (keyed by
-config, so a re-run overwrites that row) and regenerates the whole table into
-`results/html_retrieval_sweep.md`. Stages do NOT auto-carry the winner: read the
-table, then pass `--parent/--child` explicitly to the next stage.
+Rows append to `results/html_retrieval_sweep.json` keyed by config (a re-run
+overwrites its row) and the whole table regenerates into the matching `.md`.
+Stages do NOT auto-carry the winner: read the table, then pass `--parent/--child`
+explicitly to the next stage.
 """
 
 from __future__ import annotations
@@ -681,22 +641,65 @@ def free_embedder() -> None:
 
 
 def free_reranker(model_name: Optional[str]) -> None:
-    """Drop one cross-encoder from the process-wide cache.
+    """Drop one local cross-encoder from the process-wide cache.
 
-    That cache exists so the SERVED agent never loads a second copy; here we
-    want the opposite — the arms run sequentially, so keeping v2-m3 (2.3 GB)
-    resident while base runs just costs headroom the next batch needs.
+    The arms run sequentially, so keeping v2-m3 (2.3 GB) resident while base
+    runs just costs headroom the next batch needs.
     """
     if model_name is None:
         return
     from finagent.retrieval import reranker
 
+    # A `cohere:` arm holds no GPU weights, so there is nothing to free — and
+    # evicting it undoes pin_measurable_rerankers(), which runs ONCE before the
+    # config loop. Config 2+ would rebuild the FallbackReranker and a 429 would
+    # blend Cohere and bge into one "cohere" row.
+    if model_name.startswith(reranker.COHERE_PREFIX):
+        return
+
     reranker._SHARED_RERANKERS.pop(model_name, None)
     _release_gpu()
 
 
-def build_index(cfg: Config, collection: str, manifest: Path) -> dict:
-    """Ingest the eval corpus at `cfg` using the production ingester."""
+def pin_measurable_rerankers(arms) -> None:
+    """Stop a `cohere:` arm from silently finishing as a different reranker.
+
+    Production resolves `cohere:` to a `FallbackReranker`, which answers an
+    exhausted key pool or a 429 by scoring the remaining pairs with
+    bge-reranker-v2-m3. That is the right call for a user's question and it
+    invalidates an A/B: the "cohere" row would be part Cohere and part the very
+    model it is being compared against, and nothing in the results table would
+    say which questions were which.
+
+    Seeding the shared cache with the bare adapter makes the arm raise instead.
+    A run that dies is cheap to repeat; a published number that quietly measured
+    two rerankers is not.
+    """
+    from finagent.retrieval.reranker import (COHERE_PREFIX, _SHARED_RERANKERS,
+                                             CohereReranker)
+
+    for name in arms:
+        if name and name.startswith(COHERE_PREFIX):
+            _SHARED_RERANKERS[name] = CohereReranker(name[len(COHERE_PREFIX):])
+            print(f"{name}: bare adapter, no local fallback (measurement mode)",
+                  flush=True)
+
+
+def build_index(cfg: Config, collection: str, manifest: Path,
+                resume: bool = False) -> dict:
+    """Ingest the eval corpus at `cfg` using the production ingester.
+
+    `resume` is for the metered Gemini embedder, whose ~1000 contents/day/key
+    make a 44.5k-chunk corpus a multi-day build. It keeps whatever is already in
+    the collection and re-ingests only the filings absent from it, so each day
+    picks up where the last one stopped instead of wiping and starting over.
+
+    That is safe here because the collection NAME carries the whole geometry
+    (`sweep_{cfg.tag}` = parent, child, embedder, headers, table format), so
+    points already in it were built by this exact config. It is not safe if you
+    change a chunker default that the tag does not name — leave `resume` off for
+    a fresh measurement.
+    """
     from finagent.ingestion.ingest import CorpusIngester
 
     ing = CorpusIngester(
@@ -717,10 +720,17 @@ def build_index(cfg: Config, collection: str, manifest: Path) -> dict:
     ing.CHILD_CHUNK_SIZE = cfg.child
     ing.CHILD_CHUNK_OVERLAP = cfg.child_overlap
 
-    ing.reset_collection()          # chunk geometry changes every point id
+    if not resume:
+        ing.reset_collection()      # chunk geometry changes every point id
     t0 = time.time()
-    stats = ing.ingest_all(manifest_path=str(manifest), skip_if_already_indexed=False)
-    return {"chunks": stats.total_chunks, "files": stats.files_processed,
+    stats = ing.ingest_all(manifest_path=str(manifest),
+                           skip_if_already_indexed=resume)
+    # Count the COLLECTION, not this pass: a resumed pass ingests only the
+    # filings the previous ones did not reach, and reporting its `total_chunks`
+    # as the index size would shrink the corpus a little more every day.
+    from finagent.vectorstore import count as _count
+
+    return {"chunks": _count(collection), "files": stats.files_processed,
             "ingest_s": round(time.time() - t0, 1)}
 
 
@@ -1141,6 +1151,11 @@ def main() -> None:
     ap.add_argument("--keep", action="store_true", help="keep the sweep collections")
     ap.add_argument("--resume", action="store_true",
                     help="skip configs already present in the results file")
+    ap.add_argument("--resume-build", action="store_true",
+                    help="keep the existing sweep collection and ingest only "
+                         "the filings missing from it, instead of wiping and "
+                         "re-ingesting. For the metered Gemini embedder, whose "
+                         "daily cap makes the build span several days.")
     ap.add_argument("--strip-headers-scoring", action="store_true",
                     help="score chunks with the §12 context header removed, so "
                          "the injected caption cannot satisfy the evidence "
@@ -1224,6 +1239,8 @@ def main() -> None:
 
     from finagent.vectorstore import delete_collection
 
+    pin_measurable_rerankers(arms)
+
     # A config costs ~30 min, and rows are saved per config — so a run that dies
     # (or is killed) mid-sweep should not re-pay for the configs it finished.
     done: set = set()
@@ -1251,7 +1268,8 @@ def main() -> None:
             print(f"re-using {have} points in {collection}", flush=True)
             stats = {"ingest_s": 0.0, "chunks": have, "files": "reused"}
         else:
-            stats = build_index(cfg, collection, manifest)
+            stats = build_index(cfg, collection, manifest,
+                                resume=args.resume_build)
         rows = evaluate_index(cfg, collection, questions, mode=args.mode,
                               rerankers=arms,
                               rewriter=args.rewriter_model or "")
@@ -1266,7 +1284,9 @@ def main() -> None:
                     "n_dropped": dropped, "n_unretrieved": unretrieved,
                     "pool_depth": POOL_DEPTH,
                     "docs_subset": args.docs or "all"})
-        if not args.keep and not args.skip_build:
+        # `--resume-build` implies keep: dropping the collection would throw away
+        # the days of metered quota that filled it.
+        if not (args.keep or args.skip_build or args.resume_build):
             delete_collection(collection)
         free_embedder()
 

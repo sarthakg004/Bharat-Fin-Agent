@@ -1,12 +1,9 @@
 """System prompts, organised by agent role.
 
-Canonical home of prompt strings — zero-import leaf modules the graph nodes
-depend on:
-    planner.*      — PLANNER_PROMPT, ROUTER_SYSTEM/PROMPT, MARKET_PLANNER_*.
-    synthesizer.*  — SYNTHESIZER_SYSTEM, SYNTHESIZER_PROMPT.
-    critic.*       — CRITIC_SYSTEM/PROMPT, REFUSAL_TEMPLATE.
+    planner.*  — PLANNER_PROMPT, ROUTER_SYSTEM/PROMPT, MARKET_PLANNER_*,
+                 RETRIEVAL_QUERY_SYSTEM/SHOTS.
+    critic.*   — CRITIC_SYSTEM/PROMPT, REFUSAL_TEMPLATE.
+
+The synthesizer's live prompts are the analyst-voice ones in
+`finagent.graph.nodes.synthesis`, not here.
 """
-
-from finagent.prompts import critic, planner, synthesizer  # noqa: F401
-
-__all__ = ["planner", "synthesizer", "critic"]

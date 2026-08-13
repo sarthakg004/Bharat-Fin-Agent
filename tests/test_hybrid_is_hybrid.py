@@ -118,10 +118,9 @@ def test_collection_is_sized_for_the_embedder_in_use():
         DEFAULT_EMBED_MODEL, GEMINI_EMBED_DIM, dim_for)
 
     # Every embedder the project can be pointed at resolves to its own width,
-    # WITHOUT an API call. `DENSE_DIM` is deliberately not the reference here:
-    # it is bge-large's 1024, and asserting against it only held while bge was
-    # the default. What must stay true is that the default embedder, whatever
-    # it is, reports a width.
+    # WITHOUT an API call. Deliberately not asserted against a single constant:
+    # that only held while bge-large was the default. What must stay true is
+    # that the default embedder, whatever it is, reports a width.
     assert dim_for(DEFAULT_EMBED_MODEL) > 0
     assert dim_for("gemini-embedding-2") == GEMINI_EMBED_DIM == 1536
     assert dim_for("BAAI/bge-large-en-v1.5") == 1024

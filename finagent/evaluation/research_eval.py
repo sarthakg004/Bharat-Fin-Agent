@@ -1,39 +1,26 @@
-"""
-research_eval.py  ·  finagent/evaluation/research_eval.py
+"""Deep Research evaluation — judge-free structural metrics for the generated
+reports, benchmarked against the single-agent baseline (production `run_agentic`
+answering the same question in one pass).
 
-Deep Research Mode evaluation — judge-free structural metrics for the
-generated investment reports, benchmarked against the single-agent baseline
-(the production `run_agentic` answering the same question in one pass).
+Per question, for both the report and the baseline:
 
-Per question, for BOTH the research report and the baseline answer:
+    completed          a non-empty answer was produced (no exception)
+    sections           number of `##` sections
+    required_coverage  fraction of required sections present (Executive Summary,
+                       Investment Thesis, Bull/Bear/Base, Risks). This is where
+                       the baseline is expected to lose: one pass answers the
+                       question but does not produce a structured thesis.
+    citation_coverage  fraction of substantive paragraphs carrying a [N]
+    citation_validity  fraction of cited [N] pointing inside the evidence list
+                       (a dangling number is a hallucinated citation)
+    source_diversity   distinct evidence kinds used (xbrl/calc/text/web/…)
+    latency / tokens   cost of the run
 
-* **completed**        — a non-empty answer was produced (no exception).
-* **sections**         — number of `##` sections in the output.
-* **required_coverage**— fraction of the required report sections present
-                         (Executive Summary, Investment Thesis, Bull/Bear/
-                         Base cases, Risks). This is where the baseline is
-                         expected to lose: a single pass answers the question
-                         but does not produce a structured thesis.
-* **citation_coverage**— fraction of substantive paragraphs carrying a `[N]`
-                         citation (groundedness proxy, judge-free).
-* **citation_validity**— fraction of cited `[N]` that point inside the
-                         returned evidence list (a dangling number is a
-                         hallucinated citation).
-* **source_diversity** — distinct evidence kinds used (xbrl/calc/text/web/…).
-* **latency / tokens** — cost of the run.
+Research-only: agent_success_rate (specialists done vs planned) and the count of
+cross-check contradictions flagged.
 
-Research-only: **agent_success_rate** (specialists done vs planned) and the
-count of cross-check contradictions flagged.
-
-Usage (needs API keys + the Qdrant cluster; each research run makes many LLM
-calls — start with --sample 2):
-
-    python -m finagent.evaluation.research_eval --sample 2
-    python -m finagent.evaluation.research_eval --sample 2 --skip-baseline
-
-Writes results/research_eval.json + results/research_eval.md. Resumable:
-already-evaluated questions are skipped on re-run, so this doubles as a
-regression harness — re-run after a change and diff the .md.
+Resumable — already-evaluated questions are skipped, so re-running after a change
+and diffing the .md doubles as a regression harness.
 """
 
 from __future__ import annotations

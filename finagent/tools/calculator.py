@@ -1,26 +1,21 @@
-"""
-calculator.py  ·  finagent/tools/calculator.py
+"""Derived metrics from EXACT XBRL inputs — margins, ratios, YoY growth, CAGR —
+computed deterministically from the figures the company actually filed via
+`XBRLClient`, never from retrieved prose.
 
-Financial calculator (Phase 4) — derived metrics from EXACT XBRL inputs.
+Every result carries the inputs it used (value, tag, fiscal year, SEC source), so
+"operating margin 30.3%" is auditable back to $119,437M / $394,328M straight from
+Apple's FY2022 10-K XBRL.
 
-Margins, ratios, YoY growth, and CAGR are computed deterministically from the
-figures the company actually filed, pulled via the Phase-3 `XBRLClient` — never
-from retrieved prose. Every result carries the exact inputs it used (value, tag,
-fiscal year, SEC source) so the number is fully auditable: you can see that
-"operating margin 30.3%" came from operating income / revenue = $119,437M /
-$394,328M, both straight from Apple's FY2022 10-K XBRL.
+    margins  gross_margin, operating_margin, net_margin
+    ratios   current_ratio, debt_to_equity, return_on_equity, return_on_assets,
+             asset_turnover, interest_coverage
+    wc days  dio, dso, dpo, ccc (two-period averages)
+    growth   period-over-period % change of any concept
+    cagr     compound annual growth rate across N years
+    trend    any of the above across a list of periods
 
-Supported metrics:
-  margins   — gross_margin, operating_margin, net_margin
-  ratios    — current_ratio, debt_to_equity, return_on_equity, return_on_assets,
-              asset_turnover, interest_coverage
-  wc days   — dio, dso, dpo, ccc (working-capital days; two-period averages)
-  growth    — period-over-period % change of any concept
-  cagr      — compound annual growth rate of any concept across N years
-  trend     — any of the above metrics computed across a list of periods
-
-This tool is decoupled from the agent: it takes an optional `xbrl` client so it
-shares the same on-disk cache and stays unit-testable without the graph.
+Takes an optional `xbrl` client, so it shares the on-disk cache and stays
+unit-testable without the graph.
 """
 
 from __future__ import annotations

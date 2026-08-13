@@ -1,49 +1,25 @@
-"""
-ragas.py  ·  finagent/evaluation/ragas.py
-
-Answer-quality harness. Takes a run's outputs JSON and measures it with six
+"""Answer-quality harness. Takes a run's outputs JSON and measures it with six
 RAGAS metrics:
 
-    Faithfulness          — is EVERY claim extracted from the answer entailed
-                            by the retrieved context?
-    Response Groundedness — is the answer AS A WHOLE supported by the context
-                            (0/1/2 by two judges, averaged)? Coarser than
-                            faithfulness and far cheaper, and it does not
-                            punish an answer for citation boilerplate.
-    Response Relevancy    — does the answer actually address the question?
-    Context Precision     — are the retrieved chunks relevant (is signal
-                            ranked above noise)?
-    Context Recall        — do the retrieved chunks cover the gold answer?
-    Answer Correctness    — is the answer RIGHT? The only metric here that
-                            reads the gold answer as the target rather than as
-                            a coverage checklist. Every other metric can be
-                            perfect on a confidently wrong answer: an answer
-                            fabricated from a chunk scores 1.0 faithfulness if
-                            it is faithful to that chunk. FinanceBench ships
-                            gold answers, so nothing but judge cost was
-                            stopping us from scoring against them.
+    Faithfulness          is EVERY claim extracted from the answer entailed by
+                          the retrieved context?
+    Response Groundedness is the answer AS A WHOLE supported by the context
+                          (0/1/2 by two judges, averaged)? Coarser than
+                          faithfulness and far cheaper, and it does not punish an
+                          answer for citation boilerplate.
+    Response Relevancy    does the answer address the question?
+    Context Precision     are the retrieved chunks relevant — is signal ranked
+                          above noise?
+    Context Recall        do the retrieved chunks cover the gold answer?
+    Answer Correctness    is the answer RIGHT? The only metric here that reads
+                          gold as the target rather than as a coverage checklist.
+                          Every other metric can be perfect on a confidently
+                          wrong answer: one fabricated from a chunk scores 1.0
+                          faithfulness if it is faithful to that chunk.
 
-The judge LLM is intentionally DIFFERENT from the generator LLM to
-avoid self-evaluation bias. The agent generates with gpt-oss-120b (synth) +
-qwen3.6-27b (planner/grader); the judge is qwen/qwen3.6-27b.
-
-Usage:
-    from finagent.evaluation.ragas import RAGASEvaluator
-
-    ev = RAGASEvaluator(judge_provider="groq")   # or "gemini"
-    df_results = ev.evaluate(
-        outputs_path="results/naive_rag_outputs.json",
-        output_csv="results/week1_naive_baseline.csv",
-    )
-    print(df_results[["faithfulness","answer_relevancy",
-                       "context_precision","context_recall"]].mean())
-
-CLI:
-    python -m src.evaluation.ragas \\
-        --outputs results/naive_rag_outputs.json \\
-        --output-csv results/week1_naive_baseline.csv \\
-        --judge-provider groq \\
-        --sample 50
+The judge LLM is deliberately DIFFERENT from the generator to avoid
+self-evaluation bias. The agent generates on Gemini; the judge runs on Groq
+(`judge_provider="groq"`, the default) unless told otherwise.
 """
 
 from __future__ import annotations
@@ -51,23 +27,17 @@ from __future__ import annotations
 import sys
 import types
 
-# --------------------------------------------------------------------------- #
-# Compatibility shim — MUST run before `import ragas`.
-# ragas 0.4.3 still does `from langchain_community.chat_models.vertexai import
-# ChatVertexAI`, but langchain-community 0.4.x (the LangChain v1 stack) removed
-# that module. We never use Vertex AI, so we register a stub so the import
-# chain resolves. Drop this once ragas stops importing the dead path.
-# --------------------------------------------------------------------------- #
-# RAGAS phones its telemetry endpoint on every operation — several times per
-# metric. Where DNS for that host doesn't resolve (offline, split-horizon DNS,
-# a blocked egress), each call blocks through urllib3's retry ladder before
-# giving up, which measured as ~10 s of dead time between LLM calls: a
-# single-question, five-metric score spent ~115 s of its 125 s here. Opting out
-# is the whole fix. Must be set before `import ragas`.
 import os
 
+# Opt out of RAGAS telemetry. It phones home several times per metric, and where
+# DNS for that host doesn't resolve (offline, split-horizon DNS, blocked egress)
+# each call blocks through urllib3's retry ladder: a single-question five-metric
+# score spent ~115 s of its 125 s here. Must be set before `import ragas`.
 os.environ.setdefault("RAGAS_DO_NOT_TRACK", "true")
 
+# ragas 0.4.3 still imports ChatVertexAI from a module langchain-community 0.4.x
+# removed. Vertex is never used, so a stub is enough to resolve the import chain.
+# Must also run before `import ragas`. Drop when ragas stops importing it.
 _VERTEXAI_MOD = "langchain_community.chat_models.vertexai"
 if _VERTEXAI_MOD not in sys.modules:
     _shim = types.ModuleType(_VERTEXAI_MOD)
@@ -178,24 +148,14 @@ def _cap_contexts(contexts: list) -> list[str]:
 
 
 class RAGASEvaluator:
-    """Evaluate RAG outputs with the five RAGAS metrics in `METRIC_COLUMNS`.
+    """Evaluate RAG outputs with the metrics in `METRIC_COLUMNS`.
 
-    Parameters
-    ----------
-    judge_provider : str
-        "groq" (default), "gemini", "openai", or "anthropic". The judge makes
-        several calls per question per metric, so Gemini's ~5-requests/day free
-        tier is only viable for a 1-2 question smoke test — use Groq/OpenAI/
-        Anthropic for real runs.
-    judge_model : str
-        Judge LLM model. Should be DIFFERENT and STRONGER than the generator
-        to avoid self-evaluation bias. If None, defaults per provider. Pass any
-        model your key has access to (this is how you pick a different judge).
-    embedding_model : str
-        Used by the ResponseRelevancy metric. Match your ingestion model.
-    api_key : str
-        Falls back to the provider's env var (GROQ_API_KEY / GEMINI_API_KEY /
-        OPENAI_API_KEY / ANTHROPIC_API_KEY).
+    `judge_model` should be DIFFERENT and stronger than the generator, to avoid
+    self-evaluation bias; None picks a per-provider default. The judge makes
+    several calls per question per metric, so Gemini's free tier only stretches
+    to a 1-2 question smoke test — use Groq/OpenAI/Anthropic for real runs.
+    `embedding_model` serves ResponseRelevancy and should match ingestion.
+    `api_key` falls back to the provider's env var.
     """
 
     # Judge defaults. On Groq the judge is `llama-3.3-70b-versatile`: it is the
@@ -204,11 +164,23 @@ class RAGASEvaluator:
     # faithfulness prompt over real filing chunks exceeds outright). Qwen 3.x
     # were the previous default and are a false economy here — reasoning tokens
     # eat the completion budget, so structured metrics come back empty.
+    # Everything except groq comes from `runtime.DEFAULTS`, the table the rest
+    # of the app already uses, because a SECOND copy of the model names is how
+    # this broke: the Gemini migration updated runtime.py and left "gemini" here
+    # pointing at `gemini-2.5-flash`, which Google has since retired. Every
+    # judge call 404'd, and RAGAS answers a failed call by "skipping a sample by
+    # assigning it nan" — so the run kept going and would have produced a fully
+    # empty scorecard rather than an error.
+    #
+    # The judge takes the CRITIC slot, not synth. It is the highest-volume role
+    # in the eval (six metrics x every row, several calls each) and the free
+    # tier meters requests per day PER MODEL, so putting it on the same model as
+    # the answers would drain one bucket twice as fast instead of using two.
+    from finagent.runtime import DEFAULTS as _RUNTIME_DEFAULTS
+
     DEFAULT_MODELS = {
         "groq": "llama-3.3-70b-versatile",
-        "gemini": "gemini-2.5-flash",
-        "openai": "gpt-4o",
-        "anthropic": "claude-sonnet-4-6",
+        **{p: m["critic"] for p, m in _RUNTIME_DEFAULTS.items() if p != "groq"},
     }
 
     def __init__(
@@ -246,31 +218,24 @@ class RAGASEvaluator:
         self,
         outputs_path: Union[str, Path],
         output_csv: Union[str, Path] = "results/week1_naive_baseline.csv",
-        ground_truth_col: str = "answer",
+        # "gold", not "answer". `answer_correctness` scores the response AGAINST
+        # this column, so defaulting it to the response's own column compares the
+        # answer to itself and returns a silent, confident ~1.0 — the newest and
+        # most expensive metric reporting a perfect score for free. Only
+        # `runner.py` passed the override; this module's own CLI did not.
+        ground_truth_col: str = "gold",
         sample: Optional[int] = None,
         batch_size: int = 10,
     ) -> pd.DataFrame:
-        """Run RAGAS over all outputs and save results CSV.
+        """Run RAGAS over all outputs and save the results CSV.
 
-        Resumable: if `output_csv` already exists, questions that already have
-        at least one non-null RAGAS score are skipped and their rows are kept
-        as-is. Scores are flushed to CSV after every batch so partial progress
-        is never lost across crashes or quota exhaustions.
+        Resumable: if `output_csv` exists, questions that already carry at least
+        one non-null score are skipped and their rows kept as-is. Scores flush
+        after every batch, so partial progress survives a crash or a quota
+        exhaustion.
 
-        Args:
-            outputs_path: JSON file produced by NaiveRAG.run_dataset().
-            output_csv: Where to write per-question metric scores + summary.
-            ground_truth_col: Key in outputs JSON that holds the gold answer.
-                For FinanceBench this is "answer".
-            sample: If set, evaluate only the first N rows. Useful for
-                smoke-testing before running the full 150 questions.
-            batch_size: Process this many questions per RAGAS call.
-                Smaller = more API calls but safer against Groq timeouts.
-
-        Returns:
-            DataFrame with one row per question and columns:
-            question, answer, faithfulness, answer_relevancy,
-            context_precision, context_recall, error.
+        `ground_truth_col` names the key holding the gold answer. A smaller
+        `batch_size` means more API calls but is safer against judge timeouts.
         """
         output_csv = Path(output_csv)
         output_csv.parent.mkdir(parents=True, exist_ok=True)

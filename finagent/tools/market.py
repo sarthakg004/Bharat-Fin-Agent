@@ -1,25 +1,16 @@
-"""
-market_tools.py  ·  finagent/graph/market_tools.py
+"""Market data via yfinance (no API key). All functions are pure — no LangChain
+decorators — so `market_data_node` dispatches them by name from a structured LLM
+intent.
 
-Free-tier market-data toolbelt for the agent. All functions are pure (no
-LangChain decorators) so the `market_data_node` can dispatch them by name from
-a structured LLM intent.
+    get_quote         spot + day stats + 52-week metrics
+    get_history       OHLCV history + a chart spec the frontend renders
+    get_company_info  name, sector, industry, summary
+    get_news          recent headlines with links
+    compare           side-by-side quotes for N tickers
 
-Provider: Yahoo Finance via `yfinance` — no API key
-(NSE = `.NS`, BSE = `.BO`) + global markets. We never hit rate limits in
-normal usage; if Yahoo throws, each tool degrades to an explicit error in the
-returned dict rather than raising.
-
-What each tool returns
-----------------------
-- `get_quote`     → spot + day stats + 52-week metrics (no chart)
-- `get_history`   → OHLCV history + a chart spec the frontend can render
-- `get_company_info` → name, sector, industry, summary
-- `get_news`      → recent headlines with links
-- `compare`       → side-by-side quotes for N tickers
-
-Every result is a dict shaped like `{ok: bool, data: {...}, error: str | None}`
-so the caller can short-circuit on errors without try/except gymnastics.
+Every result is `{ok: bool, data: {...}, error: str | None}`, so callers
+short-circuit on errors without try/except gymnastics. If Yahoo throws, each tool
+degrades to an explicit error in that dict rather than raising.
 """
 
 from __future__ import annotations

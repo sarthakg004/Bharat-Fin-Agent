@@ -1,18 +1,11 @@
-"""
-FinanceBench evaluation harness (Phase 0 — eval foundation).
-
-A small, script-based toolkit the notebook calls into (rather than redefining
-functions inline) to measure the system end-to-end on FinanceBench:
+"""FinanceBench evaluation harness.
 
     dataset    — load questions, tag by type, carve a stable held-out slice.
-    indexing   — index the referenced filings into a dedicated
-                 `financebench_eval` Qdrant collection via the production
-                 ingestion pipeline.
-    gold       — map each question to the chunk(s) holding its verified evidence.
-    retrieval  — the decomposed retrieval eval: pool_recall@{20,50,100} plus
-                 conditional Hit@{1,3,5}/MRR after reranking.
-    runner     — run the production agent over the held-out slice and RAGAS it.
-    ledger     — the append-only experiment ledger (results/ledger.csv).
+    indexing   — index the referenced filings into the eval Qdrant collection.
+    gold       — map each question to the chunk(s) holding its evidence.
+    retrieval  — pool_recall@{20,50,100} + conditional Hit@{1,3,5}/MRR.
+    runner     — run the agent over the held-out slice and score it.
+    parallel   — sharded runner + the final metrics report.
 """
 
 from .dataset import (
@@ -27,7 +20,6 @@ from .gold import build_gold_map
 from .retrieval import RetrievalEvaluator, RetrievalResult
 from .runner import run_agent_outputs, score_answers
 from .parallel import run_parallel, final_report, summarize_outputs
-from .ledger import append_row, load_ledger
 
 __all__ = [
     "load_questions",
@@ -46,6 +38,4 @@ __all__ = [
     "run_parallel",
     "final_report",
     "summarize_outputs",
-    "append_row",
-    "load_ledger",
 ]

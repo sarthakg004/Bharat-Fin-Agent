@@ -663,6 +663,16 @@ def test_rate_limit_reset_is_read_off_the_429():
     assert abs(L.retry_after_seconds(body) - 179.56) < 1e-9   # body beats headers
     assert L.retry_after_seconds(Err("429 too many requests")) == 60.0  # fallback
     assert L.retry_after_seconds(ValueError("unrelated")) is None
+
+    # Gemini words it differently from Groq. Missing this made a 10-SECOND
+    # per-minute limit read as "reset unknown", which stops `_wait_out` from
+    # waiting and latches the pool — RAGAS then scored the row nan.
+    gem = ("429 RESOURCE_EXHAUSTED ... Quota exceeded for metric: "
+           "generate_content_free_tier_requests, limit: 20, model: "
+           "gemini-3.5-flash\nPlease retry in 10.725888077s.")
+    assert abs(L.retry_after_seconds(ValueError(gem)) - 10.725888077) < 1e-6
+    assert not L.is_daily_quota_error(ValueError(gem))   # per-minute, not RPD
+    assert L.retry_after_seconds(ValueError("{'retryDelay': '32s'}")) == 32.0
     try:                                          # wrapped, as it arrives in prod
         try:
             raise body

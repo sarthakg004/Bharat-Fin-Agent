@@ -238,7 +238,14 @@ def is_daily_quota_error(exc: BaseException) -> bool:
 # Go-style durations, which is what Groq emits: "7.66s", "2m59.56s", "500ms".
 _DUR_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(ms|h|m|s)")
 _DUR_MULT = {"ms": 0.001, "s": 1.0, "m": 60.0, "h": 3600.0}
-_TRY_AGAIN_RE = re.compile(r"try again in\s+([\d.hms\s]+)", re.I)
+# Groq says "Please try again in 2m59.56s"; Gemini says "Please retry in
+# 10.72s" and repeats it as a `retryDelay: "10s"` detail. Only Groq's wording
+# was matched, so every Gemini 429 parsed as "reset unknown" -> `_wait_out`
+# refused to wait -> a 10-SECOND per-minute limit latched the whole pool and
+# RAGAS recorded nan. Match all three phrasings.
+_TRY_AGAIN_RE = re.compile(
+    r"(?:try again in|retry in|retrydelay[\"']?\s*:\s*[\"']?)\s*([\d.hms]+)",
+    re.I)
 
 # Per-bucket reset headers, longest-lived bucket first. Used only as a fallback:
 # they say when EACH bucket refills, not which one tripped, so we take the first
@@ -361,8 +368,16 @@ _EXHAUST_COOLDOWN_MAX_S = 300.0
 # how many times. Groq's TPM window is 60s and its resets are typically single
 # digits, so one wait of up to ~45s recovers almost every case; beyond that the
 # user is better served by an error than by a socket held open.
-MAX_INLINE_WAIT_S = 45.0
-MAX_WAIT_RETRIES = 1
+#
+# Env-tunable because a batch eval wants the opposite trade from a served
+# request. Gemini's cap is 20 requests per MINUTE per key per model, so under
+# an eval's sustained load the pool is limited most of the time: giving up
+# after one wait makes RAGAS record a nan, and that metric has to be re-bought
+# on the next pass. Waiting is strictly cheaper there. A user watching a
+# spinner is not served by a socket held open for three minutes, so the
+# DEFAULTS stay short and only the eval drivers raise them.
+MAX_INLINE_WAIT_S = float(os.getenv("LLM_MAX_INLINE_WAIT_S", "45"))
+MAX_WAIT_RETRIES = int(os.getenv("LLM_MAX_WAIT_RETRIES", "1"))
 
 # Provider → unix time the provider itself said its limit clears. Separate from
 # the clamped fail-fast window above because this is the number shown to the
@@ -392,21 +407,18 @@ def _next_start_index(provider: str, n_keys: int) -> int:
 
 
 class RotatingChatModel(BaseChatModel):
-    """A `BaseChatModel` holding N keys for one provider/model that swaps to
-    the next key on rate-limit errors.
+    """A `BaseChatModel` holding N keys for one provider/model, swapping to the
+    next key on rate-limit errors.
 
-    Because it IS a `BaseChatModel`, it works wherever a real chat model is
-    expected — including ragas' `LangchainLLMWrapper`, which type-checks.
+    Being a real `BaseChatModel` matters: it works wherever one is expected,
+    including ragas' `LangchainLLMWrapper`, which type-checks.
 
-    Rotation strategy
-    -----------------
-    * Per-minute rate limit on key K → rotate to K+1 (often immediate recovery).
-    * Daily-quota error (TPD/RPD) on key K → rotate to K+1; if every key is
-      from the same organisation those will all share the bucket and we'll
-      cycle through to the original error in a few seconds; if your keys are
-      from different orgs each has its own bucket. Either way, after exhausting
-      every key we re-raise the last exception. Use `is_daily_quota_error()`
-      on the raised exception to decide whether to wait 24h vs minutes.
+    A per-minute limit on key K rotates to K+1 and often recovers immediately.
+    A daily-quota error also rotates, but if every key belongs to one
+    organisation they share the bucket and the cycle returns to the original
+    error within seconds; separate orgs each have their own. Either way, once
+    every key is spent the last exception is re-raised — call
+    `is_daily_quota_error()` on it to decide between waiting minutes and 24h.
     """
 
     provider: str = Field(description="groq | gemini | openai | anthropic")

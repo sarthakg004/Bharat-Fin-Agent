@@ -1,17 +1,12 @@
-"""Evaluation harness. Dev-time only — not imported by the serve path.
+"""Evaluation harness. Dev-time only — never imported by the serve path.
 
-Canonical modules:
-    dataset      — load_eval_dataset(), question-type tagging, held-out split.
-    ragas_eval   — run_ragas_eval() + RAGASEvaluator (faithfulness, relevancy, …).
-    ledger       — append_row(), load_ledger(), plot_metrics(), style_ledger().
+    dataset            — load_eval_dataset(), question-type tagging, held-out split.
+    ragas              — RAGASEvaluator: faithfulness, relevancy, precision, recall.
+    evaluate_retrieval — the retrieval sweep (index geometry × embedder × reranker).
+    financebench/      — the FinanceBench end-to-end harness.
+    custom             — small hand-written question set.
+    research_eval      — scores deep-research reports against a baseline answer.
 
-Underlying implementations / CLIs (kept for their `python -m` entry points):
-    ragas        — RAGASEvaluator class + CLI.
-    reranker_ab  — reranker A/B CLI.
-    financebench/ — the FinanceBench-specific harness the wrappers delegate to.
-
-Imports are intentionally NOT done at package import time (eval pulls heavy
-deps); import the specific module you need.
-
-Depends on: config, retrieval, agents.
+Nothing is imported at package-import time: eval pulls heavy deps, so import the
+module you need directly.
 """

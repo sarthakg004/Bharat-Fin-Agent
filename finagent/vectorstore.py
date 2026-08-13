@@ -1,26 +1,20 @@
-"""
-vectorstore.py · finagent/vectorstore.py
-
-One place that builds the vector store, so the agent code never constructs a
-backend directly. The store is a remote **Qdrant** collection.
+"""One place that builds the vector store, so agent code never constructs a backend
+directly. The store is a remote Qdrant collection.
 
 Why remote: the corpus used to be an on-disk Chroma directory baked into the
-container image, because BM25 needed the whole corpus in memory to build a
-lexical index at startup. That made the image huge, made cold starts slow, and
-made the index effectively read-only — a write concurrent with a read segfaults
-chroma/hnswlib's shared native segment, and any write also left the in-memory
-BM25 index stale.
+image, because BM25 needed the whole corpus in memory to build a lexical index at
+startup. That made the image huge, cold starts slow, and the index effectively
+read-only — a write concurrent with a read segfaults chroma/hnswlib's shared
+native segment, and any write also left the in-memory BM25 index stale.
 
-Qdrant removes all three. Lexical retrieval is a *sparse vector* index inside
-the database (BM25 with server-side IDF, so it stays correct as documents are
-added), concurrency is the server's problem, and the image ships no data.
+Qdrant removes all three. Lexical retrieval is a sparse-vector index inside the
+database (BM25 with server-side IDF, so it stays correct as documents arrive),
+concurrency is the server's problem, and the image ships no data.
 
-Points use DETERMINISTIC ids (`point_id`), so re-ingesting a filing overwrites
-its chunks instead of duplicating them. That is what makes concurrent writers
-safe: the double write is harmless rather than prevented.
+Points use DETERMINISTIC ids (`point_id`), so re-ingesting a filing overwrites its
+chunks instead of duplicating them. That is what makes concurrent writers safe:
+the double write is harmless rather than prevented.
 
-Environment
------------
     QDRANT_URL / QDRANT_CLUSTER_ENDPOINT   cluster endpoint
     QDRANT_API_KEY                         API key
 """
@@ -48,7 +42,6 @@ load_dotenv()
 # embedded by the wrong model is not an error, it is silently empty results,
 # so this has to be one switch rather than a literal repeated per call site.
 DEFAULT_EMBED_MODEL = os.getenv("EMBEDDING_MODEL", "gemini-embedding-2")
-DENSE_DIM = 1024                    # bge-large-en-v1.5
 
 # Output dimensionality per embedding model. `ensure_collection` must size the
 # dense vector from the model actually in use — creating a collection at the
@@ -81,20 +74,33 @@ GEMINI_EMBED_DIM = 1536
 
 # Texts per request. 100 is the documented per-request maximum.
 #
-# What this number does NOT do is buy quota, and that misreading cost a full
-# day's budget. The quotaId is *named* `EmbedContentRequests…PerMinute/PerDay`,
-# but the free tier meters the CONTENTS inside the request, not the request:
-# a batch of 100 texts spends 100 units, so batching buys THROUGHPUT and
-# nothing else. Measured, not read from docs — one 100-text batch immediately
-# tripped the per-minute limit, and 5,125 contents (854/key) exhausted the day.
+# WHAT THE FREE TIER METERS IS NOT SETTLED, and the two candidate answers imply
+# very different build times. Do not write a confident number here again until
+# the evidence below is in; an earlier version of this comment did, and it was
+# the reason a day's budget was misplanned.
 #
-# The practical consequence: budget a build in CHUNKS, never in requests.
-# ~1000 contents/day/key, dimensioned PER MODEL (each embedding model has its
-# own bucket), so a 6-key pool is ~6000 chunks/day against a ~37k-chunk corpus
-# — a multi-day build that resumes off the sqlite cache below.
+# What is observed:
+#   * The 429 body names `embed_content_free_tier_requests, limit: 100`. 100 is
+#     the documented per-MINUTE request ceiling for this model, so that line is
+#     probably the RPM limit, not a daily one.
+#   * The same body also contains "PerDay" somewhere, because that substring is
+#     the only thing that sends `_embed_batch` down the bench branch, and keys
+#     do get benched. So a per-day quota is reported too — value unknown, since
+#     the body was never logged, only the exception's truncated tail.
+#   * A day's real yield with batch_size=100 was ~7,500 contents across 7 keys,
+#     which is far short of what 100 requests/min or 100 requests/day/key would
+#     each predict. Something else is binding: most likely one shared project
+#     bucket, or a daily request cap well under 1000.
 #
-# `_embed_batch` verifies the response count, so if a model silently ignores
-# the batch we fail loudly rather than write merged vectors.
+# What is certain enough to act on:
+#   * A request costs the same whether it carries 1 text or 100, so fill it.
+#   * `embed_query` is one content per request, the worst possible rate. It is
+#     unavoidable for interactive traffic; never push a bulk job through it.
+#
+# `_embed_batch` now logs the raw 429 body once and `_key_requests` counts
+# requests per key, so the NEXT exhaustion answers both open questions: ~100
+# requests per key means independent buckets and more keys help; ~100 across the
+# whole pool means they share one project and more keys buy nothing.
 GEMINI_EMBED_BATCH = 100
 
 # Concurrent in-flight requests. Deliberately small: the 100/min ceiling is
@@ -203,6 +209,11 @@ class GeminiEmbeddings(Embeddings):
         self.dim = dim
         self.batch_size = batch_size
         self._local = None          # thread-local sqlite handles, see `_conn`
+        # key -> [requests sent, contents sent]. The free tier meters REQUESTS
+        # (see GEMINI_EMBED_BATCH), and whether the 100/day cap is per key or
+        # per project decides whether adding keys buys anything at all. Counting
+        # is the difference between knowing that and guessing; it is two ints.
+        self._key_requests: dict = {}
         self.keys = collect_provider_keys("gemini")
         if not self.keys:
             raise RuntimeError(
@@ -272,15 +283,30 @@ class GeminiEmbeddings(Embeddings):
             now = time.time()
             live = [k for k in self.keys if self._dead.get(k, 0) <= now]
             if not live:
+                spend = "  ".join(
+                    f"…{k[-4:]}={r}req/{c}txt"
+                    for k, (r, c) in sorted(
+                        self.__dict__.get("_key_requests", {}).items(),
+                        key=lambda kv: kv[0][-4:]))
                 raise EmbeddingQuotaExhausted(
                     f"All {len(set(self.keys))} Gemini keys returned a DAILY "
                     f"embedding quota error within the last "
-                    f"{self.DEAD_COOLDOWN_S // 60} minutes (~1000 contents/"
-                    f"day/key for {self.model}). Vectors already in "
-                    f"data/embed_cache are reusable, so the next build resumes "
-                    f"rather than restarts.") from last
+                    f"{self.DEAD_COOLDOWN_S // 60} minutes. The free tier caps "
+                    f"REQUESTS (limit 100), not the texts inside them, so read "
+                    f"the req counts below: ~100 per key means the keys have "
+                    f"independent buckets and more keys would help; ~100 across "
+                    f"the whole pool means they share one project's bucket and "
+                    f"more keys in it would not. THIS PROCESS spent: {spend}. "
+                    f"Vectors already in data/embed_cache are reusable, so the "
+                    f"next build resumes rather than restarts.") from last
             key = live[(key_idx + attempt) % len(live)]
             attempt += 1
+            # setdefault, not plain attribute access: several call sites build
+            # this class with `__new__` and set only the fields they need, so a
+            # new required attribute would break them for a counter.
+            counts = self.__dict__.setdefault("_key_requests", {})
+            sent = counts.get(key, (0, 0))
+            counts[key] = (sent[0] + 1, sent[1] + len(texts))
             try:
                 got = self._post(key, texts, task)
                 if len(got) != len(texts):
@@ -320,6 +346,15 @@ class GeminiEmbeddings(Embeddings):
                 # every key was minutes from resetting).
                 if "PerDay" in msg:
                     self._dead[key] = time.time() + self.DEAD_COOLDOWN_S
+                    # Log the raw body ONCE per process. Every quota decision
+                    # this class makes keys off a substring of it, and it was
+                    # never recorded — so "is the 100 per minute or per day, and
+                    # is it per key or per project" could not be answered from a
+                    # finished run, only re-litigated. One print settles it.
+                    if not getattr(self, "_logged_body", False):
+                        self._logged_body = True
+                        print(f"  [embed] first PerDay 429, raw body:\n"
+                              f"{msg[:1200]}", flush=True)
                     # Printed, because this used to happen silently inside the
                     # worker threads: a run died reporting "every key is
                     # exhausted" with exactly ONE 429 visible in the log, and
@@ -371,7 +406,11 @@ class GeminiEmbeddings(Embeddings):
         if db is None:
             path = Path(os.getenv("FINAGENT_EMBED_CACHE_DIR", "data/embed_cache"))
             path.mkdir(parents=True, exist_ok=True)
-            db = local.db = sqlite3.connect(path / f"{self.model}_{self.dim}.sqlite")
+            # timeout: the fan-out threads each commit their own batch, so
+            # writers do collide. sqlite queues them; the default 5 s is thin
+            # for a 32-vector executemany behind two others.
+            db = local.db = sqlite3.connect(
+                path / f"{self.model}_{self.dim}.sqlite", timeout=30)
             db.execute(
                 "CREATE TABLE IF NOT EXISTS vec (k TEXT PRIMARY KEY, v BLOB)")
         return db
@@ -406,26 +445,49 @@ class GeminiEmbeddings(Embeddings):
             pending = [text_of_key[k] for k in todo]
             batches = [pending[i:i + self.batch_size]
                        for i in range(0, len(pending), self.batch_size)]
-            if len(batches) == 1:
-                fresh = self._embed_batch(batches[0], task, 0)
+            work = list(enumerate(batches))
+            if len(work) == 1:
+                fresh = self._embed_and_cache(work[0], task)
             else:
                 with ThreadPoolExecutor(max_workers=GEMINI_EMBED_CONCURRENCY) as ex:
                     fresh = [v for batch in ex.map(
-                        lambda ib: self._embed_batch(ib[1], task, ib[0]),
-                        list(enumerate(batches))) for v in batch]
-            # Round-trip through float32 before returning, not just before
-            # storing. The API hands back float64 and the cache stores float32,
-            # so without this a cold call and a warm call for the same text
-            # return subtly different vectors — which would make "rebuild the
-            # index" a silent source of drift and any A/B unreproducible.
-            fresh = [array("f", v).tolist() for v in fresh]
-            db.executemany("INSERT OR REPLACE INTO vec VALUES (?, ?)",
-                           [(k, array("f", v).tobytes())
-                            for k, v in zip(todo, fresh)])
-            db.commit()
+                        lambda ib: self._embed_and_cache(ib, task), work)
+                        for v in batch]
             cached.update(zip(todo, fresh))
 
         return [cached[k] for k in keys]
+
+    def _embed_and_cache(self, work: tuple[int, list[str]],
+                         task: str) -> list[list[float]]:
+        """Embed ONE batch and commit it before returning.
+
+        Writing the whole call's vectors in a single `executemany` at the end
+        read as tidier and threw away everything the call had already paid for
+        the moment one batch hit the daily wall: the other batches had returned,
+        their quota was spent, and none of them reached disk. On a metered
+        multi-day build that is up to a filing's worth of quota lost per
+        exhaustion — once a day, every day of the build. A batch that came back
+        is a batch that is bought, so persist it where it lands.
+
+        Safe to call from the fan-out threads: `_conn` hands each thread its own
+        handle and sqlite serialises the writers itself.
+        """
+        from array import array
+
+        key_idx, texts = work
+        # Round-trip through float32 before returning, not just before storing.
+        # The API hands back float64 and the cache stores float32, so without
+        # this a cold call and a warm call for the same text return subtly
+        # different vectors — which would make "rebuild the index" a silent
+        # source of drift and any A/B unreproducible.
+        vecs = [array("f", v).tolist()
+                for v in self._embed_batch(texts, task, key_idx)]
+        db = self._conn()
+        db.executemany("INSERT OR REPLACE INTO vec VALUES (?, ?)",
+                       [(self._key(task, t), array("f", v).tobytes())
+                        for t, v in zip(texts, vecs)])
+        db.commit()
+        return vecs
 
     # -- LangChain Embeddings interface ------------------------------------ #
 
@@ -808,8 +870,10 @@ def distinct_values(collection_name: str, field: str,
         qfilter = models.Filter(must=[models.FieldCondition(
             key=f"{META_KEY}.{where_field}",
             match=models.MatchValue(value=where_value))])
+    # Project to the one field: without it every point drags page_content and
+    # parent_text across the wire for a set of ~72 URLs.
     return {str(m.get(field, "")) for m in
-            scroll_payloads(collection_name, qfilter, limit=limit)}
+            scroll_payloads(collection_name, qfilter, limit=limit, select=(field,))}
 
 
 def count(collection_name: str) -> int:

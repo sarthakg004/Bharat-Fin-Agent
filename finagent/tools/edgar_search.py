@@ -1,19 +1,14 @@
-"""
-edgar_search.py  ·  finagent/tools/edgar_search.py
+"""EDGAR full-text search — the cross-document question class.
 
-EDGAR full-text search (Phase 6) — the cross-document question class.
+Chunk retrieval answers "what did Apple say about X" by searching one company's
+filings. It cannot answer "WHICH companies disclosed X", which needs a search
+across many companies' full text at once. SEC's EDGAR FTS (`efts.sec.gov`,
+filings from 2001 on) does exactly that.
 
-Chunk retrieval answers "what did Apple say about X" by searching *one* company's
-filings. It cannot answer "**which companies** disclosed X" — that needs a search
-across the full text of *many* companies' filings at once. SEC's EDGAR full-text
-search (`efts.sec.gov`, covering filings from 2001 on) does exactly that.
-
-Given a phrase, this tool queries EDGAR FTS, then aggregates the raw filing hits
-into a **distinct-company** list (most-recent filing per company) — the shape a
-"which companies…" answer wants — while also returning the underlying hits with
-direct links to each filing for citation.
-
-HTTP-only (no embeddings / models), so it's cheap and memory-light.
+Given a phrase, this queries EDGAR FTS and aggregates the raw hits into a
+distinct-company list (most-recent filing per company) — the shape a
+"which companies…" answer wants — while still returning the underlying hits with
+direct links for citation. HTTP-only, so it is cheap and memory-light.
 """
 
 from __future__ import annotations

@@ -1,22 +1,19 @@
-"""
-config.py  ·  finagent/config.py
+"""Typed application settings, imported everywhere as `settings`.
 
-Centralised application settings. **All environment variables are read here and
-nowhere else** — every other module imports the `settings` instance instead of
-calling `os.getenv()` directly. Variable *names* are unchanged from what Cloud
-Run / `.env` already provide (`GROQ_API_KEY`, `ALLOWED_ORIGINS`,
-`RERANKER_MODEL`, `QDRANT_URL`, …); only the access point is centralised.
+Covers the environment variables the graph and stores need. A few are still
+read with `os.getenv` at their point of use — the provider key pools
+(`llm.collect_provider_keys`, which must also find `GROQ_API_KEY1..N` and
+`GROQ_API_KEYS`), and the process-level knobs in `api/main.py` that run before
+this module is imported.
 
-Implementation note: this uses `pydantic.BaseModel` (already a dependency) rather
-than `pydantic_settings.BaseSettings` to avoid adding a new requirement — the
-field loading is done explicitly in `Settings.from_env()`. `.env` is loaded via
-`python-dotenv` (already used across the codebase) before fields are read.
+Uses `pydantic.BaseModel` rather than `pydantic_settings.BaseSettings` to avoid
+a new dependency; loading is explicit in `Settings.from_env()`.
 """
 
 from __future__ import annotations
 
 import os
-from typing import List, Optional
+from typing import Optional
 
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
@@ -45,12 +42,6 @@ def _as_bool(raw: Optional[str], default: bool = False) -> bool:
     return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
-def _as_list(raw: Optional[str]) -> List[str]:
-    if not raw:
-        return []
-    return [item.strip() for item in raw.split(",") if item.strip()]
-
-
 class Settings(BaseModel):
     """Typed view of the runtime environment. Construct via `Settings.from_env()`.
 
@@ -67,8 +58,6 @@ class Settings(BaseModel):
     tavily_api_key: str = Field(default="", description="TAVILY_API_KEY")
 
     # --- Runtime behaviour ---------------------------------------------------
-    allowed_origins: List[str] = Field(default_factory=list, description="ALLOWED_ORIGINS (CSV)")
-    force_ipv4: bool = Field(default=False, description="FORCE_IPV4")
     # Dynamic SEC fetch: persist the fetched filing into the on-disk corpus
     # (True, good locally — a self-expanding index) or use it ephemerally in
     # memory for this session only (False, for Cloud Run — no index growth, no
@@ -93,8 +82,6 @@ class Settings(BaseModel):
 
     # --- Storage / collections ----------------------------------------------
     qdrant_url: str = Field(default="", description="QDRANT_URL / QDRANT_CLUSTER_ENDPOINT")
-    qdrant_api_key: str = Field(default="", description="QDRANT_API_KEY")
-    static_dir: str = Field(default="static", description="STATIC_DIR")
     us_collection: str = Field(default=DEFAULT_US_COLLECTION, description="US filings collection")
     financebench_collection: str = Field(default="financebench_eval", description="eval collection")
 
@@ -103,16 +90,12 @@ class Settings(BaseModel):
         """Build a Settings instance from the current process environment."""
         return cls(
             tavily_api_key=(os.getenv("TAVILY_API_KEY") or "").strip(),
-            allowed_origins=_as_list(os.getenv("ALLOWED_ORIGINS")),
-            force_ipv4=_as_bool(os.getenv("FORCE_IPV4")),
             persist_dynamic_fetch=_as_bool(os.getenv("PERSIST_DYNAMIC_FETCH"), default=True),
             research_max_agents=int(os.getenv("RESEARCH_MAX_AGENTS", "8")),
             research_parallel_agents=int(os.getenv("RESEARCH_PARALLEL_AGENTS", "1")),
             reranker_model=os.getenv("RERANKER_MODEL", DEFAULT_RERANKER),
             qdrant_url=(os.getenv("QDRANT_URL")
                         or os.getenv("QDRANT_CLUSTER_ENDPOINT") or "").strip(),
-            qdrant_api_key=(os.getenv("QDRANT_API_KEY") or "").strip(),
-            static_dir=os.getenv("STATIC_DIR", "static"),
             us_collection=os.getenv("US_COLLECTION", DEFAULT_US_COLLECTION),
             financebench_collection=os.getenv("FINANCEBENCH_COLLECTION", "financebench_eval"),
         )

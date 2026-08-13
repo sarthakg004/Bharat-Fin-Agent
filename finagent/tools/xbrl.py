@@ -1,30 +1,20 @@
-"""
-xbrl.py  ·  finagent/tools/xbrl.py
+"""Exact reported figures from SEC XBRL company-facts, so numeric questions are
+answered from structured data instead of retrieved prose — no LLM in the number
+path, so there is nothing to hallucinate.
 
-XBRL facts tool (Phase 3 — the big accuracy unlock).
+    ticker/name --(resolver)--> CIK
+    CIK --> data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json  (cached)
+    concept --> the right US-GAAP tag, then period --> the exact fact value
 
-Answers numeric questions from **structured** SEC data instead of retrieved
-prose. Given a ticker (or company name), a financial concept, and a period, it
-returns the *exact reported figure* a company filed — no LLM in the number path,
-so there's nothing to hallucinate.
+The hard part is TAG HETEROGENEITY: the same economic concept is filed under
+different tags by different companies (revenue is `Revenues` for some,
+`RevenueFromContractWithCustomerExcludingAssessedTax` for others). Two layers
+handle it — a curated concept → candidate-tags map ordered by preference, and a
+cheap LLM fallback (`tag_resolver`) that picks from the tags the company actually
+reports when the map misses.
 
-Pipeline:
-  ticker/name --(Phase 2 resolver)--> CIK
-  CIK --> data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json  (downloaded + cached)
-  concept --> the right US-GAAP *tag*, then period --> the exact fact value.
-
-The hard part is **tag heterogeneity**: the same economic concept is filed under
-different XBRL tags by different companies (revenue is `Revenues` for some,
-`RevenueFromContractWithCustomerExcludingAssessedTax` for others). We handle it
-with two layers:
-  1. a curated **concept → candidate-tags** map (ordered by preference), and
-  2. a cheap **LLM fallback** (`tag_resolver`) that picks the best tag from the
-     tags the company *actually* reports, when the map misses.
-
-This tool is decoupled from the agent: it takes an optional `resolver`
-(`TickerCIKResolver`) and an optional `tag_resolver` callable so it stays unit
--testable without the graph. The graph wires a router-tier LLM into
-`tag_resolver` in Phase 3's `xbrl_node`.
+Takes an optional `resolver` and `tag_resolver`, so it stays unit-testable
+without the graph; `xbrl_node` wires the router-tier LLM into `tag_resolver`.
 """
 
 from __future__ import annotations

@@ -1,32 +1,22 @@
-"""
-custom.py  ·  finagent/evaluation/custom.py
-
-Eval harness for YOUR OWN question set — the failure modes FinanceBench doesn't
+"""Eval over a hand-written question set — the failure modes FinanceBench does not
 cover (relative periods like "year-over-year", quarterly filings, multi-part
-driver questions). One JSONL file in, one scored JSON + summary out.
+driver questions). One JSONL in, one scored JSON + summary out.
 
-Dataset row (data/eval/custom_questions.jsonl), only `question` is required:
-    {
-      "id": "now-q1-2026-opmargin",
-      "question": "By how many percentage points did ServiceNow's operating margin improve year-over-year?",
-      "gold_answer": "Improved ~1.5pp, from 9.9% (Q1 2025) to 11.4% (Q1 2026)",
-      "expected_periods": ["Q1 2026", "Q1 2025"],
-      "forbidden_periods": ["FY2022", "FY2023"],
-      "gold_evidence": ["sales and marketing", "research and development"]
-    }
+Dataset row (only `question` is required):
 
-Metrics per question (all deterministic, judge-free):
-    numeric_accuracy — gold figure appears in the answer (reuses
-                       financebench.answer_match; None if gold has no number)
+    {"id": ..., "question": ..., "gold_answer": ...,
+     "expected_periods": [...], "forbidden_periods": [...],
+     "gold_evidence": [...]}
+
+Metrics, all deterministic and judge-free:
+    numeric_accuracy — gold figure appears in the answer (None if gold has no
+                       number); reuses financebench.answer_match
     period_match     — EVERY expected period is named in the answer
     stale_period     — ANY forbidden period is named (the wrong-year failure)
-    evidence_recall  — fraction of gold_evidence strings found in the
-                       retrieved chunks (retrieval quality without gold chunks)
+    evidence_recall  — fraction of gold_evidence found in the retrieved chunks
 
-Outputs are written in the FinanceBench runner's row shape, so the existing
-RAGAS judge scores them unchanged:
-    python -m finagent.evaluation.custom --dataset data/eval/custom_questions.jsonl
-    python -m finagent.evaluation.custom --ragas          # add judge metrics
+Rows are written in the FinanceBench runner's shape, so the RAGAS judge scores
+them unchanged.
 """
 
 from __future__ import annotations

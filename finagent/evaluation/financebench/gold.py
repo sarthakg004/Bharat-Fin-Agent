@@ -1,21 +1,12 @@
-"""
-gold.py  ·  finagent/evaluation/financebench/gold.py
+"""Build the gold-chunk mapping the retrieval eval scores against.
 
-Build the gold-chunk mapping the retrieval eval scores against.
+FinanceBench gives a verified evidence span plus its `doc_name` and page, but
+the retriever works over chunks — so "did we retrieve the evidence?" only means
+something once we know which chunk contains it. Per span: restrict to chunks
+from the same filing, then pick the one most similar to the evidence text.
 
-FinanceBench gives a *verified evidence span* (the exact text in the filing that
-answers the question) plus its `doc_name` and page. Our retriever, though, works
-over fixed-size chunks — so "did we retrieve the evidence?" only makes sense once
-we know which chunk *contains* that evidence. For each evidence span we:
-
-    1. restrict to chunks from the same filing (metadata `local_path` whose stem
-       is the evidence `doc_name`), and
-    2. pick the chunk most similar to the evidence text (dense similarity over
-       the same BGE embeddings used everywhere else).
-
-That best-matching chunk is the gold chunk. A question can have several evidence
-spans, so it can have several gold chunks; the retrieval eval counts a "hit" if
-*any* gold chunk is surfaced.
+A question can have several evidence spans and so several gold chunks; the
+retrieval eval counts a hit if ANY of them is surfaced.
 """
 
 from __future__ import annotations

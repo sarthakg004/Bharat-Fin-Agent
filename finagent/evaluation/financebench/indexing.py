@@ -1,19 +1,12 @@
-"""
-indexing.py  ·  finagent/evaluation/financebench/indexing.py
+"""Index the FinanceBench filings into a dedicated eval collection through the
+EXACT production `CorpusIngester`, over the same original SEC HTML production
+serves (fetched by `html_source.py`, not the FinanceBench PDFs). Keeping both
+parser and chunker identical to production is the point: the eval has to measure
+the retrieval a user actually gets.
 
-Index the FinanceBench filings into a dedicated `financebench_eval` Qdrant
-collection using the *exact* production ingestion pipeline — the same
-`CorpusIngester` (parent-document chunking, BGE-large) over the same original
-SEC **HTML** production serves (fetched by `html_source.py`, not the FinanceBench
-PDFs). Keeping BOTH the parser and the chunker identical to production is the
-whole point: the eval measures the retrieval the user actually gets. The
-dedicated collection (and a separate eval Qdrant, `QDRANT_EVAL_URL`) keeps these
-docs off the live cluster.
-
-Scope: only the filings referenced by the open-source question set, restricted
-to 10-K/10-Q — the docs that map to a single served HTML filing. 8-K / earnings
-docs are excluded (evidence lives in exhibits, not the primary document), which
-drops ~23 of 150 questions; see `html_source.py`.
+Scope is the filings the question set references, restricted to 10-K/10-Q — the
+docs that map to one served HTML filing. Excluding 8-K/earnings drops ~23 of 150
+questions; see `html_source.py`.
 """
 
 from __future__ import annotations

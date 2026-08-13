@@ -1,22 +1,15 @@
-"""
-retrieval.py  ·  finagent/evaluation/financebench/retrieval.py
+"""The decomposed retrieval eval. It splits retrieval quality into the two stages
+that fail for different reasons, so a regression points at the right fix:
 
-The **decomposed retrieval eval**. It splits retrieval quality into the two
-stages that fail for different reasons, so a regression points at the right fix:
+    pool_recall@{20,50,100}  is the gold chunk anywhere in the fused candidate
+                             pool BEFORE reranking? A miss here is a first-stage
+                             recall problem — the reranker never gets a chance.
+    Hit@{1,3,5} / MRR        GIVEN it made the pool, does the reranker surface
+                             it near the top? Conditional on pool recall, so
+                             they isolate the reranker's contribution.
 
-    pool_recall@{20,50,100}   — is the gold chunk anywhere in the BM25 ∪ dense
-                                candidate pool *before* reranking? A miss here is
-                                a first-stage recall problem (the reranker never
-                                gets a chance).
-    Hit@{1,3,5} / MRR         — *given* the gold chunk made it into the pool,
-                                does the cross-encoder reranker surface it near
-                                the top? These are conditional on pool recall, so
-                                they isolate the reranker's contribution.
-
-BM25 and dense are fused with Reciprocal Rank Fusion (RRF) into one ranked pool,
-which makes pool_recall@K well-defined and monotonic in K. The reranker (same
-cross-encoder as production, `bge-reranker-base`) then reorders the top of that
-pool. Metrics are reported overall and broken down by question type.
+BM25 and dense are fused with RRF into one ranked pool, which makes pool_recall@K
+well-defined and monotonic in K. Reported overall and by question type.
 """
 
 from __future__ import annotations

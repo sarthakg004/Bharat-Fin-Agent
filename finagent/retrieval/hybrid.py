@@ -1,23 +1,19 @@
-"""
-hybrid.py  ·  finagent/retrieval/hybrid.py
+"""`HybridRetriever` — lexical + semantic retrieval over a Qdrant collection,
+reranked with a cross-encoder. This is the retriever the agent uses.
 
-`HybridRetriever` — hybrid (lexical + semantic) retrieval over a Qdrant
-collection, reranked with a cross-encoder. This is the retriever the agent uses.
-
-Both halves now run inside the database. Qdrant scores a BM25 *sparse* vector
-and a dense vector for the same query and fuses the two rankings with Reciprocal
-Rank Fusion, returning one list.
+Both halves run inside the database: Qdrant scores a BM25 sparse vector and a
+dense vector for the same query and fuses the two rankings with Reciprocal Rank
+Fusion, returning one list.
 
 This used to be an in-process `rank_bm25` index built by paging the entire
 collection into RAM at startup. That is why the corpus had to be baked into the
-container image, and it had two defects a writable corpus makes fatal: the index
-froze its IDF statistics at build time, so any filing added afterwards was
-invisible to lexical search; and rebuilding it meant re-reading every chunk.
-Server-side sparse vectors keep lexical scoring correct as documents arrive.
+image, and it had two defects a writable corpus makes fatal: the index froze its
+IDF statistics at build time, so any filing added afterwards was invisible to
+lexical search, and rebuilding it meant re-reading every chunk.
 
 RRF also replaces a hardcoded 50/50 pool split (24 lexical + 24 dense) with a
-per-query mix: a question naming an exact account line leans lexical, a
-"how is the company positioned" question leans semantic.
+per-query mix: a question naming an exact account line leans lexical, a "how is
+the company positioned" question leans semantic.
 """
 
 from __future__ import annotations

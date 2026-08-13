@@ -1,26 +1,16 @@
-"""
-html_source.py  ·  finagent/evaluation/financebench/html_source.py
+"""Fetch the original SEC HTML for each FinanceBench document, so the eval measures
+the same ingestion path production serves. FinanceBench ships PDFs; production
+serves EDGAR HTML.
 
-Acquire the *original SEC HTML* filing for each FinanceBench document, so the
-eval measures the SAME ingestion path production serves (unstructured HTML), not
-the PDF path. FinanceBench ships PDFs; production serves EDGAR HTML — this closes
-that gap.
+Mapping is verified, not assumed: each doc carries company + doc_period +
+doc_type, so company→CIK goes through the production `TickerCIKResolver`, then
+the filing is found on EDGAR's submissions API by form + fiscal period (+ quarter
+for 10-Qs). Older EDGAR primary docs are wrapped in an SGML `<DOCUMENT>..<TEXT>`
+header that makes `partition_html` return zero elements — stripped to
+`<html>..</html>`, which is what `sec-edgar-downloader` hands the ingester.
 
-Mapping (verified, not assumed): every FinanceBench doc carries
-`company + doc_period + doc_type`. We resolve company→CIK with the production
-`TickerCIKResolver`, then find the filing on EDGAR's submissions API by form +
-fiscal period (+ quarter for 10-Qs), and download its primary document. Older
-EDGAR primary docs are wrapped in an SEC SGML `<DOCUMENT>..<TEXT>` header that
-makes `partition_html` return zero elements — we strip it to `<html>..</html>`,
-exactly what `sec-edgar-downloader` hands the production ingester.
-
-Scope: 10-K and 10-Q only. 8-K / earnings docs are excluded because their
-evidence lives in an *exhibit* (EX-99.1 press release), not the primary filing,
-so a single served HTML document cannot contain it (measured: 0.0 containment).
-
-Files land at `data/us/eval/financebench/html/{doc_name}.htm`, so the existing
-manifest/indexing/gold pipeline — which keys on the `local_path` stem — reuses
-unchanged.
+10-K and 10-Q only. 8-K/earnings docs are excluded because their evidence lives
+in an EX-99.1 exhibit, not the primary filing (measured: 0.0 containment).
 """
 from __future__ import annotations
 

@@ -1,26 +1,14 @@
 """Agent tools.
 
-Live tools (migrated here, re-exported from old `finagent.graph` paths):
-    market.*      — yfinance market data (get_quote, get_history, …, call_tool).
-    web_search.*  — Tavily web search with local-news fallback (WebSearcher).
-
-Shared infrastructure:
-    TickerCIKResolver (Phase 2) — ticker/name → SEC CIK; backs XBRL, fetch, FTS.
-
-Structured-data tools:
-    XBRLClient (Phase 3)        — exact reported figures from SEC XBRL company-facts.
-    FinancialCalculator (Phase 4) — margins/ratios/growth/CAGR/trends over XBRL inputs.
-
-Corpus-expansion tools:
-    SecFilingFetcher (Phase 5)  — fetch + ingest a missing US 10-K on demand.
-
-Cross-document tools:
-    EdgarFullTextSearch (Phase 6) — full-text search across many companies' filings.
-
-Infrastructure:
-    BaseTool — abstract tool interface.
-
-Depends on: config, llm, retrieval (some tools).
+    market            yfinance market data (get_quote, get_history, call_tool…)
+    web_search        Tavily search with a local-news fallback (WebSearcher)
+    resolver          TickerCIKResolver — ticker/name → SEC CIK; backs the three
+                      SEC tools below
+    xbrl              XBRLClient — exact reported figures from company-facts
+    calculator        FinancialCalculator — margins/ratios/growth/CAGR
+    sec_fetch         SecFilingFetcher — fetch + ingest a missing 10-K on demand
+    edgar_search      EdgarFullTextSearch — search across many companies
+    base              BaseTool, the abstract interface
 """
 
 from finagent.tools.base import BaseTool

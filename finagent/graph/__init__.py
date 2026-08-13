@@ -1,14 +1,9 @@
-"""LangGraph agent.
+"""The LangGraph agent.
 
-The pipeline is built as an inheritance ladder, each layer adding a capability:
-
-    base.py        AgenticRAG    — planner → retrieve → synthesize → critic
-    corrective.py  AgenticRAGv2  — + hybrid retrieval, critic retry loop
-    full.py        AgenticRAGv3  — + sub-query router
-    agent.py       AgenticRAGv4  — + XBRL, calculator, SEC fetch, market data,
-                                    web search, memory
-
-`AgenticRAGv4` is what the API serves. `FinAgent` is a friendly alias.
+`AgenticRAGv4` (`agent.py`) is the class the API serves; `FinAgent` is an alias
+for it. It is assembled from the node mixins in `nodes/` plus three base layers
+that exist only to be inherited: `base.py` (planner, critic), `corrective.py`
+(hybrid retrieval, critic retry), `full.py` (query router, retrieval rewrite).
 """
 
 from finagent.graph.agent import AgenticRAGv4

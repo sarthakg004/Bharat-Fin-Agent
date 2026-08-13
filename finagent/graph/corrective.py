@@ -1,52 +1,17 @@
-"""
-corrective.py  ·  finagent/graph/corrective.py
+"""Hybrid retrieval and the critic retry loop.
 
-Corrective RAG built on top of the v1 agentic graph. Two upgrades:
-
-1. **Hybrid retrieval + cross-encoder rerank**
-       BM25 top-k  ⋃  dense top-k  ──►  rerank  ──►  top-N
-
-2. **Self-correcting control flow**
-
-       START → planner → retrieve → synthesize → critic ─── conditional
-                          ▲                        │              │
-                          └────────────────────────┴── retrieve ◄─┘
-                                              (needs_retry,
-                                               critic_iterations < cap)
-                                                   │
-                                                   ▼
-                                                  END
-
-After synthesis, the critic checks every claim against the context; if it
-fails, we go back to retrieve with the failing claims as focused sub-queries.
-The loop is capped to avoid spinning forever.
-
-Usage as a library
-------------------
-    from finagent.graph.corrective import AgenticRAGv2
-
-    agent = AgenticRAGv2()  # collection defaults to settings.us_collection
-    state = agent.run("Compare Microsoft and Apple revenue in FY23.")
-    print(state["final_answer"])
-
-CLI
----
-    python -m finagent.graph.corrective \\
-        --collection us_filings \\
-        --question "Compare Microsoft and Apple revenue in FY23."
+Adds to `base.py`: BM25 ∪ dense fusion with a cross-encoder rerank, a final
+cap over the merged pool, and a critic that schedules a retry instead of just
+logging. `full.py` and `agent.py` build on this; nothing here runs alone.
 """
 
 from __future__ import annotations
 
-import argparse
 import re
 from typing import Optional
 
 from finagent.graph.base import AgenticRAG
-from finagent.runtime import RuntimeContext
 from finagent.graph.state import AgentState
-from finagent.vectorstore import DEFAULT_EMBED_MODEL
-from finagent.config import settings
 
 
 # Codepoint ranges for scripts a US English filing should not be written in
@@ -73,19 +38,8 @@ def _mostly_non_english(text: str) -> bool:
 from finagent.retrieval.hybrid import HybridRetriever  # noqa: E402
 
 
-# --------------------------------------------------------------------------- #
-# AgenticRAGv2
-# --------------------------------------------------------------------------- #
-
 class AgenticRAGv2(AgenticRAG):
-    """Corrective-RAG agent: hybrid retrieval + critic retry loop.
-
-    Subclasses AgenticRAG and only overrides what changes:
-      * `_get_hybrids()` builds the hybrid retrievers (one per collection)
-      * `hybrid_retrieve_node` replaces `retrieve_node`
-      * `critic_node` is extended to schedule a retrieve-loop on failure
-      * `_build_graph` wires the conditional edges
-    """
+    """Hybrid retrieval + a critic that can schedule a retry."""
 
     # Slots the ORIGINAL question gets in the merged pool, versus `final_top_k`
     # for a sub-query. §13 swept it: 1 -> hit@8 64, 2 -> 66, 3 -> 66, 5 -> 67,
@@ -396,108 +350,3 @@ class AgenticRAGv2(AgenticRAG):
         # evidence the critic just rejected.
         out["retrieval_query"] = ""
         return out
-
-    # ------------------------------------------------------------------ #
-    # Graph
-    # ------------------------------------------------------------------ #
-
-    def _build_graph(self):
-        from langgraph.graph import END, START, StateGraph
-
-        g = StateGraph(AgentState)
-        g.add_node("planner", self.planner_node)
-        g.add_node("retrieve", self.hybrid_retrieve_node)
-        g.add_node("synthesize", self.synthesize_node)
-        g.add_node("critic", self.critic_node)
-
-        g.add_edge(START, "planner")
-        g.add_edge("planner", "retrieve")
-        g.add_edge("retrieve", "synthesize")
-        g.add_edge("synthesize", "critic")
-        g.add_conditional_edges(
-            "critic", self._critic_router,
-            {"retrieve": "retrieve", "end": END},
-        )
-        return g.compile()
-
-    # ------------------------------------------------------------------ #
-    # Routers
-    # ------------------------------------------------------------------ #
-
-    def _critic_router(self, state: AgentState) -> str:
-        return "retrieve" if state.get("needs_retry") else "end"
-
-
-# --------------------------------------------------------------------------- #
-# CLI
-# --------------------------------------------------------------------------- #
-
-def _build_cli() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Run the Corrective-RAG (v2) graph.")
-    p.add_argument("--collection", default=settings.us_collection)
-    p.add_argument("--provider", choices=["groq", "gemini", "openai", "anthropic"],
-                   default="gemini")
-    p.add_argument("--synth-model", default=None)
-    p.add_argument("--embedding-model", default=DEFAULT_EMBED_MODEL)
-    p.add_argument("--reranker-model", default=HybridRetriever.DEFAULT_RERANKER)
-    p.add_argument("--pool-top-k", type=int, default=48)
-    p.add_argument("--final-top-k", type=int, default=5)
-    p.add_argument("--max-critic-retries", type=int, default=2)
-    p.add_argument("--question", default=None)
-    p.add_argument("--dataset", default=None)
-    p.add_argument("--question-col", default="question")
-    p.add_argument("--sample", type=int, default=None)
-    p.add_argument("--output", default="results/corrective_rag_outputs.json")
-    return p
-
-
-def _load_dataset(path: str):
-    import pandas as pd
-
-    if path.endswith(".parquet"):
-        return pd.read_parquet(path)
-    if path.endswith((".jsonl", ".json")):
-        return pd.read_json(path, lines=path.endswith(".jsonl"))
-    raise ValueError(f"Unsupported dataset format: {path}")
-
-
-def main():
-    args = _build_cli().parse_args()
-
-    # LLM choice is per-run, not a property of the agent — build the context
-    # from the CLI flags and inject it at run().
-    ctx = RuntimeContext(provider=args.provider, synth_model=args.synth_model)
-
-    agent = AgenticRAGv2(
-        collection_name=args.collection,
-        embedding_model=args.embedding_model,
-        reranker_model=args.reranker_model,
-        pool_top_k=args.pool_top_k,
-        final_top_k=args.final_top_k,
-        max_critic_retries=args.max_critic_retries,
-    )
-
-    if args.dataset:
-        df = _load_dataset(args.dataset)
-        if args.sample:
-            df = df.head(args.sample)
-        agent.run_dataset(df, output_path=args.output, question_col=args.question_col)
-        return
-
-    if not args.question:
-        raise SystemExit("Provide --question or --dataset.")
-
-    state = agent.run(args.question, ctx)
-    print("\n" + "=" * 60)
-    print(f"Question:        {state['question']}")
-    print(f"Sub-queries:     {state.get('sub_queries')}")
-    print(f"Critic retries:  {state.get('critic_iterations', 0)}")
-    print(f"\nAnswer:\n{state.get('final_answer')}")
-    print(f"\nCitations:       {state.get('citations')}")
-    print(f"Critic grade:    {state.get('grading_score')}  needs_retry={state.get('needs_retry')}")
-    if state.get("errors"):
-        print(f"Errors:          {state['errors']}")
-
-
-if __name__ == "__main__":
-    main()

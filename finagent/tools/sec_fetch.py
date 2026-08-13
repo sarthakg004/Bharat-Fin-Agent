@@ -1,25 +1,19 @@
-"""
-sec_fetch.py  ·  finagent/tools/sec_fetch.py
+"""Dynamic SEC filing fetch — a self-expanding corpus.
 
-Dynamic SEC filing fetch (Phase 5) — a self-expanding corpus.
+When a question is about a US-listed company that is not indexed yet, fetch its
+latest 10-K from EDGAR on demand, run it through the existing ingestion pipeline
+into the live collection, then retrieve — so the corpus grows to answer questions
+it could not a moment ago.
 
-When a question is about a US-listed company we haven't indexed yet, we fetch its
-latest 10-K from EDGAR on demand, run it through the *existing* ingestion
-pipeline into the live collection, and then retrieve — so the corpus grows to
-answer questions it couldn't a moment ago.
+The corpus-membership gate distinguishes three cases cheaply, via a metadata
+query (`ticker == …`, limit 1) and the CIK resolver (a CIK means SEC-registered):
 
-The corpus-membership **gate** distinguishes three cases cheaply:
-  * already indexed         → nothing to do (retrieval will find it);
-  * US-listed, not indexed  → fetch + ingest, then retrieve;
-  * not US-listed           → leave it for the web-search branch.
+    already indexed         nothing to do, retrieval will find it
+    US-listed, not indexed  fetch + ingest, then retrieve
+    not US-listed           leave it for the web-search branch
 
-The first two are decided by a cheap metadata query (`ticker == …`,
-limit 1) and the Phase-2 resolver (a CIK means SEC-registered/US-listed).
-
-Persistence note: this upserts straight into the Qdrant collection and
-survives across runs. The Cloud Run scale-to-zero persistence problem
-(ingested chunks vanish when the instance is recycled) is a *deploy-time*
-concern handled in Phase 12 — it does not affect local behaviour here.
+Upserts straight into Qdrant and survives across runs. On Cloud Run set
+PERSIST_DYNAMIC_FETCH=false to keep fetched chunks ephemeral instead.
 """
 
 from __future__ import annotations
@@ -70,9 +64,9 @@ class SecFilingFetcher(BaseTool):
     description = "Fetch and ingest a company's latest SEC filing if not already indexed."
 
     # Dynamically fetched filings land under corpus_dir/SCRATCH_DIR/, kept OUT
-    # of the curated TICKER/YEAR_ACC.htm layout that `scripts/reindex_us_filings`
-    # walks: a reindex must rebuild the same corpus every time, not absorb
-    # whatever users happened to ask about since the last one.
+    # of the curated TICKER/YEAR_ACC.htm layout a reindex walks: rebuilding the
+    # corpus must give the same corpus every time, not absorb whatever users
+    # happened to ask about since the last one.
     SCRATCH_DIR = "dynamic-fetch"
 
     def __init__(

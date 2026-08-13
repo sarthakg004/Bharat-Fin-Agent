@@ -1,39 +1,21 @@
-"""
-agent.py  ·  finagent/graph/agent.py
-
-Full agentic RAG (v4) — the deployed agent. Adds to v3:
-
-  * **Fused plan+route** (inherited from v3) feeding a query-type dispatcher:
-    purely numeric/market/cross-document/external questions skip retrieval
-    and go straight to the tool chain.
-  * **Structured numeric lanes** — XBRL facts (exact filed figures) and a
-    deterministic calculator over them (margins/ratios/growth/CAGR).
-  * **Web search** — `web_search_node` covers questions the corpus can't (post
-    cut-off events, latest news) via Tavily (`TAVILY_API_KEY`). Escalates
-    automatically when retrieval comes back empty/weak or the draft admits it
-    can't answer.
-
-Graph:
+"""The deployed agent. Owns the constructor, the tool resources, the routing
+functions, and the graph wiring.
 
     START → planner(+routes) → router → {fetch_filing → retrieve | xbrl}
           → xbrl → calculator → (market_data ∥ web_search ∥ edgar_search)
           → evidence_builder → synthesize → critic → END
                                              ↘ refuse → END
 
-The node implementations live in `finagent/graph/nodes/` as topical mixins —
-fetch (SEC fetch + retrieval), numeric (XBRL/calculator), external
-(market/web/EDGAR), synthesis (evidence + drafting + critic + refusal). This
-module owns the constructor, the lane resources, the routing functions, and
-the graph wiring.
+The node bodies live in `finagent/graph/nodes/` as topical mixins: fetch (SEC
+fetch + retrieval), numeric (XBRL/calculator), external (market/web/EDGAR),
+synthesis (evidence + drafting + critic + refusal).
 """
 
 from __future__ import annotations
 
-import argparse
 from typing import Optional
 
 from finagent.graph.full import AgenticRAGv3
-from finagent.runtime import RuntimeContext
 from finagent.graph.state import AgentState
 from finagent.tools.web_search import WebSearcher
 from finagent.tools.calculator import FinancialCalculator
@@ -43,17 +25,11 @@ from finagent.tools.xbrl import XBRLClient
 from finagent.graph.nodes import (
     FetchNodes, NumericNodes, ExternalNodes, SynthesisNodes,
 )
-from finagent.vectorstore import DEFAULT_EMBED_MODEL
-from finagent.config import settings
 
-
-# --------------------------------------------------------------------------- #
-# AgenticRAGv4
-# --------------------------------------------------------------------------- #
 
 class AgenticRAGv4(FetchNodes, NumericNodes, ExternalNodes,
                    SynthesisNodes, AgenticRAGv3):
-    """v3 + structured numeric lanes + web search."""
+    """Retrieval + structured numeric lanes + web search."""
 
     # Hard-refuse only when the critic could support LESS than this share of
     # the draft's claims after every retry was spent; a mostly-supported
@@ -310,91 +286,3 @@ class AgenticRAGv4(FetchNodes, NumericNodes, ExternalNodes,
         )
         g.add_edge("refuse", END)
         return g.compile()
-
-# --------------------------------------------------------------------------- #
-# CLI
-# --------------------------------------------------------------------------- #
-
-def _build_cli() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Run the full agentic RAG (v4).")
-    p.add_argument("--collection", default=settings.us_collection)
-    p.add_argument("--provider", choices=["groq", "gemini", "openai", "anthropic"],
-                   default="gemini")
-    p.add_argument("--synth-model", default=None)
-    p.add_argument("--embedding-model", default=DEFAULT_EMBED_MODEL)
-    p.add_argument("--reranker-model", default="BAAI/bge-reranker-v2-m3")
-    p.add_argument("--pool-top-k", type=int, default=48)
-    p.add_argument("--final-top-k", type=int, default=5)
-    p.add_argument("--web-top-k", type=int, default=3)
-    p.add_argument("--max-critic-retries", type=int, default=2)
-    p.add_argument("--question", default=None)
-    p.add_argument("--dataset", default=None)
-    p.add_argument("--question-col", default="question")
-    p.add_argument("--sample", type=int, default=None)
-    p.add_argument("--output", default="results/final_rag_outputs.json")
-    return p
-
-
-def _load_dataset(path: str):
-    import pandas as pd
-
-    if path.endswith(".parquet"):
-        return pd.read_parquet(path)
-    if path.endswith((".jsonl", ".json")):
-        return pd.read_json(path, lines=path.endswith(".jsonl"))
-    raise ValueError(f"Unsupported dataset format: {path}")
-
-
-def main():
-    args = _build_cli().parse_args()
-
-    # LLM choice is per-run, not a property of the agent — build the context
-    # from the CLI flags and inject it at run().
-    ctx = RuntimeContext(provider=args.provider, synth_model=args.synth_model)
-
-    agent = AgenticRAGv4(
-        collection_name=args.collection,
-        embedding_model=args.embedding_model,
-        reranker_model=args.reranker_model,
-        pool_top_k=args.pool_top_k,
-        final_top_k=args.final_top_k,
-        web_top_k=args.web_top_k,
-        max_critic_retries=args.max_critic_retries,
-    )
-
-    if args.dataset:
-        df = _load_dataset(args.dataset)
-        if args.sample:
-            df = df.head(args.sample)
-        agent.run_dataset(df, output_path=args.output, question_col=args.question_col)
-        return
-
-    if not args.question:
-        raise SystemExit("Provide --question or --dataset.")
-
-    state = agent.run(args.question, ctx)
-    print("\n" + "=" * 60)
-    print(f"Question:         {state['question']}")
-    print(f"Sub-queries:      {state.get('sub_queries')}")
-    print(f"Routes:           {state.get('query_routes')}")
-    ev = state.get("evidence") or []
-    kinds: dict = {}
-    for e in ev:
-        kinds[e.get("kind")] = kinds.get(e.get("kind"), 0) + 1
-    print(f"Evidence:         {len(ev)} items {kinds}")
-    print(f"Critic retries:   {state.get('critic_iterations', 0)}")
-    print(f"Claims supported: {state.get('grading_score')}")
-    print(f"Refused:          {state.get('refused', False)}")
-    print(f"Status:           {state.get('status')}")
-    print(f"\nAnswer:\n{state.get('final_answer')}")
-    print(f"\nCitations:        {state.get('citations')}")
-    if state.get("web_results"):
-        print(f"\nWeb hits ({len(state['web_results'])}):")
-        for h in state["web_results"]:
-            print(f"  - [{h.get('source')}] {h.get('title', '')[:90]}")
-    if state.get("errors"):
-        print(f"\nErrors:           {state['errors']}")
-
-
-if __name__ == "__main__":
-    main()

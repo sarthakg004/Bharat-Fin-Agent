@@ -1,4 +1,5 @@
-"""Topical node mixins composing `AgenticRAGv4` (see finagent.graph.agent)."""
+"""Topical node mixins. They sit ahead of the base layers in `AgenticRAGv4`'s
+MRO, so their `super()` calls reach `full.py` → `corrective.py` → `base.py`."""
 
 from finagent.graph.nodes.fetch import FetchNodes
 from finagent.graph.nodes.numeric import NumericNodes

@@ -30,9 +30,11 @@ The model decides what to look up and how to explain it.
 * **Your own documents.** Attach a PDF or DOCX in the chat. It is parsed with Docling,
   ranked against your question alongside the corpus, and held in memory for about an
   hour. It is never written to the shared index.
-* **Deep Research mode.** A second execution path that produces a full cited report by
-  running specialist tasks through the same agent and merging them. See
-  [`docs/deep-research.md`](docs/deep-research.md).
+* **Deep Research mode.** A second execution path that produces a full cited report.
+  It scopes the question into specialist tasks, runs each one through the same agent,
+  then merges and cross-checks the findings. Each specialist's `[N]` markers are
+  renumbered onto one global evidence list, so every claim in the report still clicks
+  through to its source (`finagent/research/`).
 
 ## Architecture
 
@@ -179,13 +181,17 @@ cd frontend && npm install && npm run dev
 
 Open http://localhost:5173 and ask something.
 
-To seed a collection with one filing:
+To build a collection, fetch filings and ingest them:
 
 ```bash
 pip install -e ".[ingest]"
-python -m finagent.ingestion.fetchPDFs
-python scripts/seed_collection.py --ticker AAPL
+python -m finagent.ingestion.fetchPDFs        # writes a manifest under data/us/
+python -m finagent.ingestion.ingest --manifest data/us/sec_manifest.json \
+    --corpus-dir data/us --collection us_filings_v5_gemini
 ```
+
+Or just ask about a company that is not indexed — dynamic EDGAR fetch ingests it
+on the spot.
 
 Ingestion is idempotent. Point ids are derived from the filing, the position and the
 content, so re-running overwrites instead of duplicating, and a local sqlite cache of

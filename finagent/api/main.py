@@ -1,21 +1,12 @@
-"""
-FastAPI app — agentic RAG.
+"""FastAPI app. Stateless: nothing is stored between requests — the client owns
+the conversation thread and replays recent turns via `QueryRequest.chat_history`,
+which the agent uses as memory.
 
-The single agentic pipeline (`AgenticRAGv4`) drives every answer. The server is
-stateless: it stores nothing between requests. The client owns the conversation
-thread and replays recent turns via `QueryRequest.chat_history`, which the agent
-uses as memory.
-
-Endpoints
----------
-    GET    /api/health
-    POST   /api/upload               # parse a PDF/DOCX into ephemeral chunks
-    POST   /api/query                # SSE stream — one answer
-    POST   /api/research             # SSE stream — Deep Research Mode
-
-Streaming events on /api/query: status, sources, chart, chunk, metrics, done.
-/api/research streams research_plan, agent_start, agent_done, then the same
-sources/chunk/metrics/done frames.
+    GET  /api/health
+    POST /api/upload     parse a PDF/DOCX into ephemeral chunks
+    POST /api/query      SSE: status, sources, chart, chunk, metrics, done
+    POST /api/research   SSE: research_plan, agent_start, agent_done, then the
+                         same sources/chunk/metrics/done frames
 """
 
 from __future__ import annotations

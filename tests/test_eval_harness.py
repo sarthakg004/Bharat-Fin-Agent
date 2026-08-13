@@ -32,7 +32,7 @@ def test_cap_contexts_bounds_the_judge_prompt():
     # Order is retrieval order: the tail is dropped, not the head.
     kept = _cap_contexts(["a" * 100, "b" * 100])
     assert kept == ["a" * 100, "b" * 100]
-    assert _cap_contexts(["", "   ", None if False else " "]) == []
+    assert _cap_contexts(["", "   ", " "]) == []
 
 
 def test_refusal_detection_matches_the_shipped_template():

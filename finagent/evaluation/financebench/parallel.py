@@ -1,37 +1,17 @@
-"""
-parallel.py  ·  finagent/evaluation/financebench/parallel.py
+"""Shard the FinanceBench eval across the whole key pool.
 
-Scale the FinanceBench eval across every configured Groq key.
-
-The serial `runner.run_agent_outputs` answers one question at a time on one
-key — ~150 questions take hours and a single rate limit stalls everything.
-This module shards the question set across N worker *processes*, giving each
-worker the key pool in a different rotation order (worker i starts on key i),
-so the whole 8-key pool is saturated and a 429 on one worker never blocks the
-others. Workers reuse the serial runner per shard, so resumability and the
-output-row shape are identical; the orchestrator merges the shards back into
-one outputs file.
+The serial runner answers one question at a time on one key: ~150 questions take
+hours and a single rate limit stalls everything. This shards the question set
+across N worker PROCESSES, each starting on a different key (worker i starts on
+key i), so the pool is saturated and a 429 on one worker never blocks the others.
+Workers reuse the serial runner per shard, so resumability and the output-row
+shape are identical; the orchestrator merges the shards back into one file.
 
 Safety on shared resources:
-  * each worker opens its own client against Qdrant and runs with
-    DISABLE_DYNAMIC_FETCH=1, so an eval run never mutates the corpus (the
-    server itself is safe for concurrent writes; we just want a fixed corpus
-    so runs are comparable);
+  * each worker opens its own Qdrant client and runs with DISABLE_DYNAMIC_FETCH=1,
+    so an eval run never mutates the corpus and every run sees a fixed one;
   * each worker is a separate process, so the non-thread-safe native stacks
     (tokenizers, cross-encoder) never share state.
-
-Usage
------
-    # 1. answer all dev+heldout questions across 4 workers
-    python -m finagent.evaluation.financebench.parallel \
-        --workers 4 --output results/financebench_full_outputs.json
-
-    # 2. RAGAS-score the merged outputs and write the final metrics report
-    python -m finagent.evaluation.financebench.parallel \
-        --score --output results/financebench_full_outputs.json
-
-Final metrics land in `results/final_metrics.json` + `.md` — one aggregate
-list (overall + per question type), not per-question noise.
 """
 
 from __future__ import annotations
@@ -575,6 +555,36 @@ def _load_all_questions():
     return served
 
 
+def _restrict_to_indexed(questions):
+    """Keep only questions whose filing is really in the eval collection.
+
+    A partially built index otherwise scores as a system failure: the question
+    is asked, its filing is not there, the agent answers from nothing, and RAGAS
+    records a genuine-looking zero. The index being half-finished is not a
+    property of the retriever, so it must not land in the metrics.
+
+    Reads the collection rather than a list of names, so it stays true as the
+    build fills in — every re-run covers whatever is indexed by then.
+    """
+    import json
+
+    from finagent.config import settings
+    from finagent.vectorstore import distinct_values
+
+    collection = settings.financebench_collection
+    urls = distinct_values(collection, "source_url", limit=200_000)
+    manifest = json.loads(Path(
+        "data/us/eval/financebench/eval_manifest.json").read_text())
+    indexed = {r["doc_name"] for r in manifest if r.get("source_url") in urls}
+    kept = questions[questions["doc_name"].isin(indexed)]
+    _log(f"--only-indexed: {len(indexed)} filings in {collection} -> "
+         f"{len(kept)} of {len(questions)} questions")
+    if kept.empty:
+        raise SystemExit(f"no questions map to the {len(indexed)} filings in "
+                         f"{collection}; is FINANCEBENCH_COLLECTION right?")
+    return kept
+
+
 class _Tee:
     """Write to both a stream and a file simultaneously."""
     def __init__(self, stream, filepath: Path):
@@ -602,6 +612,11 @@ def main() -> None:
     p.add_argument("--synth-model", default=None)
     p.add_argument("--sample", type=int, default=None,
                    help="limit to the first N questions (smoke runs)")
+    p.add_argument("--only-indexed", action="store_true",
+                   help="keep only questions whose filing is actually in the "
+                        "collection. For scoring a partially built index: "
+                        "without it, a question whose filing is missing is "
+                        "answered with no evidence and scored as a real miss.")
     p.add_argument("--worker", default=None, metavar="SHARD_JSONL",
                    help="(internal) run as a worker over one shard file")
     p.add_argument("--score", action="store_true",
@@ -684,6 +699,8 @@ def main() -> None:
         return
 
     qs = _load_all_questions()
+    if args.only_indexed:
+        qs = _restrict_to_indexed(qs)
     if args.sample:
         qs = qs.head(args.sample)
     run_parallel(qs, output_path=args.output, workers=args.workers,

@@ -1,18 +1,8 @@
-"""
-RAG service singletons.
-
-Single agentic pipeline (`AgenticRAGv4`): planner(+routes) → router → hybrid
-retrieve → xbrl → calculator → market_data (yfinance) ∥ web_search ∥
-edgar_search → synthesize → critic.
-
-Web search uses Tavily when `TAVILY_API_KEY` is set; web_search escalates
-automatically when text retrieval comes back empty or the question's company
-is not in the corpus, so questions about companies we don't index hit the web
-instead of returning "no information".
+"""Process-wide agent singletons, one per collection.
 
 Retrieval is hybrid (dense + BM25-sparse, fused server-side with RRF in Qdrant)
-and reranked with `bge-reranker-v2-m3`. Both were chosen by measurement, not
-default — see `results/RETRIEVAL_EXPERIMENTS.md` for the A/Bs and the numbers.
+and reranked. Both were chosen by measurement — see
+`results/RETRIEVAL_EXPERIMENTS.md`.
 """
 
 from __future__ import annotations

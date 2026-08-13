@@ -1,143 +1,58 @@
-"""
-base.py  ·  finagent/graph/base.py
+"""Base layer of the agent: the planner and critic nodes, plus `run()`.
 
-Week-2 agentic RAG built on LangGraph, with LangSmith tracing.
-
-Pipeline (StateGraph):
-
-    START → planner → retrieve → synthesize → critic → END
-
-    planner     decomposes the question into 1-3 sub-queries (structured output)
-    retrieve    similarity-search each sub-query, merge + dedupe
-    synthesize  strong LLM writes the final answer with inline citations
-    critic      checks each claim against the context (logs failures; no loop yet)
-
-This is the same retrieve→generate idea as the naive baseline, but every step is
-an observable LangGraph node and the planner/critic add multi-hop handling and a
-hallucination check.
-
-LangSmith
----------
-Set these in .env (no code changes needed — LangChain auto-traces):
-
-    LANGCHAIN_TRACING_V2=true
-    LANGCHAIN_API_KEY=ls__...
-    LANGCHAIN_PROJECT=finagent-week2     # optional
-
-Usage as a library
-------------------
-    from finagent.graph.base import AgenticRAG
-
-    agent = AgenticRAG()  # collection defaults to settings.us_collection
-    result = agent.run("Compare Microsoft and Apple revenue growth in FY23.")
-    print(result["final_answer"])
-    print(result["citations"])
-
-CLI
----
-    python -m finagent.graph.base \\
-        --collection us_filings \\
-        --question "Compare Microsoft and Apple revenue growth in FY23."
-
-    # Batch over an eval set and append a row to results/comparison.csv:
-    python -m finagent.graph.base \\
-        --collection us_filings \\
-        --dataset data/us/eval/financebench/data/financebench_open_source.jsonl \\
-        --sample 100
+Later layers override or wrap these (`corrective.py` → `full.py` → `agent.py`);
+`agent.py`'s `AgenticRAGv4` is the class the API actually serves. Nothing here
+is instantiated on its own — it is reached through `super()` from those layers.
 """
 
 from __future__ import annotations
 
-import argparse
-import json
-import re
-import time
-from pathlib import Path
-from typing import Optional, Union
+from typing import Optional
 
 from dotenv import load_dotenv
-from tqdm import tqdm
 
 from finagent.graph.state import AgentState, CriticReport, SubQueries
 from finagent.runtime import DEFAULTS as RUNTIME_DEFAULTS
 from finagent.runtime import RuntimeContext, create_llm, current_context
 from finagent.vectorstore import DEFAULT_EMBED_MODEL
 from finagent.config import settings
+from finagent.prompts.critic import CRITIC_PROMPT, CRITIC_SYSTEM
+from finagent.prompts.planner import PLANNER_PROMPT
 
 load_dotenv()
 
 
-# --------------------------------------------------------------------------- #
-# Prompts
-# --------------------------------------------------------------------------- #
-
-from finagent.prompts.critic import CRITIC_PROMPT, CRITIC_SYSTEM  # noqa: F401
-from finagent.prompts.planner import PLANNER_PROMPT  # noqa: F401
-from finagent.prompts.synthesizer import (  # noqa: F401
-    SYNTHESIZER_PROMPT,
-    SYNTHESIZER_SYSTEM,
-)
-
-
 class AgenticRAG:
-    """LangGraph agentic RAG: planner → retrieve → synthesize → critic.
+    """Planner and critic over a Qdrant collection.
 
-    Parameters
-    ----------
-    collection_name : str
-        Qdrant collection (defaults to settings.us_collection).
-    embedding_model : str
-        MUST match the model used at ingestion.
-    top_k : int
-        Chunks retrieved per sub-query. Fixed at construction — a request
-        cannot change how much evidence the agent gathers. (v4 supersedes this
-        with `final_top_k`, which the ephemeral fetch/upload lane reuses so
-        both lanes keep the same number of chunks per sub-query.)
-
-    The agent holds RESOURCES only and is immutable after construction, so one
-    instance is safe to share across concurrent requests. Which provider, model
-    and API key to use is per-request: pass a `finagent.runtime.RuntimeContext`
-    to `run()`, or let the API layer put one in the LangGraph config.
+    Holds RESOURCES only and is immutable after construction, so one instance
+    is safe to share across concurrent requests. Which provider, model and API
+    key to use is per-request: pass a `RuntimeContext` to `run()`, or let the
+    API layer put one in the LangGraph config.
     """
 
-    # Per-provider model defaults now live in `finagent.runtime` (the agent is
-    # provider-agnostic); re-exported here because callers still read
-    # `AgenticRAG.DEFAULTS`.
+    # Re-exported from `finagent.runtime` because callers still read
+    # `AgenticRAG.DEFAULTS` (see research/orchestrator.py).
     DEFAULTS = RUNTIME_DEFAULTS
 
     def __init__(
         self,
         collection_name: str = settings.us_collection,
         embedding_model: str = DEFAULT_EMBED_MODEL,
-        top_k: int = 5,
         collections: Optional[list[str]] = None,
     ):
-        # Everything on the agent is a long-lived, shared RESOURCE and is read
-        # -only after construction. Which provider/model/key to use is per
-        # -request and lives in `finagent.runtime.RuntimeContext`, delivered
-        # through the LangGraph config — see `_get_llm`.
         self.collection_name = collection_name
         # Filings collections to retrieve over. Defaults to the single
-        # `collection_name`; pass several to let the agent pull from all of
-        # them and rerank — the question decides what's relevant.
+        # `collection_name`; pass several to pull from all of them and rerank.
         self.collections = collections or [collection_name]
         self.embedding_model = embedding_model
-        self.top_k = top_k
-
-        # Lazy resources.
-        self._retriever = None
         self._graph = None
 
-    # ------------------------------------------------------------------ #
-    # Public API
-    # ------------------------------------------------------------------ #
-
     def run(self, question: str, ctx: Optional[RuntimeContext] = None) -> AgentState:
-        """Run the full graph on one question. Returns the final state dict.
+        """Run the graph on one question and return the final state.
 
-        `ctx` carries the per-request LLM configuration (provider/model/key).
-        It is injected here rather than held on the agent so one shared agent
-        can serve concurrent requests with different providers. None → defaults.
+        `ctx` is injected here rather than held on the agent so one shared
+        agent can serve concurrent requests with different providers.
         """
         initial: AgentState = {
             "question": question,
@@ -150,69 +65,14 @@ class AgenticRAG:
             config={"configurable": {"runtime_context": ctx or RuntimeContext()}},
         )
 
-    def run_dataset(
-        self,
-        df,
-        output_path: Union[str, Path] = "results/agentic_rag_outputs.json",
-        question_col: str = "question",
-        delay_between: float = 0.5,
-    ) -> list[dict]:
-        """Run the graph over a DataFrame, saving incrementally (resumable).
-
-        Output records are shaped like the naive baseline's so the same
-        RAGASEvaluator can score them (question, answer, retrieved_chunks, ...).
-        """
-        output_path = Path(output_path)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-
-        results: list[dict] = []
-        answered: set[str] = set()
-        if output_path.exists():
-            results = json.load(open(output_path))
-            answered = {r["question"] for r in results}
-            print(f"Resuming: {len(answered)} already answered")
-
-        rows = df.to_dict(orient="records")
-        todo = [r for r in rows if str(r[question_col]) not in answered]
-        print(f"Questions to process: {len(todo)}")
-
-        for row in tqdm(todo, desc="agentic_rag"):
-            question = str(row[question_col])
-            try:
-                state = self.run(question)
-                rec = {
-                    "question": question,
-                    "answer": state.get("final_answer", ""),
-                    "retrieved_chunks": [c["text"] for c in state.get("retrieved_chunks", [])],
-                    "sub_queries": state.get("sub_queries", []),
-                    "citations": state.get("citations", []),
-                    "grading_score": state.get("grading_score"),
-                    "needs_retry": state.get("needs_retry"),
-                    "errors": state.get("errors", []),
-                }
-                for k, v in row.items():
-                    rec.setdefault(k, v)
-                results.append(rec)
-            except Exception as e:
-                print(f"\n  ! failed: {question[:60]}... — {e}")
-                results.append(
-                    {"question": question, "answer": "", "retrieved_chunks": [], "error": str(e)}
-                )
-
-            json.dump(results, open(output_path, "w"), indent=2, default=str)
-            time.sleep(delay_between)
-
-        print(f"\nSaved {len(results)} results → {output_path}")
-        return results
-
     # ------------------------------------------------------------------ #
     # Nodes
     # ------------------------------------------------------------------ #
 
     def planner_node(self, state: AgentState) -> dict:
-        """Decompose the question into 1-3 sub-queries (structured output).
+        """Decompose the question into 1-8 sub-queries.
 
-        If `chat_history` is present, prepend a compact transcript so the
+        Prepends a compact transcript when `chat_history` is present, so the
         planner can resolve follow-ups like "what about the previous year?".
         """
         question = state["question"]
@@ -245,71 +105,12 @@ class AgenticRAG:
             queries = [question]
         return {"sub_queries": queries}
 
-    def retrieve_node(self, state: AgentState) -> dict:
-        """Retrieve top-k chunks per sub-query, merge and dedupe."""
-        retriever = self._get_retriever()
-        seen: set[str] = set()
-        chunks: list[dict] = []
-        for sub_q in state.get("sub_queries") or [state["question"]]:
-            for doc in retriever.similarity_search(sub_q, k=self.top_k):
-                key = f"{doc.metadata.get('local_path','')}:{doc.metadata.get('page','')}:{doc.page_content[:80]}"
-                if key in seen:
-                    continue
-                seen.add(key)
-                m = doc.metadata
-                chunks.append(
-                    {
-                        "text": doc.page_content,
-                        "company": m.get("company") or m.get("ticker", "?"),
-                        "year": m.get("year", "?"),
-                        "page": m.get("page", "?"),
-                        "source": self._citation_tag(m),
-                        "sub_query": sub_q,
-                    }
-                )
-        return {"retrieved_chunks": chunks}
-
-    def synthesize_node(self, state: AgentState) -> dict:
-        """Strong LLM writes the final answer with [N]-style inline citations."""
-        from langchain_core.messages import HumanMessage, SystemMessage
-
-        chunks = state.get("retrieved_chunks", [])
-        # 1-based numbering aligns with the citation IDs the user sees in the
-        # sidebar; the LLM is told to cite by these numbers.
-        context = "\n\n".join(
-            f"[{i + 1}] {c.get('source','')}\n{c['text']}"
-            for i, c in enumerate(chunks)
-        ) or "No context retrieved."
-        sub_queries = "\n".join(f"- {q}" for q in state.get("sub_queries", []))
-
-        llm = self._get_llm("synth")
-        prompt = SYNTHESIZER_PROMPT.format(
-            question=state["question"], sub_queries=sub_queries, context=context
-        )
-        response = llm.invoke(
-            [SystemMessage(content=SYNTHESIZER_SYSTEM), HumanMessage(content=prompt)]
-        )
-        from finagent.llm import text_of
-        answer = text_of(response)
-        citations = sorted(set(re.findall(r"\[[^\]]+\]", answer)))
-        return {
-            "draft_answer": answer,
-            "final_answer": answer,
-            "citations": citations,
-            "iteration_count": state.get("iteration_count", 0) + 1,
-        }
-
     def _critic_system(self) -> str:
-        """The critic's system prompt. Subclasses override to swap in the
-        analyst-voice critic (Phase 9) behind a flag."""
+        """The critic's system prompt; subclasses swap in the analyst voice."""
         return CRITIC_SYSTEM
 
     def critic_node(self, state: AgentState) -> dict:
-        """Check each claim in the draft against the context. Logs failures.
-
-        Day-6 scope: we score and flag but do NOT loop yet. The retry edge is
-        wired in a later week.
-        """
+        """Score each claim in the draft against the retrieved context."""
         from langchain_core.messages import HumanMessage, SystemMessage
 
         answer = state.get("draft_answer", "")
@@ -357,7 +158,7 @@ class AgenticRAG:
         }
 
     # ------------------------------------------------------------------ #
-    # Graph
+    # Graph + helpers
     # ------------------------------------------------------------------ #
 
     @property
@@ -366,27 +167,6 @@ class AgenticRAG:
         if self._graph is None:
             self._graph = self._build_graph()
         return self._graph
-
-    def _build_graph(self):
-        from langgraph.graph import END, START, StateGraph
-
-        builder = StateGraph(AgentState)
-        builder.add_node("planner", self.planner_node)
-        builder.add_node("retrieve", self.retrieve_node)
-        builder.add_node("synthesize", self.synthesize_node)
-        builder.add_node("critic", self.critic_node)
-
-        builder.add_edge(START, "planner")
-        builder.add_edge("planner", "retrieve")
-        builder.add_edge("retrieve", "synthesize")
-        builder.add_edge("synthesize", "critic")
-        builder.add_edge("critic", END)
-
-        return builder.compile()
-
-    # ------------------------------------------------------------------ #
-    # Helpers
-    # ------------------------------------------------------------------ #
 
     def _citation_tag(self, meta: dict) -> str:
         """Build a citation tag like '[Apple 10-K 2024, p. 102]'.
@@ -405,15 +185,6 @@ class AgenticRAG:
     def _log(state: AgentState, msg: str) -> None:
         state.setdefault("errors", []).append(msg)
 
-    def _get_retriever(self):
-        if self._retriever is None:
-            from finagent.vectorstore import build_store
-
-            self._retriever = build_store(
-                self.collection_name, self.embedding_model
-            )
-        return self._retriever
-
     def _get_llm(self, role: str):
         """The LLM for a role, built from the RUNNING REQUEST's context.
 
@@ -423,78 +194,3 @@ class AgenticRAG:
         the next one's question.
         """
         return create_llm(current_context(), role)
-
-
-# --------------------------------------------------------------------------- #
-# CLI
-# --------------------------------------------------------------------------- #
-
-def _build_cli() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Run the Week-2 agentic RAG graph.")
-    p.add_argument("--collection", default=settings.us_collection)
-    p.add_argument(
-        "--provider",
-        choices=["groq", "gemini", "openai", "anthropic"],
-        default="groq",
-    )
-    p.add_argument("--planner-model", default=None)
-    p.add_argument("--synth-model", default=None)
-    p.add_argument("--critic-model", default=None)
-    p.add_argument("--embedding-model", default=DEFAULT_EMBED_MODEL)
-    p.add_argument("--top-k", type=int, default=5)
-    p.add_argument("--question", default=None, help="Single question to answer")
-    p.add_argument("--dataset", default=None, help="JSONL/parquet eval set for a batch run")
-    p.add_argument("--question-col", default="question")
-    p.add_argument("--sample", type=int, default=None, help="Limit batch to first N rows")
-    p.add_argument("--output", default="results/agentic_rag_outputs.json")
-    return p
-
-
-def _load_dataset(path: str, question_col: str):
-    import pandas as pd
-
-    path = str(path)
-    if path.endswith(".parquet"):
-        return pd.read_parquet(path)
-    if path.endswith((".jsonl", ".json")):
-        return pd.read_json(path, lines=path.endswith(".jsonl"))
-    raise ValueError(f"Unsupported dataset format: {path}")
-
-
-def main():
-    args = _build_cli().parse_args()
-
-    # LLM choice is per-run, not a property of the agent — build the context
-    # from the CLI flags and inject it at run().
-    ctx = RuntimeContext(provider=args.provider, synth_model=args.synth_model,
-                         top_k=args.top_k)
-
-    agent = AgenticRAG(
-        collection_name=args.collection,
-        embedding_model=args.embedding_model,
-        top_k=args.top_k,
-    )
-
-    if args.dataset:
-        df = _load_dataset(args.dataset, args.question_col)
-        if args.sample:
-            df = df.head(args.sample)
-        agent.run_dataset(df, output_path=args.output, question_col=args.question_col)
-        return
-
-    if not args.question:
-        raise SystemExit("Provide --question or --dataset.")
-
-    state = agent.run(args.question, ctx)
-    print("\n" + "=" * 60)
-    print(f"Question:    {state['question']}")
-    print(f"Sub-queries: {state.get('sub_queries')}")
-    print(f"\nAnswer:\n{state.get('final_answer')}")
-    print(f"\nCitations:   {state.get('citations')}")
-    print(f"Grade:       {state.get('grading_score')}  needs_retry={state.get('needs_retry')}")
-    if state.get("errors"):
-        print(f"Errors:      {state['errors']}")
-
-
-if __name__ == "__main__":
-    main()

@@ -1,28 +1,10 @@
-"""
-fetch_pdfs.py
+"""Download SEC filings, either from EDGAR or from a CSV of URLs.
 
-Download SEC filings (US) either from EDGAR or from a CSV of URLs:
+    from_sec()   SEC EDGAR API for US-listed companies
+    from_urls()  bulk download from a CSV of pre-collected URLs
 
-    - from_sec():   SEC EDGAR API for US-listed companies
-    - from_urls():  bulk download from a CSV of pre-collected URLs
-
-Usage as a library
-------------------
-    from fetch_pdfs import FetchPDFs
-
-    # SEC EDGAR (requires your name + email for SEC's User-Agent policy)
-    fetcher = FetchPDFs(
-        output_dir="data/us",
-        sec_user_agent_name="Your Name",
-        sec_user_agent_email="you@example.com",
-    )
-    records = fetcher.from_sec(["AAPL", "MSFT", "NVDA"], num_filings=3)
-
-Usage as CLI
-------------
-    python fetch_pdfs.py sec  --tickers AAPL,MSFT,NVDA --num-filings 3 \\
-                              --out data/us --name "Your Name" --email "you@example.com"
-    python fetch_pdfs.py urls --csv urls.csv --out data/pdfs
+EDGAR requires a name + email for its User-Agent policy. Output feeds
+`ingest.py` via the manifest this writes.
 """
 
 from __future__ import annotations
@@ -144,38 +126,18 @@ class FetchPDFs:
     ) -> list[dict]:
         """Download US SEC filings via the EDGAR API.
 
-        The SEC requires identification in every request's User-Agent header.
-        Pass your real name and email — they are not registered or used for
-        any account, only logged on SEC's side for compliance / abuse tracking.
+        SEC requires identification in every request's User-Agent — pass a real
+        name and email. They are only logged on SEC's side, never registered.
 
-        Args:
-            tickers: Comma-separated string or iterable of US tickers,
-                e.g. "AAPL,MSFT,NVDA" or ["AAPL", "MSFT", "NVDA"].
-            filing_type: SEC form name. Common values:
-                "10-K"  annual report (use this for RAG corpus)
-                "10-Q"  quarterly report
-                "8-K"   current events
-                "DEF 14A" proxy statement
-            num_filings: Number of most recent filings to download per ticker.
-                Ignored if both `after` and `before` are supplied.
-            after: Optional ISO date "YYYY-MM-DD" — only filings on/after this date.
-            before: Optional ISO date "YYYY-MM-DD" — only filings on/before this date.
-            user_agent_name: Override the class-level SEC identification name.
-            user_agent_email: Override the class-level SEC identification email.
+        `num_filings` is ignored when both `after` and `before` are given.
+        Returns manifest records: ticker, year, filing_type, accession_number,
+        source_url, local_path, status.
 
-        Returns:
-            List of manifest records. Each record has fields: ticker, year,
-            filing_type, accession_number, source_url, local_path, status.
-
-        Notes:
-            - Files land at {output_dir}/{TICKER}/{YEAR}_{accession}.htm
-              (we copy the primary 10-K HTML out of the library's nested folder
-              structure so the corpus layout matches the from_urls() output).
-            - The full nested download remains at
-              {output_dir}/sec-edgar-filings/{TICKER}/{filing_type}/{accession}/
-              in case you need other documents from the same filing.
-            - The 10-K HTML is what you want to ingest. The .txt full submission
-              is a concatenated dump that's much harder to parse.
+        Files land at {output_dir}/{TICKER}/{YEAR}_{accession}.htm — the primary
+        HTML is copied out of the library's nested folder so the layout matches
+        from_urls(). The full nested download stays under sec-edgar-filings/ in
+        case another document from the same filing is needed. Ingest the HTML,
+        not the .txt full submission: that is a concatenated dump.
         """
         try:
             from sec_edgar_downloader import Downloader

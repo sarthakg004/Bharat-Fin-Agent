@@ -1,25 +1,16 @@
-"""
-dataset.py  ·  finagent/evaluation/financebench/dataset.py
+"""Load the FinanceBench question set, tag each question by type, and carve a
+held-out slice that is never inspected while iterating.
 
-Load the FinanceBench open-source question set, tag every question by *type*,
-and carve out a held-out slice that we never inspect while iterating.
+The type tag is what lets a later phase prove a TARGETED win ("XBRL lifted
+numeric accuracy by X") rather than only "overall went up a bit":
 
-The type tag is what lets later phases prove a *targeted* win — e.g. "XBRL
-lifted numeric-question accuracy by X" — instead of only "overall went up a
-bit". We bucket every question into exactly one of four classes:
+    numeric        — the answer is a reported figure or derived from figures
+    comparison     — two or more entities/periods pitted against each other
+    cross-document — the evidence spans more than one filing
+    narrative      — everything else (qualitative / extraction)
 
-    numeric        — the answer is a reported figure or a value derived from
-                     figures (FinanceBench `metrics-generated`, or any question
-                     whose reasoning is numerical).
-    comparison     — the question pits two or more entities/periods against
-                     each other ("compare", "versus", "higher/lower than").
-    cross-document — the verified evidence spans more than one filing, so the
-                     answer cannot come from a single document.
-    narrative      — everything else (qualitative / information-extraction).
-
-Priority when a question matches several rules: cross-document > comparison >
-numeric > narrative. Cross-document and comparison are rarer and more specific,
-so they win over the broad numeric bucket.
+Priority when several rules match: cross-document > comparison > numeric >
+narrative. The rarer, more specific buckets win over the broad numeric one.
 """
 
 from __future__ import annotations

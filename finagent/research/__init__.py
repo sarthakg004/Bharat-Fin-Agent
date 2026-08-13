@@ -3,7 +3,7 @@
 An additional execution path next to the chat pipeline: the orchestrator
 scopes the request, runs specialist research tasks through the existing
 production agent (injected as a runner), cross-checks the findings, and
-writes a cited investment report. See `docs/deep-research.md`.
+writes a cited investment report.
 """
 
 from finagent.research.orchestrator import DeepResearch

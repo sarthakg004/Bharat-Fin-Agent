@@ -5,8 +5,13 @@ Everything here was measured on the FinanceBench eval set (150 questions, 84
 earlier conclusion was overturned by a later experiment, the retraction is kept
 rather than edited out — the sequence is the point.
 
-Raw data: `results/*.json`. The generated metrics report is
-`results/retrieval_report.md`.
+Raw data: `results/*.json`.
+
+> The reproduction commands below are kept as the record of what was actually
+> run. Several one-off scripts under `scripts/` (`retrieval_report.py`,
+> `reranker_ab.py`, `funnel_sweep.py`) were deleted once their measurement
+> landed here; the JSON they produced is still in `results/`. The live harness
+> is `python -m finagent.evaluation.evaluate_retrieval`.
 
 ---
 

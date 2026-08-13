@@ -1,30 +1,19 @@
-"""
-answer_match.py  ·  finagent/evaluation/financebench/answer_match.py
+"""Deterministic answer-correctness, to sit alongside the RAGAS judge metrics.
 
-A **deterministic answer-correctness** signal to sit alongside the RAGAS judge
-metrics.
-
-Why this exists
----------------
 RAGAS `faithfulness` measures whether the answer's claims are grounded in the
-retrieved context — not whether the answer is *right*. On FinanceBench we found a
-systematic gap: numerically-correct answers were being scored unfaithful because
-the synthesizer padded them with provenance boilerplate the context didn't
-literally contain (e.g. "$5,409M — sourced from the FY2019 10-K, us-gaap:
+retrieved context — not whether the answer is RIGHT. On FinanceBench that left a
+systematic gap: numerically-correct answers scored unfaithful because the
+synthesizer padded them with provenance boilerplate the context did not
+literally contain ("$5,409M — sourced from the FY2019 10-K, us-gaap:
 InventoryNet"). The figure matched gold exactly; faithfulness was 0.
 
-`numeric_accuracy` closes that blind spot: for every numeric question it checks
-whether the gold value actually appears in the answer (within a relative
-tolerance), independent of how the answer was phrased or grounded. Read the two
-together:
+`numeric_accuracy` checks whether the gold value appears in the answer within a
+relative tolerance, however it was phrased. Read the two together:
 
-    high numeric_accuracy + low faithfulness  → answer is RIGHT but over-claims
-                                                 (a phrasing/prompt problem)
-    low numeric_accuracy                       → answer is WRONG (a retrieval or
-                                                 computation problem)
+    high numeric_accuracy + low faithfulness → RIGHT but over-claims (phrasing)
+    low numeric_accuracy                     → WRONG (retrieval or computation)
 
-It is judge-free (no LLM, no API quota), so it's cheap to run on every iteration
-and is the natural "did the change actually help?" gauge for the numeric set.
+Judge-free, so it costs no quota and can run on every iteration.
 """
 
 from __future__ import annotations
