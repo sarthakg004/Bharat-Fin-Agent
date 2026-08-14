@@ -43,6 +43,9 @@ CLAUDE.md
 # reading them as a result. Keep the write-ups (RETRIEVAL_EXPERIMENTS.md,
 # v1-v4 final_metrics.md) and leave the bulk data on disk.
 results/v5/
+# v6 is still being generated (a metered multi-day run); a mid-run snapshot
+# reads as a finished result but isn't. Ignore until the run completes.
+results/v6_partial/
 results/financebench_gold_*.json
 results/financebench_retrieval_queries_*.json
 results/financebench_full_outputs*.json

@@ -120,6 +120,12 @@ _DAILY_QUOTA_HINTS = (
     "tokens per day", "per day (tpd)", "tpd",
     "requests per day", "per day (rpd)", "rpd",
     "daily quota", "daily limit",
+    # Gemini names its daily bucket as a camelCase quota id with no spaces
+    # (e.g. "GenerateRequestsPerDayPerProjectPerModel-FreeTier"), which none of
+    # the spaced hints above match. Without this a daily RPD wall reads as a
+    # per-minute limit and `_wait_out` sleeps on it forever. The per-MINUTE id
+    # is "...PerMinute...", so "perday" cannot false-positive on it.
+    "perday",
 )
 
 # A prompt bigger than the model's whole per-minute token allowance. Groq

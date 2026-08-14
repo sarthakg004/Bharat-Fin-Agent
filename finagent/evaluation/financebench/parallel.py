@@ -66,19 +66,34 @@ def _count_rows(paths: list[Path]) -> int:
     return total
 
 
-def _worker_env(keys: list[str], worker_idx: int) -> dict:
+def _worker_env(keys: list[str], worker_idx: int, provider: str = "groq") -> dict:
     """Environment for one worker: the full key pool, rotated so worker i
     STARTS on key i (workers spread across keys but can still rotate off a
-    rate-limited one)."""
+    rate-limited one).
+
+    Pins into the ENV VAR THAT MATCHES `provider` — not always GROQ. Hardcoding
+    GROQ was correct when the answer model was Groq, but under `--provider
+    gemini` it stuffed the Gemini keys into the worker's GROQ_API_KEY* slots, so
+    the Groq-pinned router (ROUTER_PIN) found 8 invalid keys in its pool and
+    dropped each one every question — a flood of bogus "AuthenticationError:
+    dropped invalid key" lines, while the router still limped along on the real
+    Groq keys .env restored underneath. Keying off the provider keeps each
+    pool clean."""
+    from finagent.llm import API_KEY_ENV
+
+    base = API_KEY_ENV[provider]        # e.g. GEMINI_API_KEY
     env = dict(os.environ)
-    # Drop every numbered key first so the rotation order is exactly ours
-    # (fixed range — the numbering may have gaps or start at 1).
+    # Drop the bare, numbered and consolidated forms first so the rotation order
+    # is exactly ours and nothing shadows it (numbering may have gaps / start
+    # at 1). Only this provider's vars — the router's own pool is left intact.
+    env.pop(base, None)
+    env.pop(f"{base}S", None)
     for i in range(1, 33):
-        env.pop(f"GROQ_API_KEY{i}", None)
+        env.pop(f"{base}{i}", None)
     rotated = keys[worker_idx % len(keys):] + keys[:worker_idx % len(keys)]
-    env["GROQ_API_KEY"] = rotated[0]
+    env[base] = rotated[0]
     for j, k in enumerate(rotated[1:], start=2):
-        env[f"GROQ_API_KEY{j}"] = k
+        env[f"{base}{j}"] = k
     # Read-only corpus: fetched filings stay in-memory per question.
     env["PERSIST_DYNAMIC_FETCH"] = "false"
     env["TOKENIZERS_PARALLELISM"] = "false"
@@ -196,7 +211,7 @@ def run_parallel(
                "--provider", provider]
         if synth_model:
             cmd += ["--synth-model", synth_model]
-        procs.append(subprocess.Popen(cmd, env=_worker_env(keys, w)))
+        procs.append(subprocess.Popen(cmd, env=_worker_env(keys, w, provider)))
         _log(f"worker {w}: {len(shard)} questions → {shard_out}")
 
     # One progress bar for the whole run: the workers write each answered row

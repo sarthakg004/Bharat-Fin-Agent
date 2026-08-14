@@ -182,3 +182,31 @@ def test_report_shows_rows_scored_per_metric(tmp_path):
     line = next(l for l in md.read_text().splitlines()
                 if l.startswith("| faithfulness |"))
     assert "| 7 |" in line
+
+
+def test_worker_env_pins_the_answer_provider_not_always_groq(monkeypatch):
+    """The per-worker key pool must land in the ENV VAR of the answer provider.
+
+    Regression: `_worker_env` hardcoded GROQ_API_KEY*, so under --provider gemini
+    it stuffed the Gemini keys into the worker's GROQ slots. The Groq-pinned
+    router then found 8 invalid keys in its pool and dropped each every question
+    (a flood of bogus AuthenticationError lines). The Groq pool must stay clean.
+    """
+    import os
+
+    from finagent.evaluation.financebench.parallel import _worker_env
+
+    for v in list(os.environ):
+        if v.startswith(("GROQ_API_KEY", "GEMINI_API_KEY")):
+            monkeypatch.delenv(v, raising=False)
+    monkeypatch.setenv("GROQ_API_KEY1", "groq-real-A")
+    monkeypatch.setenv("GROQ_API_KEY2", "groq-real-B")
+
+    env = _worker_env(["gem-1", "gem-2", "gem-3"], 0, provider="gemini")
+
+    # Gemini keys pinned into GEMINI_*, worker-0 order preserved.
+    assert env["GEMINI_API_KEY"] == "gem-1"
+    assert env["GEMINI_API_KEY2"] == "gem-2"
+    # The Groq pool the router reads is untouched — no Gemini key leaked in.
+    assert env.get("GROQ_API_KEY1") == "groq-real-A"
+    assert "gem-1" not in {env.get(k) for k in env if k.startswith("GROQ_API_KEY")}
