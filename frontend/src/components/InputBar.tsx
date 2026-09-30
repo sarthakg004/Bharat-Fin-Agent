@@ -1,14 +1,10 @@
 import { useRef, useState } from "react";
 import { motion } from "framer-motion";
-import { ArrowUp, X, Loader2, ChevronDown, FileText, FlaskConical, ListTree, MessageSquare, Paperclip, PenLine } from "lucide-react";
-import toast from "react-hot-toast";
+import { ArrowUp, ChevronDown, Loader2, PenLine } from "lucide-react";
 
-import { uploadFile } from "@/lib/api";
-import { useChatStore } from "@/store/chatStore";
-import { useThreadStore } from "@/store/threadStore";
-import {
-  PROVIDER_LABELS, PROVIDER_MODELS, type Provider, useSettingsStore,
-} from "@/store/settingsStore";
+import type { Provider, ServerConfig } from "@/lib/api";
+import { useServerConfig } from "@/hooks/useServerConfig";
+import { PROVIDER_LABELS, resolveWriter, useSettingsStore } from "@/store/settingsStore";
 import { cls, modKey } from "@/lib/utils";
 
 interface Props {
@@ -17,20 +13,22 @@ interface Props {
   disabled?: boolean;
 }
 
-// The question bar is the primary control on the page, so it gets real estate:
-// ~3 lines visible before it scrolls, on a 24px rhythm.
+// About three lines visible before the box scrolls.
 const MAX_ROWS = 8;
 const LINE_HEIGHT = 24;
 const MIN_HEIGHT = LINE_HEIGHT * 3;
 
 export function InputBar({ onSend, streaming, disabled }: Props) {
   const [value, setValue] = useState("");
-  const mode = useSettingsStore((s) => s.mode);
   const ref = useRef<HTMLTextAreaElement | null>(null);
+  const config = useServerConfig();
+  const writer = resolveWriter(config, useSettingsStore());
+  // A writer the server has no key for cannot run until the user supplies one.
+  const blocked = streaming || disabled || writer.needsKey;
 
   function send() {
     const q = value.trim();
-    if (!q || streaming || disabled) return;
+    if (!q || blocked) return;
     onSend(q);
     setValue("");
     autoSize();
@@ -40,17 +38,14 @@ export function InputBar({ onSend, streaming, disabled }: Props) {
     const el = ref.current;
     if (!el) return;
     el.style.height = "0px";
-    const next = Math.min(Math.max(el.scrollHeight, MIN_HEIGHT), LINE_HEIGHT * MAX_ROWS);
-    el.style.height = next + "px";
+    el.style.height = Math.min(Math.max(el.scrollHeight, MIN_HEIGHT), LINE_HEIGHT * MAX_ROWS) + "px";
   }
 
   function onKey(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === "Escape") {
       setValue("");
       autoSize();
-      return;
-    }
-    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+    } else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
       send();
     }
@@ -64,9 +59,6 @@ export function InputBar({ onSend, streaming, disabled }: Props) {
         disabled && "opacity-60",
       )}
     >
-      <UploadChips />
-
-      {/* Question row */}
       <div className="flex items-end gap-3 px-4 pb-3 pt-3.5">
         <textarea
           ref={ref}
@@ -77,285 +69,121 @@ export function InputBar({ onSend, streaming, disabled }: Props) {
             autoSize();
           }}
           onKeyDown={onKey}
-          placeholder={
-            mode === "research"
-              ? `Name a company to research — e.g. "Should I invest in Nvidia?"   ${modKey()}↵ to send`
-              : `Ask a financial question...   ${modKey()}↵ to send`
-          }
+          placeholder={`Ask a financial question...   ${modKey()}↵ to send`}
           style={{ height: MIN_HEIGHT }}
           className="flex-1 resize-none bg-transparent font-ui text-[15px] leading-[24px] text-text-primary placeholder:text-text-muted focus:outline-none"
           disabled={disabled}
         />
-        <div className="flex shrink-0 items-end gap-1">
-          <UploadButton disabled={disabled || streaming} />
-          {/* No "new conversation" button here: an X inside a composer reads as
-              "clear what I typed", but this started a new chat — which the
-              sidebar's primary action and ⌘N already do. */}
-          <motion.button
-            type="button"
-            onClick={send}
-            whileTap={{ scale: 0.95 }}
-            className={cls(
-              "flex h-[38px] w-[38px] items-center justify-center border transition-colors",
-              value.trim() && !streaming
-                ? "border-accent bg-accent text-bg-base hover:bg-accent-hover"
-                : "border-border-subtle bg-bg-elevated text-text-muted",
-            )}
-            aria-label="Send"
-            disabled={!value.trim() || streaming || disabled}
-          >
-            {streaming ? (
-              <Loader2 size={14} className="animate-spin" />
-            ) : (
-              <ArrowUp size={15} />
-            )}
-          </motion.button>
-        </div>
-      </div>
-
-      {/* Mode + models — pick the pipeline and BOTH models right here. */}
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 border-t border-border-subtle bg-bg-base/40 px-4 py-2">
-        <ModeToggle disabled={disabled || streaming} />
-        <span className="h-4 w-px bg-border-subtle" />
-        <ModelSelect />
-      </div>
-    </div>
-  );
-}
-
-/** Chat ↔ Deep Research. Chat answers one question; Deep Research runs the
- *  specialist-agent workflow and produces a full cited investment report. */
-function ModeToggle({ disabled }: { disabled?: boolean }) {
-  const mode = useSettingsStore((s) => s.mode);
-  const setMode = useSettingsStore((s) => s.setMode);
-
-  const base =
-    "inline-flex items-center gap-1.5 px-2 py-1 font-mono text-[10px] uppercase tracking-wider transition-colors";
-  return (
-    <div className="flex items-center border border-border-subtle" role="radiogroup" aria-label="Mode">
-      <button
-        type="button"
-        role="radio"
-        aria-checked={mode === "chat"}
-        disabled={disabled}
-        onClick={() => setMode("chat")}
-        className={cls(base, mode === "chat"
-          ? "bg-bg-elevated text-text-primary"
-          : "text-text-muted hover:text-text-secondary")}
-        title="Answer one question over the filings + tools"
-      >
-        <MessageSquare size={11} />
-        Chat
-      </button>
-      <button
-        type="button"
-        role="radio"
-        aria-checked={mode === "research"}
-        disabled={disabled}
-        onClick={() => setMode("research")}
-        className={cls(base, mode === "research"
-          ? "bg-accent/10 text-accent"
-          : "text-text-muted hover:text-text-secondary")}
-        title="Multi-agent research: specialist agents + a full cited investment report (takes a few minutes)"
-      >
-        <FlaskConical size={11} />
-        Deep Research
-      </button>
-    </div>
-  );
-}
-
-/** Attach PDF/DOCX files. Each is parsed server-side into ephemeral chunks and
- *  every question in this chat is answered over them (+ the corpus). */
-function UploadButton({ disabled }: { disabled?: boolean }) {
-  const addUpload = useChatStore((s) => s.addUpload);
-  const [busy, setBusy] = useState(false);
-  const fileRef = useRef<HTMLInputElement | null>(null);
-
-  async function onPick(e: React.ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(e.target.files ?? []);
-    e.target.value = "";                    // allow re-picking the same file
-    if (!files.length) return;
-    // A thread must exist to own the uploads (they persist per-thread).
-    const threads = useThreadStore.getState();
-    if (!threads.activeId) threads.createChat("New chat");
-    setBusy(true);
-    // Sequential — the server parses on a single worker anyway.
-    for (const file of files) {
-      try {
-        const res = await uploadFile(file);
-        addUpload({ id: res.upload_id, name: res.filename,
-                    pages: res.pages, chunks: res.chunks });
-        toast.success(`${res.filename} attached (${res.pages} pages)`);
-      } catch (err) {
-        toast.error(err instanceof Error ? err.message : `${file.name}: upload failed`);
-      }
-    }
-    useThreadStore.getState().saveActive();  // uploads survive reload/switch
-    setBusy(false);
-  }
-
-  return (
-    <>
-      <input
-        ref={fileRef}
-        type="file"
-        accept=".pdf,.docx"
-        multiple
-        className="hidden"
-        onChange={onPick}
-      />
-      <button
-        type="button"
-        onClick={() => fileRef.current?.click()}
-        disabled={disabled || busy}
-        className="flex h-[38px] w-[38px] items-center justify-center border border-border-subtle text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary disabled:opacity-50"
-        title="Attach PDF or DOCX files (analysed for this chat only)"
-        aria-label="Attach documents"
-      >
-        {busy ? <Loader2 size={14} className="animate-spin" /> : <Paperclip size={14} />}
-      </button>
-    </>
-  );
-}
-
-/** Chips for the documents attached to this chat. */
-function UploadChips() {
-  const uploads = useChatStore((s) => s.uploads);
-  const removeUpload = useChatStore((s) => s.removeUpload);
-  if (!uploads.length) return null;
-
-  function remove(id: string) {
-    removeUpload(id);
-    useThreadStore.getState().saveActive();
-  }
-
-  return (
-    <div className="flex flex-wrap items-center gap-1.5 border-b border-border-subtle px-3 py-1.5">
-      {uploads.map((u) => (
-        <span
-          key={u.id}
-          className="inline-flex items-center gap-1.5 border border-border-subtle bg-bg-elevated px-2 py-1 font-mono text-[10px] text-text-secondary"
-          title={`${u.chunks} chunks · answered alongside the corpus`}
+        <motion.button
+          type="button"
+          onClick={send}
+          whileTap={{ scale: 0.95 }}
+          className={cls(
+            "flex h-[38px] w-[38px] shrink-0 items-center justify-center border transition-colors",
+            value.trim() && !blocked
+              ? "border-accent bg-accent text-bg-base hover:bg-accent-hover"
+              : "border-border-subtle bg-bg-elevated text-text-muted",
+          )}
+          aria-label="Send"
+          title={writer.needsKey ? "Add an API key for the selected writer model first" : "Send"}
+          disabled={!value.trim() || blocked}
         >
-          <FileText size={11} className="shrink-0 text-accent" />
-          <span className="max-w-[220px] truncate">{u.name}</span>
-          <span className="text-text-muted">· {u.pages}p</span>
-          <button
-            onClick={() => remove(u.id)}
-            className="text-text-muted transition-colors hover:text-err"
-            aria-label={`Remove ${u.name}`}
-          >
-            <X size={11} />
-          </button>
-        </span>
-      ))}
+          {streaming ? <Loader2 size={14} className="animate-spin" /> : <ArrowUp size={15} />}
+        </motion.button>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-border-subtle bg-bg-base/40 px-4 py-2">
+        {config ? <ModelBar config={config} /> : (
+          <span className="font-mono text-[10px] uppercase tracking-wider text-text-muted">
+            loading models…
+          </span>
+        )}
+      </div>
     </div>
   );
 }
 
-/** The two model pickers.
- *
- *  PLAN and ANSWER are separate models because they are separate jobs: the
- *  planner emits structured retrieval keys, the synthesizer writes prose, and
- *  the best model for one is not always the best for the other. Both default to
- *  the provider's first listed model, so leaving them alone reproduces the
- *  previous single-model behaviour exactly.
- *
- *  The PROVIDER is shared and is chosen by the ANSWER picker's optgroup — one
- *  request carries one provider and one API key, so offering a second provider
- *  here would be a lie. Switching provider re-points both. */
-function ModelSelect() {
-  const provider = useSettingsStore((s) => s.provider);
-  const model = useSettingsStore((s) => s.modelByProvider[s.provider]);
-  const keys = useSettingsStore((s) => s.keys);
-  const setProvider = useSettingsStore((s) => s.setProvider);
-  const setModel = useSettingsStore((s) => s.setModel);
-  const setPlannerModel = useSettingsStore((s) => s.setPlannerModel);
-  const setPlannerProvider = useSettingsStore((s) => s.setPlannerProvider);
-  const setKey = useSettingsStore((s) => s.setKey);
-  // null = follow the answer model, which is the default.
-  const plannerProvider = useSettingsStore((s) => s.plannerProvider) ?? provider;
-  const planner = useSettingsStore((s) => s.plannerByProvider[plannerProvider]);
-
+/** Which model does which job. The planner and the fact-checker are fixed and
+ *  shown as text; the writer is the one the user can change. */
+function ModelBar({ config }: { config: ServerConfig }) {
+  const settings = useSettingsStore();
+  const writer = resolveWriter(config, settings);
   const [draft, setDraft] = useState("");
+  const providers = Object.keys(config.writer_models) as Provider[];
+  const short = (model: string) => model.split("/").pop();
 
-  function pickAnswer(value: string) {
+  function pick(value: string) {
     const [p, m] = value.split("::") as [Provider, string];
-    setProvider(p);
-    setModel(p, m);
+    const isDefault = p === config.roles.writer.provider && m === config.roles.writer.model;
+    settings.setWriter(isDefault ? null : p, isDefault ? null : m);
     setDraft("");
-  }
-
-  function pickPlanner(value: string) {
-    const [p, m] = value.split("::") as [Provider, string];
-    // Choosing the answer's own provider clears the split, so the request goes
-    // back to carrying a single provider.
-    setPlannerProvider(p === provider ? null : p);
-    setPlannerModel(p, m);
   }
 
   function saveKey(e: React.FormEvent) {
     e.preventDefault();
-    if (draft.trim()) { setKey(needsKeyFor!, draft.trim()); setDraft(""); }
+    if (draft.trim()) {
+      settings.setKey(writer.provider, draft.trim());
+      setDraft("");
+    }
   }
 
-  // Groq uses the server key; every other provider needs the user's own. Ask
-  // for whichever is missing — the planner can now be on a different one.
-  const needsKeyFor = ([provider, plannerProvider] as Provider[])
-    .find((p) => p !== "groq" && !keys[p]);
-  const hasUserKey = provider !== "groq" && !!keys[provider];
-
   return (
-    <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
-      {/* Planner — free to sit on its OWN provider. Its calls are small and
-          structured, so a free tier serves it fine even when the answer model
-          is a paid one; tying it to the answer's provider used to drag it onto
-          the paid key and hide the free models entirely. */}
-      <Picker
-        icon={<ListTree size={11} />}
-        label="Plan"
-        title="PLANNER — turns your question into the search queries that hit the filings, and picks the lane (filings / SEC XBRL / market data / web). Precision over prose. Can stay on a free provider while the answer model is paid."
-        value={`${plannerProvider}::${planner}`}
-        onChange={pickPlanner}
+    <>
+      <span
+        className="font-mono text-[10px] uppercase tracking-wider text-text-muted"
+        title="The planner splits your question and picks the sources. It is fixed."
       >
-        {(Object.keys(PROVIDER_MODELS) as Provider[]).map((p) => (
-          <optgroup key={p} label={PROVIDER_LABELS[p]}>
-            {PROVIDER_MODELS[p].map((m) => (
-              <option key={`${p}::${m}`} value={`${p}::${m}`}>{m}</option>
-            ))}
-          </optgroup>
-        ))}
-      </Picker>
+        Plan <span className="normal-case text-text-secondary">{short(config.roles.planner.model)}</span>
+      </span>
 
-      {/* Answer — also owns the provider choice. */}
-      <Picker
-        icon={<PenLine size={11} />}
-        label="Answer"
-        title="ANSWER — reads the retrieved evidence, writes the cited answer and fact-checks its own draft. Also selects the provider for both models."
-        value={`${provider}::${model}`}
-        onChange={pickAnswer}
+      <div
+        className="group relative flex items-center border border-border-subtle bg-bg-elevated transition-colors focus-within:border-accent hover:border-border-default"
+        title="The writer reads the evidence and writes the cited answer. This is the one model you can change."
       >
-        {(Object.keys(PROVIDER_MODELS) as Provider[]).map((p) => (
-          <optgroup key={p} label={PROVIDER_LABELS[p]}>
-            {PROVIDER_MODELS[p].map((m) => (
-              <option key={`${p}::${m}`} value={`${p}::${m}`}>{m}</option>
-            ))}
-          </optgroup>
-        ))}
-      </Picker>
+        <span className="pointer-events-none flex items-center gap-1 border-r border-border-subtle px-2 py-1.5 font-mono text-[10px] uppercase tracking-wider text-text-muted">
+          <PenLine size={11} />
+          Write
+        </span>
+        <select
+          value={`${writer.provider}::${writer.model}`}
+          onChange={(e) => pick(e.target.value)}
+          className="cursor-pointer appearance-none bg-transparent py-1.5 pl-2 pr-6 font-mono text-[11px] text-text-secondary transition-colors group-hover:text-text-primary focus:outline-none"
+          aria-label="Writer model"
+        >
+          {providers.map((p) => (
+            <optgroup
+              key={p}
+              label={PROVIDER_LABELS[p] + (config.server_keys.includes(p) ? "" : " (needs your API key)")}
+            >
+              {config.writer_models[p].map((m) => (
+                <option key={`${p}::${m}`} value={`${p}::${m}`}>
+                  {m}{p === config.roles.writer.provider && m === config.roles.writer.model ? "  (default)" : ""}
+                </option>
+              ))}
+            </optgroup>
+          ))}
+        </select>
+        <ChevronDown size={12} className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 text-text-muted" />
+      </div>
 
-      {/* Non-Groq models need the user's own key — collect it right here.
-          Asks for whichever of the two providers is missing one. */}
-      {needsKeyFor && (
+      <span
+        className="font-mono text-[10px] uppercase tracking-wider text-text-muted"
+        title="The critic fact-checks every claim in the draft against the evidence. It is fixed."
+      >
+        Check <span className="normal-case text-text-secondary">{short(config.roles.critic.model)}</span>
+      </span>
+
+      {/* The server has no key for this provider: ask for the user's own. */}
+      {writer.needsKey && (
         <form onSubmit={saveKey} className="flex items-center gap-1">
           <input
             type="password"
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
-            placeholder={`${PROVIDER_LABELS[needsKeyFor]} API key`}
-            className="w-[180px] border border-warning/60 bg-bg-elevated px-2 py-1.5 font-mono text-[11px] text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none"
-            aria-label={`${PROVIDER_LABELS[needsKeyFor]} API key`}
+            placeholder={`${PROVIDER_LABELS[writer.provider]} API key to use this model`}
+            className="w-[250px] border border-warning/60 bg-bg-elevated px-2 py-1.5 font-mono text-[11px] text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none"
+            aria-label={`${PROVIDER_LABELS[writer.provider]} API key`}
+            autoComplete="off"
           />
           <button
             type="submit"
@@ -367,51 +195,15 @@ function ModelSelect() {
         </form>
       )}
 
-      {hasUserKey && (
+      {writer.key && (
         <button
-          onClick={() => setKey(provider, "")}
+          onClick={() => settings.setKey(writer.provider, "")}
           className="inline-flex items-center gap-1 font-mono text-[10px] uppercase tracking-wider text-accent hover:text-text-primary"
-          title="Your key is stored in this browser — click to clear"
+          title="Your key is stored only in this browser. Click to remove it."
         >
-          <span className="inline-block h-1.5 w-1.5 rounded-full bg-accent" /> key set
+          <span className="inline-block h-1.5 w-1.5 rounded-full bg-accent" /> your key · remove
         </button>
       )}
-    </div>
-  );
-}
-
-/** A labelled <select>: the label sits INSIDE the control so the two pickers
- *  read as "Plan: <model>" / "Answer: <model>" rather than two bare dropdowns
- *  whose meaning you have to remember. */
-function Picker({ icon, label, title, value, onChange, children }: {
-  icon: React.ReactNode;
-  label: string;
-  title: string;
-  value: string;
-  onChange: (v: string) => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <div
-      className="group relative flex items-center border border-border-subtle bg-bg-elevated transition-colors focus-within:border-accent hover:border-border-default"
-      title={title}
-    >
-      <span className="pointer-events-none flex items-center gap-1 border-r border-border-subtle py-1.5 pl-2 pr-2 font-mono text-[10px] uppercase tracking-wider text-text-muted">
-        {icon}
-        {label}
-      </span>
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="cursor-pointer appearance-none bg-transparent py-1.5 pl-2 pr-6 font-mono text-[11px] text-text-secondary transition-colors group-hover:text-text-primary focus:outline-none"
-        aria-label={title}
-      >
-        {children}
-      </select>
-      <ChevronDown
-        size={12}
-        className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 text-text-muted"
-      />
-    </div>
+    </>
   );
 }

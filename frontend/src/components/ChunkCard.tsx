@@ -63,9 +63,7 @@ export function ChunkCard({ chunk, index, accent }: Props) {
         <div className="flex min-w-0 items-center gap-2 font-mono text-[11px] text-text-secondary">
           <span className="shrink-0 text-accent">[{chunk.id + 1}]</span>
           <span className="truncate text-text-primary">
-            {chunk.kind === "uploaded"
-              ? (chunk.filename || chunk.company || "uploaded document")
-              : (chunk.company || chunk.ticker || "?")}
+            {chunk.company || chunk.ticker || "?"}
           </span>
           {!blank(chunk.year) && (
             <>
@@ -92,7 +90,7 @@ export function ChunkCard({ chunk, index, accent }: Props) {
         )}
       </div>
 
-      {/* Breadcrumb (sub_query for agentic, or generic) */}
+      {/* The query that found this passage */}
       {chunk.sub_query && (
         <div className="border-b border-border-subtle bg-bg-base px-3 py-1 font-mono text-[10px] text-text-muted">
           {chunk.sub_query}

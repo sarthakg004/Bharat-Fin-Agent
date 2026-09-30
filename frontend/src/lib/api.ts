@@ -1,11 +1,11 @@
-// Typed API client. Single source of truth for backend shapes + URLs.
+// Typed API client: the backend's shapes and URLs in one place.
 
-// Same-origin by default: an empty/unset VITE_API_URL means we hit "/api/..."
-// on whatever host serves the page. That works both in production (the Docker
-// Space serves API + SPA on one origin) and in dev (Vite proxies /api → :8000,
-// see vite.config.ts). Only set VITE_API_URL to point at a different host.
+// Empty VITE_API_URL means same origin ("/api/..."). Set it to call another host.
 const BASE = import.meta.env.VITE_API_URL || "";
 
+export type Provider = "groq" | "gemini" | "openai" | "anthropic";
+
+/** One evidence card. `[N]` in the answer cites the card with `id === N - 1`. */
 export interface Chunk {
   id: number;
   text: string;
@@ -16,9 +16,7 @@ export interface Chunk {
   source_url?: string;
   citation: string;
   sub_query?: string;
-  kind?: "text" | "web" | "table" | "market" | "xbrl" | "calc" | "edgar" | "uploaded";
-  /** Set when kind === "uploaded" — the originating file. */
-  filename?: string;
+  kind?: "text" | "web" | "market" | "xbrl" | "calc" | "edgar";
 }
 
 export interface QueryMetadata {
@@ -28,17 +26,13 @@ export interface QueryMetadata {
   output_tokens?: number;
   sub_queries?: string[];
   query_routes?: string[];
-  grading_score?: number | null;
-  critic_iterations?: number;
-  needs_retry?: boolean | null;
-  refused?: boolean;
-  answer_status?: string | null;
+  /** Share of the answer's claims the fact-check could support; null = not checked. */
+  support_score?: number | null;
   unsupported_claims?: string[];
-  web_hits?: number;
-  table_computations?: number;
-  market_calls?: number;
-  citations?: string[];
-  agentic?: QueryMetadata | null;
+  recoveries?: number;
+  refused?: boolean;
+  /** Steps that were skipped or degraded, in plain words. */
+  notices?: string[];
 }
 
 // --------------------------------------------------------------------------- //
@@ -70,15 +64,21 @@ export interface ChartSpec {
 
 
 // --------------------------------------------------------------------------- //
-// Query (SSE)
+// Config and query
 // --------------------------------------------------------------------------- //
 
-export interface ProviderConfig {
-  provider: "groq" | "gemini" | "openai" | "anthropic";
-  /** Writes the answer (synthesizer + critic). */
-  synth_model?: string;
-  /** Decomposes the question. Independent of `synth_model`. */
-  planner_model?: string;
+/** GET /api/config: which model does which job, and what the picker may offer. */
+export interface ServerConfig {
+  roles: Record<"planner" | "extractor" | "writer" | "critic", { provider: Provider; model: string }>;
+  writer_models: Record<Provider, string[]>;
+  /** Providers the server has keys for. The others need the user's own key. */
+  server_keys: Provider[];
+}
+
+/** The user's writer choice. Omitted entirely when the default is used. */
+export interface WriterConfig {
+  provider?: Provider;
+  model?: string;
   api_key?: string;
 }
 
@@ -89,69 +89,31 @@ export interface ChatTurn {
 
 export interface QueryRequest {
   question: string;
-  provider_config?: ProviderConfig;
-  /** Thread id — not persisted server-side; groups this turn's traces with the
-   * rest of the conversation in Langfuse's Sessions view. */
+  writer?: WriterConfig;
+  /** Client thread id. Not stored server-side; it only groups the traces. */
   session_id?: string;
-  /** Per-session conversation memory (the server is stateless). */
+  /** The server is stateless, so recent turns are sent with each question. */
   chat_history?: ChatTurn[];
-  /** Ids from POST /api/upload — the documents to answer over. */
-  upload_ids?: string[];
 }
 
-// --------------------------------------------------------------------------- //
-// Deep Research
-// --------------------------------------------------------------------------- //
-
-export interface ResearchRequest {
-  question: string;
-  provider_config?: ProviderConfig;
-  session_id?: string;
-  chat_history?: ChatTurn[];
-  max_agents?: number;
-}
-
-/** One planned research task (a specialist agent, or the final thesis step). */
-export interface ResearchPlanTask {
-  id: string;
-  label: string;
-}
-
-export interface UploadResponse {
-  upload_id: string;
-  filename: string;
-  pages: number;
-  tables: number;
-  chunks: number;
-}
-
-export interface HealthResponse {
-  status: string;
-}
+export type ErrorCode =
+  | "rate_limit" | "busy"                       // transient: retried automatically
+  | "quota" | "too_large" | "auth" | "not_found" | "error";
 
 export type SSEEvent =
   | { type: "status"; stage: string; label: string; index?: number; total?: number }
   | { type: "step_done"; stage: string; detail?: string | null }
-  | { type: "research_plan"; company?: string; ticker?: string; objective?: string; tasks: ResearchPlanTask[] }
-  | { type: "agent_start"; id: string }
-  | { type: "agent_done"; id: string; status: "done" | "failed"; detail?: string; summary?: string }
   | { type: "sources"; chunks: Chunk[]; metadata: QueryMetadata }
   | { type: "chart"; chart: ChartSpec }
   | { type: "chunk"; content: string }
-  | { type: "metrics"; latency: number; model?: string; input_tokens?: number; output_tokens?: number; agentic?: QueryMetadata | null }
-  /** `retry_after` = seconds until the provider's limit clears, read off the
-   *  429 itself. Absent when the provider didn't say. */
-  | { type: "error"; message: string; code?: string; retry_after?: number }
+  | ({ type: "metrics" } & QueryMetadata)
+  | { type: "error"; message: string; code: ErrorCode; retryable: boolean; retry_after?: number }
   | { type: "done" };
 
 export interface StreamHandlers {
   onEvent: (event: SSEEvent) => void;
   signal?: AbortSignal;
 }
-
-// --------------------------------------------------------------------------- //
-// JSON / SSE
-// --------------------------------------------------------------------------- //
 
 async function getJson<T>(path: string): Promise<T> {
   const res = await fetch(`${BASE}${path}`);
@@ -160,77 +122,59 @@ async function getJson<T>(path: string): Promise<T> {
 }
 
 export const api = {
-  // The server is stateless: only health + the SSE query endpoint remain.
-  // Chat threads live entirely client-side (see threadStore).
-  health: () => getJson<HealthResponse>("/api/health"),
+  health: () => getJson<{ status: string }>("/api/health"),
+  config: () => getJson<ServerConfig>("/api/config"),
 };
 
-/** Upload a document; the returned id is passed as `upload_ids` on queries.
- * Uploads are ephemeral server-side (kept ~1 hour). */
-export async function uploadFile(file: File): Promise<UploadResponse> {
-  const form = new FormData();
-  form.append("file", file);
-  const res = await fetch(`${BASE}/api/upload`, { method: "POST", body: form });
-  if (!res.ok) {
-    const detail = await res.json().then((j) => j.detail).catch(() => null);
-    throw new Error(detail || `Upload failed: ${res.status} ${res.statusText}`);
+/** The stream closed before the server sent `done`: the connection dropped. */
+export class ConnectionLost extends Error {
+  constructor() {
+    super("The connection dropped before the answer finished.");
+    this.name = "ConnectionLost";
   }
-  return res.json() as Promise<UploadResponse>;
 }
 
 /**
- * Stream a POST /api/query response as Server-Sent Events.
- * We do the parsing manually because `EventSource` is GET-only.
+ * POST /api/query and read the Server-Sent Events. Parsed by hand because
+ * `EventSource` only does GET. Throws `ConnectionLost` if the stream ends
+ * without a `done` event.
  */
-export function streamQuery(req: QueryRequest, handlers: StreamHandlers): Promise<void> {
-  return streamSSE("/api/query", req, handlers);
-}
-
-/** Stream a Deep Research run (POST /api/research) — same SSE framing. */
-export function streamResearch(req: ResearchRequest, handlers: StreamHandlers): Promise<void> {
-  return streamSSE("/api/research", req, handlers);
-}
-
-async function streamSSE(path: string, req: unknown, handlers: StreamHandlers): Promise<void> {
-  const res = await fetch(`${BASE}${path}`, {
+export async function streamQuery(req: QueryRequest, handlers: StreamHandlers): Promise<void> {
+  const res = await fetch(`${BASE}/api/query`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
     body: JSON.stringify(req),
     signal: handlers.signal,
   });
-
   if (!res.ok || !res.body) {
-    // The server explains itself in `detail` — a missing provider key comes
-    // back as "GEMINI_API_KEY not found…", which is actionable. Showing only
-    // the status turned that into a bare "Stream failed: 400".
     const detail = await res.json().then((j) => j.detail).catch(() => null);
-    throw new Error(detail || `Stream failed: ${res.status} ${res.statusText}`);
+    throw new Error(typeof detail === "string" ? detail : `Request failed: ${res.status} ${res.statusText}`);
   }
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  let finished = false;
 
   while (true) {
     const { value, done } = await reader.read();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
-
     let idx: number;
     while ((idx = buffer.indexOf("\n\n")) !== -1) {
-      const rawEvent = buffer.slice(0, idx);
+      const data = buffer.slice(0, idx).split("\n")
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice(5).trimStart());
       buffer = buffer.slice(idx + 2);
-      const dataLines = rawEvent
-        .split("\n")
-        .filter(line => line.startsWith("data:"))
-        .map(line => line.slice(5).trimStart());
-      if (dataLines.length === 0) continue;
+      if (data.length === 0) continue;
       try {
-        const event = JSON.parse(dataLines.join("\n")) as SSEEvent;
+        const event = JSON.parse(data.join("\n")) as SSEEvent;
+        if (event.type === "done") finished = true;
         handlers.onEvent(event);
       } catch (e) {
-        console.error("Failed to parse SSE event", e, dataLines);
+        console.error("Failed to parse SSE event", e, data);
       }
     }
   }
+  if (!finished) throw new ConnectionLost();
 }

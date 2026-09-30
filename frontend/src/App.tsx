@@ -13,7 +13,6 @@ import { Sidebar } from "@/components/Sidebar";
 import { ChatPanel } from "@/components/ChatPanel";
 import { CitationsPanel } from "@/components/CitationsPanel";
 import { CommandPalette } from "@/components/CommandPalette";
-import { SettingsModal } from "@/components/SettingsModal";
 import { ShortcutsOverlay } from "@/components/ShortcutsOverlay";
 import { PanelResizer } from "@/components/PanelResizer";
 import { PanelOpenButton } from "@/components/PanelOpenButton";
@@ -33,18 +32,15 @@ export function App() {
 
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const closeAll = () => {
     setPaletteOpen(false);
     setShortcutsOpen(false);
-    setSettingsOpen(false);
   };
 
   useKeyboardShortcuts({
     "mod+k":      () => setPaletteOpen((v) => !v),
     "mod+n":      () => createChat("New chat"),
-    "mod+,":      () => setSettingsOpen((v) => !v),
     "mod+l":      () => clearChat(),
     "mod+[":      () => toggleSidebar(),
     "mod+]":      () => toggleCitations(),
@@ -125,9 +121,7 @@ export function App() {
         open={paletteOpen}
         onClose={() => setPaletteOpen(false)}
         onShortcuts={() => setShortcutsOpen(true)}
-        onSettings={() => setSettingsOpen(true)}
       />
-      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
       <ShortcutsOverlay open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
 
       <Toaster

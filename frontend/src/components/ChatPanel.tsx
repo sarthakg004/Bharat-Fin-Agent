@@ -8,10 +8,7 @@ import { InputBar } from "./InputBar";
 import { cls } from "@/lib/utils";
 import type { BackendStatus } from "@/hooks/useBackendStatus";
 
-// One example per tool lane, all answerable by the live US corpus + tools
-// (XBRL fact, derived-metric calculator, EDGAR cross-document, market data).
-// Non-corpus companies (e.g. Indian banks) fall through to web search — fine
-// to ask, but not what we showcase on the empty state.
+// One example per lane: XBRL figure, calculator, EDGAR search, market data.
 const EXAMPLE_QUERIES = [
   "What was Apple's R&D spend in FY2023?",
   "What was Coca-Cola's operating margin in FY2022?",
@@ -110,7 +107,7 @@ function EmptyState({
           Ask anything about the financials.
         </p>
         <p className="mt-2 font-mono text-[11px] uppercase tracking-[0.18em] text-text-secondary">
-          SEC 10-K · Indian annual reports · multi-agent RAG
+          SEC filings · exact XBRL figures · live market data
         </p>
 
         {backendStatus === "warming" && (

@@ -12,14 +12,12 @@
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 
-import { useChatStore, type ChatMessage, type UploadedDoc } from "./chatStore";
+import { useChatStore, type ChatMessage } from "./chatStore";
 
 export interface Thread {
   id: string;
   title: string;
   messages: ChatMessage[];
-  /** Documents attached to this thread (upload ids are server-side, ~1h TTL). */
-  uploads?: UploadedDoc[];
   created_at: number;
   updated_at: number;
 }
@@ -70,7 +68,7 @@ export const useThreadStore = create<ThreadState>()(
         const t = get().threads.find((x) => x.id === id);
         if (!t) return;
         set({ activeId: id });
-        useChatStore.getState().loadMessages(id, t.messages, t.uploads);
+        useChatStore.getState().loadMessages(id, t.messages);
       },
 
       renameChat: (id, title) =>
@@ -86,7 +84,7 @@ export const useThreadStore = create<ThreadState>()(
           if (s.activeId === id) {
             const next = threads[0];
             activeId = next?.id ?? null;
-            if (next) useChatStore.getState().loadMessages(next.id, next.messages, next.uploads);
+            if (next) useChatStore.getState().loadMessages(next.id, next.messages);
             else useChatStore.getState().startNewChat();
           }
           return { threads, activeId };
@@ -95,12 +93,12 @@ export const useThreadStore = create<ThreadState>()(
       setActive: (id) => set({ activeId: id }),
 
       saveActive: () => {
-        const { activeChatId, messages, uploads } = useChatStore.getState();
+        const { activeChatId, messages } = useChatStore.getState();
         if (!activeChatId) return;
         set((s) => ({
           threads: s.threads.map((t) =>
             t.id === activeChatId
-              ? { ...t, messages, uploads, updated_at: Date.now(), title: deriveTitle(t.title, messages) }
+              ? { ...t, messages, updated_at: Date.now(), title: deriveTitle(t.title, messages) }
               : t),
         }));
       },

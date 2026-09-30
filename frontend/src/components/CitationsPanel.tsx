@@ -1,22 +1,17 @@
 import { useMemo } from "react";
-import { motion, AnimatePresence } from "framer-motion";
-import { PanelRightClose, FileText, X } from "lucide-react";
+import { motion } from "framer-motion";
+import { PanelRightClose } from "lucide-react";
 
 import type { Chunk } from "@/lib/api";
 import { selectLastAssistant, useChatStore } from "@/store/chatStore";
-import { useThreadStore } from "@/store/threadStore";
 import { useConfigStore } from "@/store/configStore";
 import { ChunkCard } from "./ChunkCard";
 
-/** Provenance lanes, ordered by authority. Each source kind renders as its own
- * titled section so uploaded documents, filings, EDGAR and web hits never blur
- * together. Colors reuse the app's semantic tokens: green = your material,
- * blue = deterministic figures, neutral = corpus filings, amber = external. */
+/** Evidence grouped by source, most authoritative first. Each card keeps its
+ * own [N], which is the number the answer cites. */
 const SECTIONS: { kinds: (Chunk["kind"] | undefined)[]; label: string; color: string }[] = [
-  { kinds: ["uploaded"],       label: "Your documents",  color: "var(--accent)" },
   { kinds: ["xbrl", "calc"],   label: "SEC XBRL figures", color: "var(--info)" },
   { kinds: ["text", undefined], label: "Filings",         color: "var(--text-secondary)" },
-  { kinds: ["table"],          label: "Filing tables",   color: "var(--text-secondary)" },
   { kinds: ["edgar"],          label: "EDGAR search",    color: "var(--chart-3)" },
   { kinds: ["web"],            label: "Web search",      color: "var(--warning)" },
   { kinds: ["market"],         label: "Market data",     color: "var(--chart-2)" },
@@ -24,8 +19,6 @@ const SECTIONS: { kinds: (Chunk["kind"] | undefined)[]; label: string; color: st
 
 export function CitationsPanel() {
   const last = useChatStore((s) => selectLastAssistant(s));
-  const uploads = useChatStore((s) => s.uploads);
-  const removeUpload = useChatStore((s) => s.removeUpload);
   const toggleCitations = useConfigStore((s) => s.toggleCitations);
 
   const chunks = last?.chunks ?? [];
@@ -41,12 +34,7 @@ export function CitationsPanel() {
 
   const empty = chunks.length === 0;
 
-  const agenticMeta = useMemo(() => last?.metadata?.agentic ?? last?.metadata, [last]);
-
-  function detach(id: string) {
-    removeUpload(id);
-    useThreadStore.getState().saveActive();
-  }
+  const meta = last?.metadata;
 
   return (
     <motion.aside
@@ -70,47 +58,8 @@ export function CitationsPanel() {
       </header>
 
       <div className="flex-1 overflow-y-auto p-4">
-        {/* Attached documents — live for the whole session, removable anytime. */}
-        {uploads.length > 0 && (
-          <section className="mb-5">
-            <SectionHeader color="var(--accent)" label="Attached documents" count={uploads.length} />
-            <div className="flex flex-col gap-1.5">
-              <AnimatePresence initial={false}>
-                {uploads.map((u) => (
-                  <motion.div
-                    key={u.id}
-                    initial={{ opacity: 0, y: 4 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, x: 12 }}
-                    className="flex items-center gap-2 border border-border-subtle bg-bg-surface px-3 py-2"
-                    style={{ borderLeft: "2px solid var(--accent)" }}
-                  >
-                    <FileText size={13} className="shrink-0 text-accent" />
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate font-ui text-[12.5px] text-text-primary" title={u.name}>
-                        {u.name}
-                      </div>
-                      <div className="font-mono text-[10px] text-text-muted">
-                        {u.pages} pages · {u.chunks} chunks · this session
-                      </div>
-                    </div>
-                    <button
-                      onClick={() => detach(u.id)}
-                      className="shrink-0 text-text-muted transition-colors hover:text-err"
-                      title={`Remove ${u.name} from this chat`}
-                      aria-label={`Remove ${u.name}`}
-                    >
-                      <X size={13} />
-                    </button>
-                  </motion.div>
-                ))}
-              </AnimatePresence>
-            </div>
-          </section>
-        )}
-
         {empty ? (
-          <EmptySources hasUploads={uploads.length > 0} />
+          <EmptySources />
         ) : (
           <div className="flex flex-col gap-5">
             {sections.map((s) => (
@@ -127,31 +76,29 @@ export function CitationsPanel() {
         )}
       </div>
 
-      {/* Agentic metadata strip */}
-      {!empty && agenticMeta && (
+      {/* What the run did */}
+      {!empty && meta && (
         <div className="border-t border-border-subtle px-4 py-3">
           <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-text-secondary">
             Run trace
           </span>
           <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 font-mono text-[10px] text-text-muted">
-            {agenticMeta.sub_queries?.length ? (
+            {meta.sub_queries?.length ? (
               <>
                 <span className="text-text-secondary">Sub-queries</span>
-                <span className="text-text-primary">{agenticMeta.sub_queries.length}</span>
+                <span className="text-text-primary">{meta.sub_queries.length}</span>
               </>
             ) : null}
-            {agenticMeta.critic_iterations != null && (
+            {meta.recoveries != null && (
               <>
-                <span className="text-text-secondary">Critic loops</span>
-                <span className="text-text-primary">{agenticMeta.critic_iterations}</span>
+                <span className="text-text-secondary">Recovery passes</span>
+                <span className="text-text-primary">{meta.recoveries}</span>
               </>
             )}
-            {agenticMeta.grading_score != null && (
+            {typeof meta.support_score === "number" && (
               <>
                 <span className="text-text-secondary">Claims supported</span>
-                <span className="text-text-primary">
-                  {Math.round(agenticMeta.grading_score * 100)}%
-                </span>
+                <span className="text-text-primary">{Math.round(meta.support_score * 100)}%</span>
               </>
             )}
           </div>
@@ -178,19 +125,14 @@ function SectionHeader({ color, label, count }: { color: string; label: string; 
   );
 }
 
-function EmptySources({ hasUploads }: { hasUploads: boolean }) {
+function EmptySources() {
   return (
-    <div className={hasUploads
-      ? "flex flex-col items-center gap-2 pt-8 text-center"
-      : "flex h-full flex-col items-center justify-center gap-2 text-center"}
-    >
+    <div className="flex h-full flex-col items-center justify-center gap-2 text-center">
       <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-text-muted">
         no sources yet
       </span>
       <span className="font-ui text-[12px] text-text-muted">
-        {hasUploads
-          ? "Ask a question — passages from your documents and other sources will appear here."
-          : "Retrieved chunks will appear here after your first query."}
+        The evidence behind each answer appears here.
       </span>
     </div>
   );

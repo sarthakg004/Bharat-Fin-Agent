@@ -1,17 +1,17 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { Check, ChevronRight, Clock, RotateCcw } from "lucide-react";
+import { Check, ChevronRight, Clock, Info, RotateCcw } from "lucide-react";
 
 import type { QueryMetadata } from "@/lib/api";
 import type { ChatMessage } from "@/store/chatStore";
 import { MarkdownAnswer } from "@/lib/markdown";
 import { ChartView } from "@/components/ChartView";
-import { ExportReportButton, ResearchTimeline } from "@/components/ResearchTimeline";
 
 interface BubbleProps {
   msg: ChatMessage;
-  /** Set on the last assistant message (when not streaming) to show Retry. */
-  onRetry?: () => void;
+  /** Set on the last assistant message (when not streaming) to show Retry.
+   *  `auto` = called by the countdown after a transient failure. */
+  onRetry?: (auto?: boolean) => void;
 }
 
 export function MessageBubble({ msg, onRetry }: BubbleProps) {
@@ -45,21 +45,21 @@ function AssistantBubble({ msg, onRetry }: BubbleProps) {
       className="flex flex-col gap-2"
     >
       <ThinkingTrace msg={msg} />
-      <ResearchTimeline msg={msg} />
 
       {msg.error ? (
         <div className="border border-err bg-err-dim px-4 py-3 font-mono text-[12px] text-err">
           {msg.error}
         </div>
+      ) : msg.notice ? (
+        // A failure explained in plain words: not a crash, so not styled as one.
+        <div className="flex max-w-[80%] items-start gap-2 border border-warning/50 bg-warning-dim px-4 py-3 font-ui text-[13px] leading-relaxed text-text-primary">
+          <Info size={14} className="mt-0.5 shrink-0 text-warning" />
+          <span>{msg.notice}</span>
+        </div>
       ) : showStatus && !msg.content ? (
-        // Skeleton only until the first agent step / research plan arrives —
-        // after that the trace or research timeline is the loading signal.
-        !msg.steps?.length && !msg.research ? <AnswerSkeleton /> : null
+        // A skeleton until the first step arrives; then the trace shows progress.
+        !msg.steps?.length ? <AnswerSkeleton /> : null
       ) : (
-        // The MarkdownAnswer handles headings / bullets / tables / inline
-        // citation chips (`[N]` and `[N, M]`) end-to-end. The streaming
-        // cursor is appended outside so the markdown parser doesn't try to
-        // interpret it.
         <div className="relative">
           <MarkdownAnswer text={msg.content} />
           {msg.streaming && (
@@ -68,7 +68,15 @@ function AssistantBubble({ msg, onRetry }: BubbleProps) {
         </div>
       )}
 
-      {msg.retryAt && <RetryCountdown at={msg.retryAt} onRetry={onRetry} />}
+      {msg.retryAt && <RetryCountdown at={msg.retryAt} auto={!!msg.autoRetry} onRetry={onRetry} />}
+
+      {/* Steps the agent had to skip, e.g. "Fact-check was skipped: ...". */}
+      {!msg.streaming && (msg.metadata?.notices ?? []).map((n) => (
+        <div key={n} className="flex items-start gap-1.5 font-mono text-[10.5px] text-warning">
+          <Info size={11} className="mt-px shrink-0" />
+          <span>{n}</span>
+        </div>
+      ))}
 
       {/* Inline charts produced by the market-data tool lane. They arrive on
           a separate SSE channel and attach to the in-progress assistant
@@ -79,12 +87,10 @@ function AssistantBubble({ msg, onRetry }: BubbleProps) {
 
       {!msg.streaming && msg.metadata && <MetadataFooter msg={msg} />}
 
-      <ExportReportButton msg={msg} />
-
-      {/* Retry — re-runs the last question (shown on the latest answer). */}
+      {/* Retry: re-runs the last question (shown on the latest answer). */}
       {!msg.streaming && onRetry && (
         <button
-          onClick={onRetry}
+          onClick={() => onRetry()}
           className="mt-1 inline-flex w-fit items-center gap-1.5 border border-border-subtle px-2 py-1 font-mono text-[10px] uppercase tracking-wider text-text-secondary transition-colors hover:border-accent hover:text-accent"
           title="Regenerate this answer"
         >
@@ -96,30 +102,29 @@ function AssistantBubble({ msg, onRetry }: BubbleProps) {
   );
 }
 
-/** Live countdown to the moment a rate-limited provider will accept work again.
- *
- * The 429 already carries its own reset and the UI used to throw it away, so
- * the only advice we could give was "wait a minute" — wrong in both directions:
- * a per-minute bucket often clears in eight seconds, a drained daily bucket is
- * hours out. `at` is an absolute deadline, so this stays right after a re-render
- * or a thread restored from sessionStorage. The existing Retry button below is
- * the action; this only says when to press it.
- */
-function RetryCountdown({ at, onRetry }: { at: number; onRetry?: () => void }) {
+/** Counts down to `at`, the moment a transient failure can be retried. With
+ *  `auto`, it retries by itself when the countdown ends; otherwise it tells the
+ *  user the Retry button is ready. */
+function RetryCountdown({ at, auto, onRetry }: {
+  at: number; auto: boolean; onRetry?: (auto?: boolean) => void;
+}) {
   const [left, setLeft] = useState(() => at - Date.now());
+  const fired = useRef(false);
 
   useEffect(() => {
     setLeft(at - Date.now());
-    if (at <= Date.now()) return;
-    const id = setInterval(() => {
-      const ms = at - Date.now();
-      setLeft(ms);
-      if (ms <= 0) clearInterval(id);      // ponytail: no timer once it's cleared
-    }, 1000);
+    const id = setInterval(() => setLeft(at - Date.now()), 500);
     return () => clearInterval(id);
   }, [at]);
 
   const ready = left <= 0;
+  useEffect(() => {
+    if (ready && auto && onRetry && !fired.current) {
+      fired.current = true;                 // once: a re-render must not retry again
+      onRetry(true);
+    }
+  }, [ready, auto, onRetry]);
+
   return (
     <div
       className={`flex w-fit items-center gap-2 border px-3 py-1.5 font-mono text-[11px] ${
@@ -129,10 +134,10 @@ function RetryCountdown({ at, onRetry }: { at: number; onRetry?: () => void }) {
     >
       <Clock size={12} className={ready ? "" : "animate-pulse"} />
       {ready ? (
-        <span>Limit has reset{onRetry ? " — retry below" : ""}.</span>
+        <span>{auto ? "Retrying…" : "You can retry now."}</span>
       ) : (
         <span>
-          Resets in{" "}
+          {auto ? "Retrying in " : "Try again in "}
           <span className="tabular-nums text-text-primary">{formatLeft(left)}</span>
         </span>
       )}
@@ -165,10 +170,9 @@ function AnswerSkeleton() {
 }
 
 /**
- * ChatGPT-style "thinking" trace. While the agent works we show each step as it
- * happens (current one spinning, finished ones checked). Once the answer starts
- * streaming we collapse the trace into a compact "Thought for Ns" row that the
- * user can expand to review what the agent did.
+ * The "thinking" trace. While the agent works, one line shows the current step.
+ * Once the answer arrives it collapses to "Thought for Ns", expandable to the
+ * full list of steps.
  */
 /** Re-render every `ms` while `active` so elapsed time / ETA tick live. */
 function useNow(active: boolean, ms = 500): number {
@@ -288,26 +292,23 @@ function ThinkingTrace({ msg }: { msg: ChatMessage }) {
   );
 }
 
-/** After the `metrics` SSE event, token counts sit at the top level of
- * `metadata` while the agent detail fields (grades, routes, …) ride under
- * `metadata.agentic`. Merge both layers so the footer sees one flat shape
- * regardless of which event arrived (agentic fields win where they overlap). */
-function agenticMeta(msg: ChatMessage): QueryMetadata {
-  const top = (msg.metadata ?? {}) as QueryMetadata;
-  return { ...top, ...(top.agentic ?? {}) } as QueryMetadata;
-}
-
 function MetadataFooter({ msg }: { msg: ChatMessage }) {
-  const m = agenticMeta(msg);
+  const m: QueryMetadata = msg.metadata ?? {};
   const chunks = msg.chunks?.length ?? 0;
+  const checked = typeof m.support_score === "number";
 
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[10px] uppercase tracking-wider text-text-muted">
       {m.model && <span>{m.model}</span>}
-      {m.latency != null && <span>· {m.latency.toFixed(2)}s</span>}
-      {chunks > 0 && <span>· {chunks} chunks used</span>}
+      {m.latency != null && <span>· {m.latency.toFixed(1)}s</span>}
+      {chunks > 0 && <span>· {chunks} sources</span>}
       {m.input_tokens != null && (
         <span>· {m.input_tokens}↓ / {m.output_tokens ?? 0}↑ tok</span>
+      )}
+      {!m.refused && (
+        <span title="Share of the answer's claims the fact-check found in the evidence">
+          · {checked ? `fact-check ${Math.round((m.support_score as number) * 100)}%` : "not fact-checked"}
+        </span>
       )}
     </div>
   );

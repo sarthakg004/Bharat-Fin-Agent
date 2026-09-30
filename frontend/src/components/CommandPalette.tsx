@@ -11,7 +11,6 @@ interface Props {
   open: boolean;
   onClose: () => void;
   onShortcuts: () => void;
-  onSettings: () => void;
 }
 
 interface CommandItem {
@@ -21,7 +20,7 @@ interface CommandItem {
   run: () => void;
 }
 
-export function CommandPalette({ open, onClose, onShortcuts, onSettings }: Props) {
+export function CommandPalette({ open, onClose, onShortcuts }: Props) {
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -39,7 +38,6 @@ export function CommandPalette({ open, onClose, onShortcuts, onSettings }: Props
 
   const commands = useMemo<CommandItem[]>(() => [
     { id: "new",   label: "New chat",                    hint: "⌘N",  run: () => createChat("New chat") },
-    { id: "set",   label: "Provider & model settings",   hint: "⌘,",  run: onSettings },
     { id: "clear", label: "Clear current view",          run: clear },
     { id: "copy",  label: "Copy last answer",            run: () => {
       const last = selectLastAssistant(useChatStore.getState());
@@ -51,7 +49,7 @@ export function CommandPalette({ open, onClose, onShortcuts, onSettings }: Props
       window.open("https://smith.langchain.com/", "_blank");
     } },
     { id: "kbd",   label: "Keyboard shortcuts",          hint: "?",   run: onShortcuts },
-  ], [clear, createChat, onShortcuts, onSettings]);
+  ], [clear, createChat, onShortcuts]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();

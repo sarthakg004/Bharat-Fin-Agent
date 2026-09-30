@@ -24,8 +24,7 @@ import type { Root, Text, Link, PhrasingContent } from "mdast";
 
 import { useChatStore } from "@/store/chatStore";
 
-// Accept both ASCII `[N]` and full-width CJK `【N】` brackets — gpt-oss
-// models occasionally emit the latter even when asked for the former.
+// Accept `[N]` and the full-width `【N】` some models write instead.
 const CITATION_RE = /\[(\d+(?:\s*,\s*\d+)*)\]|【(\d+(?:\s*,\s*\d+)*)】/g;
 
 /** Remark plugin: text nodes → text + link("#cite:N,M") segments. */
