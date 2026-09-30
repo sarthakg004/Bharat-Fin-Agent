@@ -22,6 +22,12 @@ Both steps are resumable: re-running continues where the last run stopped.
 
     python -m finagent.evaluation.answers run   --output results/v7/answers.json
     python -m finagent.evaluation.answers score --output results/v7/answers.json
+
+The free-tier judge cannot score 127 answers in a day. With the Claude Code CLI
+logged in, Claude can write and judge instead, with no API key:
+
+    ... run   --output results/v7/answers.json --writer sonnet
+    ... score --output results/v7/answers.json --judge-provider claude-cli --judge-model haiku
 """
 
 from __future__ import annotations
@@ -31,13 +37,20 @@ import json
 import os
 import re
 import signal
+import subprocess
 import sys
+import tempfile
 import time
 import types
 import warnings
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
+
+from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.messages import AIMessage, SystemMessage
+from langchain_core.outputs import ChatGeneration, ChatResult
+from langchain_core.runnables import RunnableLambda
 
 os.environ.setdefault("QDRANT_EVAL_URL", "http://localhost:6333")
 os.environ.setdefault("FINANCEBENCH_COLLECTION", "sweep_p2500_c600_gemini-embedding-2_hdr_tbl-md")
@@ -55,6 +68,64 @@ CONTEXT_CHAR_CAP, CONTEXT_TOTAL_CHAR_CAP = 2000, 24000
 REFUSAL_PREFIX = "I don't have enough information to answer this"
 # The 99 questions whose evidence survives HTML parsing (the retrieval eval's set).
 RECOVERABLE_IDS = Path("results/financebench_retrieval_queries.json")
+
+
+# --------------------------------------------------------------------------- #
+# Claude through the local CLI
+# --------------------------------------------------------------------------- #
+
+class ClaudeCLI(BaseChatModel):
+    """A chat model backed by `claude -p`, so an eval run can use the Claude
+    Code login instead of an API key. One process per call, no tools."""
+
+    model: str = "sonnet"
+
+    @property
+    def _llm_type(self) -> str:
+        return "claude-cli"
+
+    def _generate(self, messages, stop=None, run_manager=None, schema: Optional[dict] = None,
+                  **_: Any) -> ChatResult:
+        from finagent.llm import text_of
+
+        system = "\n\n".join(text_of(m) for m in messages if isinstance(m, SystemMessage))
+        prompt = "\n\n".join(text_of(m) for m in messages if not isinstance(m, SystemMessage))
+        cmd = ["claude", "-p", "--model", self.model, "--output-format", "json", "--tools", "",
+               "--system-prompt", system or "Follow the instructions in the message exactly.",
+               "--strict-mcp-config", "--no-session-persistence", "--disable-slash-commands",
+               "--setting-sources", ""]
+        if schema:
+            cmd += ["--json-schema", json.dumps(schema)]
+        error = ""
+        for attempt in range(4):
+            # An empty directory: the CLI must not pick up this project's notes.
+            done = subprocess.run(cmd, input=prompt, capture_output=True, text=True,
+                                  timeout=600, cwd=tempfile.gettempdir())
+            try:
+                out = json.loads(done.stdout)
+            except ValueError:
+                out = {"is_error": True, "result": done.stderr or done.stdout}
+            if not out.get("is_error") and (out.get("result") or out.get("structured_output")):
+                usage = out.get("usage") or {}
+                tokens_in = ((usage.get("input_tokens") or 0)
+                             + (usage.get("cache_read_input_tokens") or 0)
+                             + (usage.get("cache_creation_input_tokens") or 0))
+                tokens_out = usage.get("output_tokens") or 0
+                return ChatResult(generations=[ChatGeneration(message=AIMessage(
+                    content=out.get("result") or "",
+                    additional_kwargs={"structured_output": out.get("structured_output")},
+                    response_metadata={"stop_reason": out.get("stop_reason") or "end_turn"},
+                    usage_metadata={"input_tokens": tokens_in, "output_tokens": tokens_out,
+                                    "total_tokens": tokens_in + tokens_out}))])
+            error = str(out.get("result"))[:300]
+            time.sleep(15 * (attempt + 1))
+        raise RuntimeError(f"claude CLI failed: {error}")
+
+    def with_structured_output(self, schema, **_: Any):
+        def parse(message: AIMessage):
+            data = message.additional_kwargs.get("structured_output")
+            return schema.model_validate(data if data is not None else json.loads(message.content))
+        return self.bind(schema=schema.model_json_schema()) | RunnableLambda(parse)
 
 
 # --------------------------------------------------------------------------- #
@@ -80,8 +151,12 @@ def _time_limit(seconds: int):
         signal.signal(signal.SIGALRM, previous)
 
 
-def run(output: Path, sample: Optional[int] = None) -> list[dict]:
-    """Answer each question and save after every one. Rows with an error are retried."""
+def run(output: Path, sample: Optional[int] = None, writer: Optional[str] = None) -> list[dict]:
+    """Answer each question and save after every one. Rows with an error are retried.
+
+    `writer` names a Claude model ("sonnet", "haiku") that writes and fact-checks
+    through the local CLI. Planning, extraction and retrieval stay as in production.
+    """
     from tqdm import tqdm
 
     from finagent.api.service import run_agent
@@ -90,6 +165,12 @@ def run(output: Path, sample: Optional[int] = None) -> list[dict]:
     from finagent.llm import classify_error
 
     os.environ["DISABLE_DYNAMIC_FETCH"] = "1"       # the eval corpus is fixed
+    if writer:
+        from finagent.agent import agent as agent_module
+
+        production = agent_module.create_llm
+        agent_module.create_llm = lambda ctx, role: (
+            ClaudeCLI(model=writer) if role in ("writer", "critic") else production(ctx, role))
     questions = load_questions()[:sample]
     output.parent.mkdir(parents=True, exist_ok=True)
     done = {}
@@ -103,7 +184,8 @@ def run(output: Path, sample: Optional[int] = None) -> list[dict]:
             continue
         row = {"financebench_id": q["financebench_id"], "question": q["question"],
                "gold": q.get("answer", ""), "qtype": q["qtype"], "company": q.get("company", ""),
-               "answer": "", "retrieved_chunks": [], "error": None}
+               "answer": "", "retrieved_chunks": [], "error": None,
+               "writer": writer or "production"}
         # A few questions never name their company. The benchmark is open-book
         # over a known filing, so name it for retrieval's company filter.
         question = q["question"]
@@ -201,8 +283,9 @@ def _ragas_clients(judge_provider: str, judge_model: str):
     # A small local embedder for the similarity parts of two metrics.
     embeddings = HuggingFaceEmbeddings(model_name="BAAI/bge-small-en-v1.5",
                                        encode_kwargs={"normalize_embeddings": True})
-    return (LangchainLLMWrapper(build_llm(judge_provider, judge_model)),
-            LangchainEmbeddingsWrapper(embeddings))
+    judge = (ClaudeCLI(model=judge_model) if judge_provider == "claude-cli"
+             else build_llm(judge_provider, judge_model))
+    return LangchainLLMWrapper(judge), LangchainEmbeddingsWrapper(embeddings)
 
 
 def _cap_contexts(contexts: list) -> list[str]:
@@ -363,11 +446,14 @@ def main() -> None:
     ap.add_argument("step", choices=["run", "score", "report"])
     ap.add_argument("--output", type=Path, required=True, help="the answers JSON")
     ap.add_argument("--sample", type=int, help="only the first N questions")
-    ap.add_argument("--judge-provider", default=JUDGE[0])
+    ap.add_argument("--writer", help="a Claude model (sonnet, haiku) that writes and "
+                                     "fact-checks through the local `claude` CLI")
+    ap.add_argument("--judge-provider", default=JUDGE[0],
+                    help="a provider from finagent.llm, or claude-cli")
     ap.add_argument("--judge-model", default=JUDGE[1])
     args = ap.parse_args()
     if args.step == "run":
-        run(args.output, args.sample)
+        run(args.output, args.sample, args.writer)
     elif args.step == "score":
         score(args.output, args.judge_provider, args.judge_model, args.sample)
     else:
