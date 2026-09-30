@@ -448,6 +448,7 @@ def _build_single(provider: str, model: str, api_key: str, **kw):
         return ChatAnthropic(model=model, api_key=api_key, **kw)
     from langchain_groq import ChatGroq
     if model.startswith("qwen/"):
-        # Qwen is a reasoning model; "hidden" keeps its <think> block out of the text.
+        # When Qwen is asked to reason (`reasoning_effort`, set per role in
+        # runtime.py), "hidden" keeps its <think> block out of the reply.
         kw.setdefault("reasoning_format", "hidden")
     return ChatGroq(model=model, api_key=api_key, **kw)

@@ -44,6 +44,13 @@ FREE_GROQ_EVIDENCE_CHARS = 14_000
 # compare if answer quality matters more than latency.
 GEMINI_THINKING = "low"
 
+# Qwen on Groq does not reason unless asked. With "low" the extractors think
+# before filling the form. Measured on 14 extraction cases x 4 runs: 56 of 56
+# correct, against 50 of 56 without. The planned formula gained most (unadjusted
+# EBITDA stopped picking up interest expense). Costs about 2 s and 200 output
+# tokens per call.
+EXTRACTOR_REASONING = "low"
+
 
 @dataclass(frozen=True, slots=True)
 class RuntimeContext:
@@ -74,7 +81,11 @@ def create_llm(ctx: RuntimeContext, role: str):
     from finagent.llm import build_llm
 
     provider, model, key = ctx.resolve(role)
-    extra = {"thinking_level": GEMINI_THINKING} if provider == "gemini" else {}
+    extra = {}
+    if provider == "gemini":
+        extra = {"thinking_level": GEMINI_THINKING}
+    elif role == "extractor":
+        extra = {"reasoning_effort": EXTRACTOR_REASONING}
     return build_llm(provider, model, key, temperature=ctx.temperature, **extra)
 
 
