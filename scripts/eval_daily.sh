@@ -85,13 +85,52 @@ PY
 TARGET_ANS=$(answerable)
 say "=== eval: $(answers)/$TARGET_ANS answered | $(cells) metric cells filled | $(count_filings)/$TOTAL_FILINGS filings indexed ==="
 
+# "dead" if EVERY key of EVERY named model is out of DAILY quota. Pass the
+# model(s) to check. A daily-dead key 429s for free, so probing a spent model
+# costs nothing; a live model stops at its first working key (one request).
+# RPM/transient errors count as "live" — worth waiting out, not a reason to quit.
+# "yes" only if a probe of MODEL returns a clean 200. A 429 — daily OR
+# per-minute — is NOT proof of budget. The earlier version counted a non-daily
+# (RPM) error as "live", so a DAILY-dead judge (whose keys hit the 5/min wall
+# first when probed) reported alive, its pass ran, and it ground a ~40-min nan
+# tail; the loop then re-entered round after round on spent judges. Only a 200
+# counts. A genuinely-live judge that is momentarily RPM-throttled just gets
+# skipped this round and picked up next round once the per-minute window clears
+# (the dead-round backoff waits it out) — so this never false-quits on a
+# transient, it only refuses to launch a pass that cannot produce. On a spent
+# model every key 429s for free, so the probe is cheap; on a live one it stops
+# at the first working key (one request).
+model_live(){ python - "$1" <<'PY' 2>/dev/null || echo no
+import sys
+from finagent.llm import build_llm, collect_provider_keys
+m = sys.argv[1]
+for k in collect_provider_keys("gemini"):
+    try:
+        build_llm("gemini", m, api_key=k, rotate=False).invoke("ok")
+        print("yes"); break               # a clean 200 is the only proof of budget
+    except Exception:
+        continue                          # any 429 (daily or rpm) is not proof
+else:
+    print("no")
+PY
+}
+
+# The models each phase actually needs. Phase A synthesises answers on the SYNTH
+# model; Phase B scores by rotating these JUDGES. gemini-3.7-flash is a SEPARATE
+# model, so its 20-RPD/key bucket is independent — adding it is ~50% more daily
+# judge budget (3 models x 20 RPD x 7 keys).
+SYNTH_MODEL=gemini-3.6-flash
+JUDGES="gemini-3.5-flash gemini-3.6-flash gemini-3.7-flash"
+
 # ---------- Phase A: answer newly-indexed filings ----------
-if [ "$(answers)" -lt "$TARGET_ANS" ]; then
+if [ "$(answers)" -ge "$TARGET_ANS" ]; then
+  say "Phase A — all $TARGET_ANS answerable questions already answered, skipping."
+elif [ "$(model_live "$SYNTH_MODEL")" = no ]; then
+  say "Phase A — synth model $SYNTH_MODEL cannot score right now (quota spent); skipping generation (re-run when it resets)."
+else
   say "Phase A — answering questions whose filing is now indexed (embeds + caches the questions, Cohere rerank)…"
   python -m finagent.evaluation.financebench.parallel \
       --only-indexed --provider gemini --output "$OUT" 2>&1 | tee -a "$LOG" || true
-else
-  say "Phase A — all $TARGET_ANS answerable questions already answered, skipping."
 fi
 bar "$(answers)" "$TARGET_ANS" "Phase A: $(answers)/$TARGET_ANS answered"
 
@@ -109,11 +148,18 @@ fi
 
 # ---------- Phase B: RAGAS score, alternating judges ----------
 ANS=$(answers); TARGET_CELLS=$(( ANS * 6 ))
-say "Phase B — RAGAS scoring $ANS answers ($TARGET_CELLS cells), alternating gemini-3.5-flash / 3.6-flash…"
+say "Phase B — RAGAS scoring $ANS answers ($TARGET_CELLS cells), rotating $JUDGES…"
+# No round-start "all-dead → break": a momentary all-RPM blip is not the daily
+# wall, and breaking on it would quit early. Instead each judge is probed with
+# model_live and a spent one is skipped instantly (its keys 429 for free); a
+# round where every judge skips scores nothing and trips the dead-round counter,
+# so a genuinely-spent day still stops within ~5 rounds — but a transient one
+# recovers on the next round once RPM clears.
 DEAD=0
 for ROUND in $(seq 1 40); do
   BEFORE_ROUND=$(cells)
-  for JUDGE in gemini-3.5-flash gemini-3.6-flash; do
+  for JUDGE in $JUDGES; do
+    [ "$(model_live "$JUDGE")" = yes ] || { say "  judge $JUDGE not scoreable now (quota spent) — skipping"; continue; }
     B=$(cells)
     say "round $ROUND, judge $JUDGE (from $B/$TARGET_CELLS)"
     python -m finagent.evaluation.financebench.parallel --score --provider gemini \

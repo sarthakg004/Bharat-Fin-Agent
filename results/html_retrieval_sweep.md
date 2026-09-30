@@ -1,6 +1,6 @@
 # Retrieval sweep — served HTML pipeline
 
-Corpus: reused SEC filings (FinanceBench 10-K/10-Q), one Qdrant collection, production `CorpusIngester` + `HybridRetriever`, pool depth 48, 5 per sub-query, capped to 8 against the original question.
+Corpus: 10 SEC filings (FinanceBench 10-K/10-Q), one Qdrant collection, production `CorpusIngester` + `HybridRetriever`, pool depth 48, 5 per sub-query, capped to 8 against the original question.
 
 Questions: **99** scored · 28 excluded because `partition_html` never recovers their evidence from the primary filing (parsing ceiling < 0.5, no retriever can return it) · 0 where the planner routed every sub-query away from the filings (scored as misses — production retrieves nothing for them either).
 
@@ -12,6 +12,7 @@ Questions: **99** scored · 28 excluded because `partition_html` never recovers 
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | served |  | 2500 | 600 | bge-large-en-v1.5 | 1024 | BAAI/bge-reranker-v2-m3 | 99 | 2 | 0.8687 | 0.8912 | 0.6231 | 0.6566 | 0.7014 | 0.7374 | 0.8278 | 0.4297 | 0.8488 | 44542 | 182.4 | 14543 | 33 | 10586 |
 | served | default | 2500 | 600 | bge-large-en-v1.5 | 1024 | BAAI/bge-reranker-v2-m3 | 99 | 2 | 0.9091 | 0.9048 | 0.6203 | 0.6566 | 0.708 | 0.7475 | 0.8238 | 0.444 | 0.8222 | 44542 | 182.4 | 13990 | 27 | 8411 |
+| served | default | 2500 | 600 | gemini-embedding-2 | 1536 | none (RRF order) | 99 | 2 | 0.9495 | 0.9287 | 0.615 | 0.6364 | 0.6598 | 0.7071 | 0.7768 | 0.4502 | 0.7447 | 44542 | 273.7 | 11856 | 988 | 0 |
 | subquery |  | 1500 | 600 | bge-large-en-v1.5 | 1024 | BAAI/bge-reranker-base | 99 | 2.1 | 0.6667 |  | 0.3119 | 0.303 | 0.3286 | 0.3131 |  |  | 0.4697 | 46186 | 189.2 | 7165 | 20 | 659 |
 | subquery |  | 1500 | 600 | bge-large-en-v1.5 | 1024 | BAAI/bge-reranker-v2-m3 | 99 | 2.1 | 0.6667 |  | 0.278 | 0.2626 | 0.3155 | 0.303 |  |  | 0.4545 | 46186 | 189.2 | 7378 | 20 | 3728 |
 | subquery |  | 1500 | 600 | bge-large-en-v1.5 | 1024 | none (RRF order) | 99 | 2.1 | 0.6667 |  | 0.2771 | 0.2424 | 0.2959 | 0.2626 |  |  | 0.3939 | 46186 | 189.2 | 6565 | 20 | 0 |

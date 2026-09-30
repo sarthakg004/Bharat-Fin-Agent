@@ -1,6 +1,6 @@
 {
   "meta": {
-    "files": "reused",
+    "files": 10,
     "n_questions": 99,
     "n_dropped": 28,
     "n_unretrieved": 0,
@@ -2467,6 +2467,56 @@
         }
       },
       "ingest_s": 0.0,
+      "chunks": 44542
+    },
+    "served|p2500_c600_gemini-embedding-2_hdr_tbl-md|none (RRF order)": {
+      "config": "p2500_c600_gemini-embedding-2_hdr_tbl-md",
+      "parent": 2500,
+      "child": 600,
+      "embed": "gemini-embedding-2",
+      "dim": 1536,
+      "reranker": "none (RRF order)",
+      "mode": "served",
+      "rewriter": "default",
+      "headers": true,
+      "table_format": "md",
+      "scored": "as served",
+      "rank_by": "sub-query score",
+      "n": 99,
+      "subqueries": 2,
+      "pool_recall": 0.9495,
+      "pool_num": 0.9287,
+      "mrr": 0.4502,
+      "cov@5": 0.615,
+      "cov@8": 0.6598,
+      "hit@5": 0.6364,
+      "hit@8": 0.7071,
+      "num@5": 0.7255,
+      "num@8": 0.7768,
+      "retention": 0.7447,
+      "points": 44542,
+      "vectors_mb": 273.7,
+      "ctx_chars@8": 11856,
+      "pool_ms": 988,
+      "rerank_ms": 0,
+      "by_type": {
+        "comparison": {
+          "n": 12,
+          "cov@8": 0.5966,
+          "hit@8": 0.5833
+        },
+        "narrative": {
+          "n": 27,
+          "cov@8": 0.5976,
+          "hit@8": 0.6296
+        },
+        "numeric": {
+          "n": 60,
+          "cov@8": 0.7005,
+          "hit@8": 0.7667
+        }
+      },
+      "ingest_s": 826.4,
       "chunks": 44542
     }
   }
