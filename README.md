@@ -207,9 +207,26 @@ Ingestion can be re-run safely. Point ids are derived from the filing, the
 position and the text, so a re-run overwrites instead of duplicating, and
 embeddings are cached on disk so it costs no API quota.
 
-The chunking in `ingestion/ingest.py` is frozen. The stored index was built with
-it, and changing what a chunk contains changes its id, which means re-embedding
-everything. `tests/test_retrieval.py` fails if the chunker's output changes.
+### Chunking strategy
+
+Filings are chunked with parent-document retrieval (`finagent/ingestion/ingest.py`):
+
+| Piece | Size | Role |
+|---|---|---|
+| Parent passage | a section, up to 2,500 characters | What the reranker scores and the writer reads |
+| Child chunk | 600 characters, 100 overlap | What is embedded and matched |
+| Table | kept whole | Its own parent and child, so rows stay together |
+| Context header | `<company> <year> · <section caption>` | Prefixed to every chunk |
+
+Small children match a query precisely; the larger parent gives the model the
+context around the match. The header exists because the chunker separates a
+statement's heading from the table below it, which left the table with no
+company, year or statement name to match on. Adding it took the evidence hit
+rate from 40 to 57 of 99 questions.
+
+A chunk's id is derived from its text. The index in Qdrant was built with this
+chunking, so a change to chunk text means re-embedding the corpus;
+`tests/test_retrieval.py` checks the chunker's output against a recorded digest.
 
 Run the tests with `pytest`.
 

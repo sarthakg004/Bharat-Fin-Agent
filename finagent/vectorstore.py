@@ -255,10 +255,10 @@ def get_client():
 
 
 def chunk_point_id(meta: dict, text: str) -> str:
-    """Deterministic point id: (filing, parent position, chunk text).
+    """Deterministic point id from (filing, parent position, chunk text).
 
-    FROZEN: the stored index was written with exactly this formula. Changing it
-    orphans every stored point.
+    Ingesting the same chunk twice gives the same id, so a re-run overwrites
+    instead of duplicating. The stored points were written with this formula.
     """
     digest = hashlib.sha1((text or "").encode("utf-8")).hexdigest()[:16]
     parts = (meta.get("source_url") or meta.get("local_path", ""),

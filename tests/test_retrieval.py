@@ -129,9 +129,9 @@ def test_filing_search_is_skipped_when_the_company_could_not_be_fetched(monkeypa
     assert out == {"retrieved_chunks": []} and agent._retriever.searched == []
 
 
-def test_the_chunker_output_is_frozen():
-    """The stored index was built with this exact chunking. If this digest
-    changes, the point ids change and every stored vector is orphaned."""
+def test_chunker_output_matches_the_recorded_digest():
+    """Point ids are derived from chunk text, and the index in Qdrant was built
+    with this chunking. A changed digest means the corpus must be re-embedded."""
     pytest.importorskip("unstructured")
     from finagent.ingestion.ingest import CorpusIngester
     from finagent.vectorstore import chunk_point_id

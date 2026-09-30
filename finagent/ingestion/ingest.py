@@ -1,15 +1,24 @@
 """Turn SEC HTML filings into searchable chunks in Qdrant.
 
-    filing.htm -> elements (unstructured) -> parent passages (up to 2,500 chars)
-               -> small child chunks (600 chars) that get embedded
-               -> each chunk prefixed with "<company> <year> · <section caption>"
+Chunking strategy (parent-document retrieval):
+
+    filing.htm -> elements (unstructured)
+               -> PARENT passages: a section, up to 2,500 characters
+               -> CHILD chunks: 600 characters with 100 overlap, cut from a parent
+               -> every chunk prefixed with "<company> <year> · <section caption>"
                -> dense + BM25 vectors -> Qdrant
 
-Search matches on the small children and hands the larger parent to the model.
-Tables are never split: a table is its own parent and its own child.
+Only the small children are embedded, because a short chunk matches a query
+precisely. Each child carries its parent's text, and the parent is what the
+reranker scores and the writer reads, because the answer needs the context
+around the match.
 
-FROZEN: the served index was built with exactly this chunking. Any change to
-the text a chunk contains changes its point id and needs a full re-embed.
+A table is never split: it is its own parent and its own child, so its rows
+stay together. The prefix gives a chunk the identity it would otherwise lack: a
+balance-sheet table holds no company name, year or statement title.
+
+A chunk's point id is derived from its text, so the index stays valid only
+while this module produces the same text for the same filing.
 """
 
 from __future__ import annotations
