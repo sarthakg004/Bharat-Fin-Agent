@@ -168,10 +168,21 @@ What has been measured so far, all on the 99 questions:
 | Search on one rewritten query instead of the sub-queries | 75 |
 | A stronger model writing that query (Gemini) | 79 |
 
-Those numbers used the earlier local embedder and reranker. The current stack
-(Gemini embeddings, Cohere rerank, Qwen rewrite) has only been run on a
-10-question sample. `results/RETRIEVAL_EXPERIMENTS.md` records every experiment,
-including the ones that lost.
+Those rows used the earlier local embedder (`bge-large`) and reranker. The
+current stack (Gemini embeddings, Qwen search-query rewrite) on the same 99
+questions:
+
+| Reranker | Evidence found by search | In the top 5 | In the top 8 | MRR | Seconds per question |
+|---|---|---|---|---|---|
+| None | 95 | 60 | 78 | 0.45 | 0.02 |
+| Cohere `rerank-v4.0-pro` (served) | 95 | 82 | **89** | 0.63 | 2.5 |
+| Local `bge-reranker-v2-m3` (fallback) | 95 | 72 | 82 | 0.53 | 7.9 |
+
+With Cohere, by question type: numeric 57 of 60, narrative 22 of 27, comparison
+10 of 12. The embedder, the reranker and the rewrite model all changed between
+79 and 89, so the gain is not attributed to any one of them. Full output is in
+`results/retrieval_eval.md`; `results/RETRIEVAL_EXPERIMENTS.md` records every
+earlier experiment, including the ones that lost.
 
 Two things to know when reading RAGAS scores for this project:
 
