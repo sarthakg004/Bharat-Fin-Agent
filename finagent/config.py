@@ -1,107 +1,29 @@
-"""Typed application settings, imported everywhere as `settings`.
+"""Settings read from the environment, imported everywhere as `settings`.
 
-Covers the environment variables the graph and stores need. A few are still
-read with `os.getenv` at their point of use — the provider key pools
-(`llm.collect_provider_keys`, which must also find `GROQ_API_KEY1..N` and
-`GROQ_API_KEYS`), and the process-level knobs in `api/main.py` that run before
-this module is imported.
-
-Uses `pydantic.BaseModel` rather than `pydantic_settings.BaseSettings` to avoid
-a new dependency; loading is explicit in `Settings.from_env()`.
+API keys are not here: `finagent.llm.collect_provider_keys` reads them, because
+a provider can have a whole pool of keys.
 """
 
 from __future__ import annotations
 
 import os
-from typing import Optional
+from dataclasses import dataclass
 
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field
 
-load_dotenv()  # make .env visible no matter which module imports settings first
-
-# Reranker the served path uses unless RERANKER_MODEL says otherwise. Cohere's
-# hosted rerank beats the local cross-encoder and costs no CPU, and a spent key
-# pool degrades to `retrieval.reranker.LOCAL_FALLBACK_RERANKER` rather than
-# failing. Spelled out here rather than imported from `retrieval.reranker`,
-# which would be an import cycle (that module imports `finagent.llm`) and would
-# drag torch into every process that merely reads settings.
-DEFAULT_RERANKER = "cohere:rerank-v4.0-pro"
-
-# The served collection. Gemini-embedded at 1536 dims, so it cannot be queried
-# by a local bge model; see `vectorstore.DEFAULT_EMBED_MODEL`. The default used
-# to say `us_filings_v3` while the deploy forced v4, which meant anything run
-# locally without US_COLLECTION set pointed at a collection that no longer
-# existed. Default and deploy now agree.
-DEFAULT_US_COLLECTION = "us_filings_v5_gemini"
+load_dotenv()
 
 
-def _as_bool(raw: Optional[str], default: bool = False) -> bool:
-    if raw is None:
-        return default
-    return raw.strip().lower() in ("1", "true", "yes", "on")
+@dataclass(frozen=True)
+class Settings:
+    # The Qdrant collection users search. It was embedded with Gemini at 1536
+    # dimensions, so it can only be queried with the same embedder.
+    us_collection: str = os.getenv("US_COLLECTION", "us_filings_v5_gemini")
+    # The collection the evaluation searches (kept on a local Qdrant).
+    financebench_collection: str = os.getenv("FINANCEBENCH_COLLECTION", "financebench_eval")
+    # "cohere:<model>" calls Cohere's API and falls back to the local
+    # cross-encoder when Cohere is unavailable.
+    reranker_model: str = os.getenv("RERANKER_MODEL", "cohere:rerank-v4.0-pro")
 
 
-class Settings(BaseModel):
-    """Typed view of the runtime environment. Construct via `Settings.from_env()`.
-
-    Fields map 1:1 to environment variables (names in the comments). Defaults
-    match the values baked into the Dockerfile / current behaviour so importing
-    settings never changes how the app runs.
-    """
-
-    # --- LLM / provider keys -------------------------------------------------
-    # Only Tavily's lives here. The chat/embedding providers are NOT mirrored
-    # into Settings: `finagent.llm.collect_provider_keys` reads the environment
-    # itself because it also has to find the numbered (GROQ_API_KEY1..N) and
-    # consolidated (GROQ_API_KEYS) forms, which a single field cannot hold.
-    tavily_api_key: str = Field(default="", description="TAVILY_API_KEY")
-
-    # --- Runtime behaviour ---------------------------------------------------
-    # Dynamic SEC fetch: persist the fetched filing into the on-disk corpus
-    # (True, good locally — a self-expanding index) or use it ephemerally in
-    # memory for this session only (False, for Cloud Run — no index growth, no
-    # persistence, no scale-to-zero problem). Set PERSIST_DYNAMIC_FETCH=false on
-    # the cloud.
-    persist_dynamic_fetch: bool = Field(default=True, description="PERSIST_DYNAMIC_FETCH")
-
-    # --- Deep Research mode ---------------------------------------------------
-    # Max specialist agents per research run (bounds latency + LLM quota) and
-    # how many run concurrently. Parallel stays 1 by default: the serve path
-    # pins graph runs to one worker (reranker/tokenizer thread-safety).
-    research_max_agents: int = Field(default=8, description="RESEARCH_MAX_AGENTS")
-    research_parallel_agents: int = Field(default=1, description="RESEARCH_PARALLEL_AGENTS")
-
-    # --- Models --------------------------------------------------------------
-    # A LOCAL model here must be one the image bakes (see Dockerfile): the
-    # runtime pins HF_HUB_OFFLINE=1, so an unbaked value dies on the first
-    # query, not at boot. An API-served model (`cohere:`) has nothing to bake,
-    # but it still degrades to the baked local cross-encoder when its key pool
-    # is spent, so that one is required either way.
-    reranker_model: str = Field(default=DEFAULT_RERANKER, description="RERANKER_MODEL")
-
-    # --- Storage / collections ----------------------------------------------
-    qdrant_url: str = Field(default="", description="QDRANT_URL / QDRANT_CLUSTER_ENDPOINT")
-    us_collection: str = Field(default=DEFAULT_US_COLLECTION, description="US filings collection")
-    financebench_collection: str = Field(default="financebench_eval", description="eval collection")
-
-    @classmethod
-    def from_env(cls) -> "Settings":
-        """Build a Settings instance from the current process environment."""
-        return cls(
-            tavily_api_key=(os.getenv("TAVILY_API_KEY") or "").strip(),
-            persist_dynamic_fetch=_as_bool(os.getenv("PERSIST_DYNAMIC_FETCH"), default=True),
-            research_max_agents=int(os.getenv("RESEARCH_MAX_AGENTS", "8")),
-            research_parallel_agents=int(os.getenv("RESEARCH_PARALLEL_AGENTS", "1")),
-            reranker_model=os.getenv("RERANKER_MODEL", DEFAULT_RERANKER),
-            qdrant_url=(os.getenv("QDRANT_URL")
-                        or os.getenv("QDRANT_CLUSTER_ENDPOINT") or "").strip(),
-            us_collection=os.getenv("US_COLLECTION", DEFAULT_US_COLLECTION),
-            financebench_collection=os.getenv("FINANCEBENCH_COLLECTION", "financebench_eval"),
-        )
-
-
-# One module-level instance, imported everywhere as `from finagent.config import settings`.
-settings = Settings.from_env()
-
-__all__ = ["Settings", "settings"]
+settings = Settings()

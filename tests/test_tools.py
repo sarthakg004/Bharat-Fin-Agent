@@ -1,0 +1,115 @@
+"""The number path and the live 10-K fetch. No network: SEC responses are fakes."""
+
+from __future__ import annotations
+
+import re
+
+from finagent.tools.calculator import FinancialCalculator
+from finagent.tools.sec_fetch import SecFilingFetcher
+from finagent.tools.xbrl import XBRLClient
+
+
+def test_fiscal_year_comes_from_the_period_end_date():
+    """The SEC `fy` field is the filing's year, not the figure's. A year ending
+    in early January belongs to the previous fiscal year."""
+    assert XBRLClient._fiscal_year({"end": "2022-01-02"}) == 2021      # J&J
+    assert XBRLClient._fiscal_year({"end": "2022-01-31"}) == 2022      # Walmart
+    assert XBRLClient._fiscal_year({"end": "2022-09-24"}) == 2022      # Apple
+
+
+def test_a_quarter_is_pinned_for_same_quarter_comparisons():
+    facts = [
+        {"start": "2025-01-01", "end": "2025-03-31", "fp": "Q1", "val": 10, "form": "10-Q"},
+        {"start": "2025-04-01", "end": "2025-06-30", "fp": "Q2", "val": 11, "form": "10-Q"},
+        {"start": "2026-01-01", "end": "2026-03-31", "fp": "Q1", "val": 12, "form": "10-Q"},
+    ]
+    assert XBRLClient._select_fact(facts, 2025, quarterly=True, fp="Q1")["val"] == 10
+    assert XBRLClient._select_fact(facts, None, quarterly=True, fp="Q1")["val"] == 12   # newest
+
+
+def test_an_llm_picked_tag_must_share_a_word_with_the_concept():
+    """Otherwise a real figure is returned under the wrong name."""
+    assert not XBRLClient._tag_relevant("restructuring costs", "AssetImpairmentCharges")
+    assert XBRLClient._tag_relevant("asset impairment", "AssetImpairmentCharges")
+
+
+class FakeXBRL:
+    """Stands in for XBRLClient.run, keyed on (concept, year, quarter)."""
+
+    DATA = {("operating_income", 2025, "Q1"): 100.0, ("revenue", 2025, "Q1"): 1000.0,
+            ("operating_income", 2026, "Q1"): 150.0, ("revenue", 2026, "Q1"): 1200.0}
+
+    def run(self, ticker, concept, period=None, quarterly=False, fp=None):
+        m = re.search(r"(19|20)\d{2}", str(period or ""))
+        fy, fq = (int(m.group(0)), fp) if m else (2026, "Q1")
+        val = self.DATA.get((concept, fy, fq or "Q1"))
+        if val is None:
+            return {"ok": False, "error": "no fact"}
+        return {"ok": True, "value": val, "value_str": f"${val:,.0f}", "tag": concept,
+                "fy": fy, "fp": fq or "Q1", "period_label": f"{fq or 'Q1'} {fy}",
+                "form": "10-Q", "source": "fake", "ticker": ticker}
+
+
+def test_calculator_computes_margins_and_growth_from_the_facts():
+    calc = FinancialCalculator(xbrl=FakeXBRL())
+    trend = calc.trend("NOW", "operating_margin", ["FY2025", "FY2026"], quarterly=True, fp="Q1")
+    assert [round(s["value"], 3) for s in trend["series"]] == [0.1, 0.125]
+    assert "rose 2.5 pts" in trend["change_str"]
+    # No period given: the latest period against the one before, not 0% growth.
+    growth = calc.growth("NOW", "revenue", None, None, quarterly=True)
+    assert abs(growth["value"] - 0.20) < 1e-9
+
+
+# Shape of data.sec.gov/submissions/CIK##########.json, trimmed to the keys read.
+FAKE_SUBMISSIONS = {"filings": {"recent": {
+    "form": ["8-K", "10-K", "10-K/A", "10-Q", "10-K"],
+    "filingDate": ["2025-12-20", "2025-12-12", "2025-12-15", "2025-08-14", "2024-12-13"],
+    "accessionNumber": ["0000000000-25-000001", "0001628280-25-056742", "0000000000-25-000002",
+                        "0000000000-25-000003", "0000006951-24-000044"],
+    "primaryDocument": ["ev.htm", "amat-20251026.htm", "amend.htm", "q3.htm", "amat-20241027.htm"],
+}}}
+
+
+class _Response:
+    def __init__(self, payload=None, content=b""):
+        self._payload, self.content = payload, content
+
+    def json(self):
+        return self._payload
+
+    def raise_for_status(self):
+        return None
+
+
+def _fetcher(tmp_path, downloads):
+    f = SecFilingFetcher(corpus_dir=tmp_path, collection_name="stub", resolver=type(
+        "R", (), {"resolve": staticmethod(lambda q: {
+            "cik": "0000006951", "ticker": "AMAT", "title": "APPLIED MATERIALS INC /DE"})})())
+
+    def fake_get(url, timeout=None):
+        if "data.sec.gov/submissions" in url:
+            return _Response(payload=FAKE_SUBMISSIONS)
+        downloads.append(url)
+        return _Response(content=b"x" * 60_000)
+
+    f._sec_get = fake_get
+    return f
+
+
+def test_fetch_downloads_the_latest_10ks_and_skips_amendments(tmp_path):
+    downloads: list[str] = []
+    records, form = _fetcher(tmp_path, downloads)._download("AMAT", "APPLIED MATERIALS INC /DE", "10-K", 2)
+    assert form == "10-K" and [r["year"] for r in records] == ["2025", "2024"]    # 10-K/A is not a 10-K
+    assert downloads[0] == ("https://www.sec.gov/Archives/edgar/data/6951/"
+                            "000162828025056742/amat-20251026.htm")
+    assert records[0]["status"] == "ok" and records[0]["company"] == "APPLIED MATERIALS INC /DE"
+
+
+def test_a_dead_sec_endpoint_degrades_instead_of_raising(tmp_path):
+    f = _fetcher(tmp_path, [])
+
+    def boom(url, timeout=None):
+        raise OSError("SEC unreachable")
+
+    f._sec_get = boom
+    assert f._download("AMAT", "", "10-K", 1) == ([], None)

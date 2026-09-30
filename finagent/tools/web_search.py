@@ -31,8 +31,7 @@ TRUSTED_FINANCIAL_DOMAINS: tuple[str, ...] = (
     "seekingalpha.com",
     "investopedia.com",
     "sec.gov",
-    # Market-data / screeners / analysis (Tavily extracts these server-side, so
-    # sites that block direct scraping are still searchable through it).
+    # Market data and analysis sites.
     "investing.com",
     "stockanalysis.com",
     "finviz.com",
@@ -45,8 +44,7 @@ TRUSTED_FINANCIAL_DOMAINS: tuple[str, ...] = (
     "gurufocus.com",
     "robinhood.com",
     "cnn.com",
-    # Indian coverage — without these an NSE/BSE stock gets no trusted hits
-    # and the general pass fills the answer with low-quality sites.
+    # Indian coverage.
     "economictimes.indiatimes.com",
     "moneycontrol.com",
     "indmoney.com",
@@ -54,9 +52,7 @@ TRUSTED_FINANCIAL_DOMAINS: tuple[str, ...] = (
 )
 
 
-# Social / UGC / video domains that are noise for a financial answer. The
-# general (untrusted) pass excludes these so we never surface an Instagram or
-# Reddit post as "market news".
+# Social and video sites, excluded from the general search.
 JUNK_DOMAINS: tuple[str, ...] = (
     "instagram.com", "facebook.com", "tiktok.com", "twitter.com", "x.com",
     "reddit.com", "pinterest.com", "youtube.com", "quora.com", "linkedin.com",
@@ -64,9 +60,7 @@ JUNK_DOMAINS: tuple[str, ...] = (
 )
 
 
-# Recency cues in the query → narrower Tavily `time_range`. Without these,
-# Tavily returns articles by relevance with no time bias, so a "premarket"
-# question can come back with last quarter's premarket move.
+# Words in the question that narrow the search to the last day or week.
 _RECENCY_DAY_MARKERS = (
     "premarket", "pre-market", "today", "this morning",
     "right now", "current price", "live price", "as of now",
@@ -88,9 +82,8 @@ def infer_time_range(query: str) -> str:
     return _DEFAULT_NEWS_RANGE
 
 
-# Past-year / historical-fact markers. A question about FY2021-2023 acquisitions
-# is a HISTORICAL lookup, not "latest news" — applying a recency window to it
-# returns recent articles that merely mention the topic for unrelated companies.
+# A question about a past year or a past event is a lookup, not news, so it
+# is searched with no time window.
 _PAST_YEAR_RE = re.compile(r"\b(?:fy\s*)?(19|20)\d{2}\b", re.I)
 _HISTORICAL_MARKERS = (
     "acquisition", "acquisitions", "acquire", "acquired", "merger", "merged",
@@ -126,9 +119,7 @@ class WebSearcher:
     content server-side, except for historical lookups which search all-time.
     """
 
-    # Tavily's `max_results` accepts up to 20. We default to 10 so the
-    # synthesizer has enough material to answer multi-faceted questions
-    # ("performance over the last year" rarely fits in 3 snippets).
+    # Tavily returns at most 20 results per call.
     MAX_RESULTS_CAP = 20
     TRUSTED_DOMAINS = TRUSTED_FINANCIAL_DOMAINS
 
@@ -191,11 +182,7 @@ class WebSearcher:
         client = self._tavily_client()
         hits: list[dict] = []
         seen_urls: set[str] = set()
-        # Historical/factual lookups (FY2021-2023 acquisitions, company history)
-        # search ALL-TIME by relevance — a recency window would return recent
-        # articles that merely mention the topic for unrelated companies. Fresh
-        # questions keep the day→week→month recency fallback. `None` time_range
-        # means "no time filter" (omitted from the Tavily call below).
+        # Lookups search all time; news questions widen day -> week -> month.
         if is_historical(query):
             ranges: list = [None]
             general_topic = "general"      # not "news" — we want reference pages

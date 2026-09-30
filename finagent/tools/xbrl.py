@@ -1,20 +1,16 @@
-"""Exact reported figures from SEC XBRL company-facts, so numeric questions are
-answered from structured data instead of retrieved prose — no LLM in the number
-path, so there is nothing to hallucinate.
+"""Exact reported figures from the SEC's XBRL company-facts API.
 
-    ticker/name --(resolver)--> CIK
-    CIK --> data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json  (cached)
-    concept --> the right US-GAAP tag, then period --> the exact fact value
+Numeric questions are answered from this structured data, so no model has to
+recall or read a number.
 
-The hard part is TAG HETEROGENEITY: the same economic concept is filed under
-different tags by different companies (revenue is `Revenues` for some,
-`RevenueFromContractWithCustomerExcludingAssessedTax` for others). Two layers
-handle it — a curated concept → candidate-tags map ordered by preference, and a
-cheap LLM fallback (`tag_resolver`) that picks from the tags the company actually
-reports when the map misses.
+    ticker or name -> CIK (resolver)
+    CIK            -> data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json (cached)
+    concept        -> the company's US-GAAP tag -> the value for the period
 
-Takes an optional `resolver` and `tag_resolver`, so it stays unit-testable
-without the graph; `xbrl_node` wires the router-tier LLM into `tag_resolver`.
+The hard part is that companies file the same concept under different tags
+(revenue is `Revenues` for some and `RevenueFromContractWithCustomer...` for
+others). A curated map handles the common cases; an LLM picks from the tags the
+company actually reports when the map misses.
 """
 
 from __future__ import annotations
@@ -28,7 +24,6 @@ from typing import Callable, Optional
 
 import requests
 
-from finagent.tools.base import BaseTool
 from finagent.tools.resolver import TickerCIKResolver
 
 COMPANYFACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
@@ -39,10 +34,8 @@ DEFAULT_TTL_DAYS = 7
 def dual_scale_money(value: float) -> str:
     """"$32,780,000,000 ($32,780 million; $32.78 billion)".
 
-    Filings state raw dollars but answers state millions/billions; without the
-    restated scales an LLM judge (RAGAS faithfulness) often fails to equate
-    "$32,780 million" in the answer with "$32,780,000,000" in the evidence —
-    correct extractive answers were scoring zero on exactly this mismatch.
+    Filings state raw dollars and answers state millions or billions. Printing
+    all three lets a reader (or an LLM judge) match them.
     """
     raw = f"${value:,.0f}"
     if abs(value) < 1e6:
@@ -52,16 +45,12 @@ def dual_scale_money(value: float) -> str:
         scales.append(f"${value / 1e9:,.2f} billion")
     return f"{raw} ({'; '.join(scales)})"
 
-# Concept → candidate US-GAAP tags, most-preferred first. The picker walks this
-# list and takes the first tag the company actually reports. Covers the line
-# items FinanceBench numeric questions ask about; the LLM fallback handles the
-# long tail.
+# Plain concept -> US-GAAP tags, most preferred first. The first tag the company
+# actually reports is used; a small LLM picks when none match.
 CONCEPT_TAGS: dict[str, list[str]] = {
     "revenue": [
-        # `Revenues` is the consolidated top line when present (e.g. Walmart's
-        # $572.7B total vs $567.8B net product sales, Pfizer's $100.3B total vs
-        # $91.8B product). Companies that don't file it (Apple, Microsoft) fall
-        # through to RevenueFromContract, which is then their total.
+        # `Revenues` is the total when present; companies that do not file it
+        # (Apple, Microsoft) fall through to the next tag.
         "Revenues",
         "RevenueFromContractWithCustomerExcludingAssessedTax",
         "RevenueFromContractWithCustomerIncludingAssessedTax",
@@ -118,10 +107,9 @@ CONCEPT_TAGS: dict[str, list[str]] = {
                            "WeightedAverageNumberOfSharesOutstandingBasic"],
 }
 
-# Component tags that SUM to a concept when a filer reports the split lines
-# instead of the total (e.g. Amcor FY2023+ reports raw-materials and
-# finished-goods inventory lines but no InventoryNet). Tried in order; a group
-# is used only when EVERY component resolves for the same period-end.
+# Tags that add up to a concept when a company reports only the parts
+# (raw materials + finished goods, with no inventory total). A group is used
+# only when every part resolves for the same date.
 CONCEPT_COMPONENT_SUMS: dict[str, list[list[str]]] = {
     "inventory": [
         ["InventoryFinishedGoodsAndWorkInProcessNetOfReserves",
@@ -130,16 +118,12 @@ CONCEPT_COMPONENT_SUMS: dict[str, list[list[str]]] = {
          "InventoryRawMaterialsAndSuppliesNetOfReserves"],
         ["InventoryRawMaterials", "InventoryWorkInProcess",
          "InventoryFinishedGoods"],
-        # Last resort: a brand that outsources manufacturing (e.g. Nike) reports
-        # ONLY finished goods and no InventoryNet — so the single line IS total
-        # inventory. Tried last, so a manufacturer that splits finished + raw
-        # still sums the components above instead of undercounting here.
+        # Nike reports only finished goods, so that single line is its inventory.
         ["InventoryFinishedGoodsNetOfReserves"],
     ],
 }
 
-# Free-text concept → canonical key. Matched by longest keyword found in the
-# (lowercased) concept string, so "total revenue" and "net sales" both → revenue.
+# Free-text concept -> canonical key; the longest matching keyword wins.
 _CONCEPT_KEYWORDS: list[tuple[str, str]] = [
     ("cost of goods", "cost_of_revenue"), ("cost of revenue", "cost_of_revenue"),
     ("cost of sales", "cost_of_revenue"),
@@ -200,7 +184,7 @@ def _year_of(period) -> Optional[int]:
     return None
 
 
-class XBRLClient(BaseTool):
+class XBRLClient:
     """Fetch an exact reported financial figure from SEC XBRL company-facts.
 
     Usage:
@@ -210,8 +194,6 @@ class XBRLClient(BaseTool):
         #     "fy": 2022, "form": "10-K", "value_str": "$394,328,000,000", ...}
     """
 
-    name = "xbrl_facts"
-    description = "Look up an exact reported financial figure for a company/period."
 
     def __init__(
         self,
@@ -227,10 +209,7 @@ class XBRLClient(BaseTool):
         self.user_agent = user_agent or self.resolver.user_agent
         # LLM (or any callable) fallback for tag heterogeneity the map misses.
         self.tag_resolver = tag_resolver
-        # In-process LRU memo by CIK. companyfacts payloads are multi-MB each, so
-        # cap the count — without a bound a long-running server answering about
-        # many companies grows unboundedly. The on-disk cache still serves the
-        # rest cheaply.
+        # Small in-memory cache by CIK (each payload is several MB); disk holds the rest.
         self._facts_cache: "OrderedDict[str, dict]" = OrderedDict()
         self._facts_cache_max = 24
 
@@ -308,20 +287,14 @@ class XBRLClient(BaseTool):
                 chosen = self.tag_resolver(concept, sorted(usgaap.keys()))
             except Exception:
                 chosen = None
-            # Deterministic relevance guard: the LLM will happily map an
-            # unreported concept onto a loosely-related tag (e.g. "restructuring
-            # costs" → AssetImpairmentCharges), which then surfaces a real figure
-            # under the WRONG name — a concept-mismatch hallucination the numeric
-            # verifier can't catch (the value IS in the evidence). Only accept a
-            # fallback tag whose NAME actually shares the concept's salient words;
-            # otherwise treat the concept as unreported (a miss → the agent
-            # answers "not reported / 0" rather than inventing a figure).
+            # Guard: the LLM will map an unreported concept onto a loosely related tag,
+            # which returns a real figure under the wrong name. Accept the tag only if
+            # its name shares a distinctive word with the concept.
             if chosen and chosen in usgaap and self._tag_relevant(concept, chosen):
                 return [chosen], "llm_fallback"
         return [], "none"
 
-    # Generic finance words that don't discriminate one line item from another —
-    # excluded so relevance is judged on the concept's DISTINCTIVE words.
+    # Words too generic to tell one line item from another.
     _TAG_STOP = {
         "cost", "costs", "expense", "expenses", "charge", "charges", "total",
         "net", "gross", "amount", "value", "the", "of", "and", "for", "in",
@@ -363,14 +336,12 @@ class XBRLClient(BaseTool):
 
     @staticmethod
     def _fiscal_year(f: dict) -> Optional[int]:
-        """Infer the fiscal year a fact covers from its *period-end* date.
+        """The fiscal year a fact covers, from its period-end date.
 
-        The SEC `fy` field is unreliable for comparatives — a prior-year figure
-        restated in a later 10-K carries that 10-K's `fy` (e.g. J&J's FY2021 R&D
-        is tagged `fy=2023`). The end date is authoritative: a fiscal year is
-        labelled by the calendar year it ends in, except 52/53-week filers whose
-        year ends in the first days of January belong to the *prior* year (J&J
-        ends 2022-01-02 → FY2021; Walmart ends 2022-01-31 → FY2022).
+        The SEC `fy` field is the year of the filing that reported the fact, so
+        a restated prior-year figure carries the wrong `fy`. The end date is
+        reliable. A year ending in the first two weeks of January belongs to
+        the previous year (J&J ends 2022-01-02, which is FY2021).
         """
         e = f.get("end")
         if not e:
@@ -506,17 +477,10 @@ class XBRLClient(BaseTool):
                     "available_tags": sorted(usgaap.keys())[:60]}
 
         year = _year_of(period)
-        # Walk candidate tags and pick the first that yields a REAL value for the
-        # period. A tag can exist yet hold a placeholder 0 for some years (e.g.
-        # J&J files R&D under ResearchAndDevelopmentExpense as 0 and the real
-        # figure under ...ExcludingAcquiredInProcessCost) — so a non-zero hit on
-        # a later candidate beats a zero on an earlier one. We remember the first
-        # zero/placeholder hit only as a last resort.
-        # For revenue, the consolidated top line is by definition the LARGEST
-        # revenue disclosure — so collect every candidate tag's fact and take
-        # the max. Tag order alone is not safe: e.g. General Mills carries a
-        # non-consolidated $2.0B fact under `Revenues` for FY2019 while the real
-        # $16.9B top line sits under RevenueFromContractWithCustomer.
+        # Take the first tag with a real value for the period. A tag can exist but
+        # hold 0 for some years, so a non-zero hit on a later tag beats a zero on an
+        # earlier one. Revenue is the exception: the consolidated top line is the
+        # largest revenue figure, so every candidate is read and the max is taken.
         pick_max = self.canonical_concept(concept) == "revenue"
         tag = unit_key = fact = None
         hits: list[tuple[str, str, dict]] = []
@@ -541,8 +505,7 @@ class XBRLClient(BaseTool):
         elif fallback is not None:
             tag, unit_key, fact = fallback
 
-        # Component-sum rescue: the filer reports the concept's split lines but
-        # not the total for this period — sum a complete component group.
+        # The total is not reported for this period: add up the parts.
         if fact is None:
             comp = self._component_sum_fact(
                 usgaap, self.canonical_concept(concept), year, quarterly)
@@ -570,8 +533,7 @@ class XBRLClient(BaseTool):
                      else f"{value:,}" if isinstance(value, (int, float)) else str(value))
         fy = self._fiscal_year(fact) or fact.get("fy")
         fp = fact.get("fp")
-        # Human period label: "Q1 2026" for a quarter, "FY2025" for a year — so
-        # the synthesizer states the right period (and never mislabels a quarter).
+        # "Q1 2026" for a quarter, "FY2025" for a year.
         period_label = (f"{fp} {fy}" if quarterly and fp and fp != "FY" else f"FY{fy}")
         return {
             "ok": True,

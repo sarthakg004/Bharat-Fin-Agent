@@ -110,9 +110,7 @@ def get_history(symbol: str, period: str = "1y", interval: str = "1d") -> dict:
     first, last = df.iloc[0], df.iloc[-1]
     pct = float((last["Close"] - first["Close"]) / first["Close"] * 100) if first["Close"] else 0.0
 
-    # Volume stats so questions like "is there a rapid increase in volume?" can be
-    # answered from the summary (the synthesizer reads this, not the chart). We
-    # compare the most-recent window against the prior window to flag a surge.
+    # Volume summary: the latest 5 sessions against the 5 before them.
     vol = df["Volume"].astype(float) if "Volume" in df.columns else None
     vol_stats: dict = {}
     if vol is not None and len(vol) > 0:
@@ -252,14 +250,9 @@ TOOLS: dict[str, dict] = {
 
 
 # --------------------------------------------------------------------------- #
-# Bounded TTL cache (#12)
+# Small cache: yfinance calls take 1-3 s and repeat within a conversation.
+# Successful results are kept for a short time, at most `_CACHE_MAX` entries.
 # --------------------------------------------------------------------------- #
-# yfinance calls are slow (1-3s) and rate-limit-prone, and identical calls
-# recur within a session (follow-ups, the get_history safety-net, multi-lane
-# questions). A short-TTL, hard-capped LRU cache removes the redundant network
-# round-trips. Memory is bounded by `_CACHE_MAX` entries (a history result with
-# its chart is at most tens of KB → a few MB worst case), so it's safe on a
-# small instance. Set MARKET_CACHE_TTL=0 to disable entirely.
 _CACHE_TTL = float(os.getenv("MARKET_CACHE_TTL", "90"))    # seconds; 0 disables
 _CACHE_MAX = int(os.getenv("MARKET_CACHE_MAX", "48"))       # hard entry cap (LRU)
 _cache: "OrderedDict[str, tuple[float, dict]]" = OrderedDict()

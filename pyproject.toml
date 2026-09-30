@@ -4,67 +4,21 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "finagent"
-version = "2.0.0"
-description = "Agentic RAG over financial filings with live market data, web search, and a bilingual UI."
+version = "3.0.0"
+description = "A LangGraph agent that answers questions about SEC filings with cited, fact-checked answers."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "Saarthak Gupta" }]
+dynamic = ["dependencies"]
 
-# Core = the runtime serve path (mirrors requirements.txt, which stays the
-# pinned list the Docker image installs). torch arrives via sentence-transformers
-# and runs on GPU when available, CPU otherwise (see finagent/device.py).
-dependencies = [
-    "fastapi>=0.115.0",
-    "uvicorn[standard]>=0.30.0",
-    "pydantic>=2.0.0",
-    "python-dotenv>=1.0.0",
-    "requests>=2.31.0",
-    "pandas>=2.0.0",
-    "tqdm>=4.66.0",
-    "langgraph",
-    "langsmith",
-    "langchain-core>=0.3.0",
-    "langchain-huggingface>=0.1.0",
-    "langchain-groq>=0.2.0",
-    "langchain-google-genai>=2.0.0",
-    "langchain-openai>=0.2.0",
-    "langchain-anthropic>=0.3.0",
-    # Vector store: remote Qdrant. Lexical (BM25) retrieval is a sparse-vector
-    # index inside the database, so there is no in-process BM25 any more.
-    "qdrant-client>=1.12",
-    "langchain-qdrant>=0.2",
-    "fastembed>=0.4",                  # BM25 sparse vectors (tokenise + weight)
-    "sentence-transformers>=3.0.0",
-    "yfinance>=0.2.40",
-    "tavily-python>=0.5.0",
-    "langdetect>=1.0.9",
-]
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
 
 [project.optional-dependencies]
-# Building the corpus: PDF parsing + SEC / NSE / BSE fetchers.
-ingest = [
-    "pypdf",
-    "unstructured[pdf]>=0.15.0",
-    "sec-edgar-downloader>=5.0.0",
-    "nse>=1.0.4",
-    "bse>=2.0.1",
-    "langchain-text-splitters>=0.3.0",
-]
-# Offline evaluation with RAGAS.
-eval = [
-    "ragas>=0.2.0",
-    "datasets>=2.19.0",
-]
-# Local development: everything above + test/lint tooling.
-dev = [
-    "finagent[ingest,eval]",
-    "pytest>=8.0",
-    "ruff>=0.5",
-]
-
-[project.urls]
-Homepage = "https://huggingface.co/spaces/"
+# Offline evaluation.
+eval = ["ragas>=0.2.0", "langchain-huggingface>=0.1.0"]
+dev = ["finagent[eval]", "pytest>=8.0", "ruff>=0.5"]
 
 [tool.setuptools.packages.find]
 include = ["finagent*"]

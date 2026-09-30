@@ -1,792 +1,264 @@
-"""FastAPI app. Stateless: nothing is stored between requests — the client owns
-the conversation thread and replays recent turns via `QueryRequest.chat_history`,
-which the agent uses as memory.
+"""The FastAPI app. Stateless: the client owns the chat and replays recent turns.
 
-    GET  /api/health
-    POST /api/upload     parse a PDF/DOCX into ephemeral chunks
-    POST /api/query      SSE: status, sources, chart, chunk, metrics, done
-    POST /api/research   SSE: research_plan, agent_start, agent_done, then the
-                         same sources/chunk/metrics/done frames
+    GET  /api/health    liveness
+    GET  /api/config    which model does which job, and what the picker may offer
+    POST /api/query     the answer, streamed as Server-Sent Events:
+                        status, step_done, sources, chart, chunk, metrics, done, error
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
-import sys
+import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncGenerator
 
-# Repo root on sys.path so `import finagent...` resolves when this module is
-# imported directly (e.g. `uvicorn finagent.api.main:app`). api/ is two levels
-# below the root: finagent/api/main.py -> parents[2] == repo root.
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-
-import os
-
-# Cloud Run egress is IPv4-only. Some API hosts (e.g. api.groq.com behind
-# Cloudflare) resolve to an IPv6 address first, and httpx then fails to connect
-# → groq.APIConnectionError. When FORCE_IPV4 is set we make DNS return only
-# IPv4 addresses, so every outbound call (Groq, Tavily, yfinance) uses IPv4.
+# Cloud Run has no IPv6 egress, and some API hosts resolve to IPv6 first.
 if os.getenv("FORCE_IPV4", "").strip().lower() in ("1", "true", "yes"):
     import socket as _socket
 
-    _orig_getaddrinfo = _socket.getaddrinfo
+    _getaddrinfo = _socket.getaddrinfo
+    _socket.getaddrinfo = lambda host, port, family=0, *a, **kw: _getaddrinfo(
+        host, port, _socket.AF_INET, *a, **kw)
 
-    def _getaddrinfo_ipv4(host, port, family=0, *args, **kwargs):
-        return _orig_getaddrinfo(host, port, _socket.AF_INET, *args, **kwargs)
-
-    _socket.getaddrinfo = _getaddrinfo_ipv4
-
-# Native-thread safety. The graph runs in a ThreadPoolExecutor, so embedding /
-# tokenizer / embedding work happens off the main thread. The HuggingFace
-# `tokenizers` Rust parallelism is not fork/thread-safe and can SIGSEGV; disable
-# it before transformers is imported (it reads this at import time). Overridable.
-# On a GPU box you may also want FINAGENT_DEVICE=cpu locally, since CUDA from a
-# worker thread is fragile — production (Cloud Run) is CPU anyway.
+# The local fallback reranker's tokenizer is not thread-safe when parallel.
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from finagent.api import rag_service
-from finagent.api.models import (
-    HealthResponse,
-    QueryRequest,
-    ResearchRequest,
-    UploadResponse,
-)
+from finagent.api import service
+from finagent.api.models import HealthResponse, QueryRequest
+from finagent.llm import (CHAT_PROVIDERS, PROVIDER_LABELS, ProviderError, _chain,
+                          classify_error, collect_provider_keys, format_wait)
+from finagent.runtime import ROLES, WRITER_MODELS, RuntimeContext
 
+app = FastAPI(title="FinAgent API", version="3.0.0")
 
-# Model warm-up. The cross-encoder needs ~139 s to load on 2 vCPU
-# (results/reranker_bench.json) and was otherwise loaded lazily *inside the
-# first query* — so the first user of a cold instance paid the load on top of
-# their answer, while /api/health had already gone green and the SPA had
-# already dropped its cold-start banner.
-#
-# This BLOCKS startup rather than warming in a background thread, because
-# Cloud Run throttles CPU to ~0 outside request processing (same reason
-# rag_service flushes Langfuse synchronously). A background loader would only
-# get CPU during the SPA's ~1 ms health polls and would never finish. Container
-# startup is the one window with full CPU — and --cpu-boost applies to it.
-#
-# Holding the port closed IS the readiness signal: the SPA's health fetch fails
-# while we load, so it keeps showing "warming up" and goes green exactly when
-# the instance can answer. Cloud Run's default startup probe is TCP with a
-# 240 s budget; this lands in ~55 s at 8 vCPU (~170 s at 2).
-#
-# Off by default: the tests boot this app through TestClient, which runs
-# lifespan, and must not pull 3 GB of weights into CI. Dockerfile sets it.
-_WARM_MODELS = os.getenv("WARM_MODELS", "").strip().lower() in ("1", "true", "yes")
-
-
-def _warm() -> None:
-    """Load the embedder + cross-encoder once, before the first request."""
-    t0 = time.time()
-    try:
-        from finagent.retrieval.reranker import _get_shared_reranker
-        from finagent.vectorstore import get_embeddings
-
-        # Resolve the models the SERVED agent will use, so we never warm one
-        # pair and then lazily load another on the first query. Constructing
-        # the agent is cheap and offline — its retrievers/stores stay lazy.
-        agent = rag_service.get_agentic()
-        get_embeddings(agent.embedding_model)
-        _get_shared_reranker(agent.reranker_model)
-        print(f"[warm] models ready in {time.time() - t0:.0f}s", flush=True)
-    except Exception as e:
-        # Never refuse to boot over a warm failure — the lazy path still works,
-        # it is just slow. Serving late beats not serving.
-        print(f"[warm] failed after {time.time() - t0:.0f}s "
-              f"({type(e).__name__}: {e}); falling back to lazy load", flush=True)
-
-
-@asynccontextmanager
-async def _lifespan(app: FastAPI):
-    if _WARM_MODELS:
-        _warm()
-    yield
-
-
-app = FastAPI(title="FinAgent API", version="2.0.0", lifespan=_lifespan)
-
-# CORS — the SPA is hosted on Firebase (a different origin) and calls this API
-# directly. Set ALLOWED_ORIGINS on Cloud Run to your Firebase URL(s),
-# comma-separated. Local dev origins are always allowed.
-_ALLOWED_ORIGINS = [
-    "http://localhost:5173", "http://127.0.0.1:5173",
-    *[o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()],
-]
+# The frontend is hosted on Firebase, a different origin. ALLOWED_ORIGINS lists it.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_ALLOWED_ORIGINS,
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173",
+                   *[o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()]],
     allow_methods=["*"], allow_headers=["*"],
 )
 
-# Graph runs are serialized on a SINGLE worker. The storage layer no longer
-# requires it — Qdrant is a server and handles concurrent read/write itself, and
-# request state lives in a per-request RuntimeContext rather than on the shared
-# agent. What remains is local: the cross-encoder and HF tokenizers are the
-# memory-heavy, not-fully-thread-safe part, and one CPU serving several graph
-# runs just time-slices the same core. Raising RAG_MAX_WORKERS is now a capacity
-# decision, not a correctness one.
-_executor = ThreadPoolExecutor(
-    max_workers=int(os.getenv("RAG_MAX_WORKERS", "1")), thread_name_prefix="rag"
-)
+# One question at a time: the graph is synchronous and runs in this worker.
+# ponytail: one worker, one instance; raise RAG_MAX_WORKERS if traffic ever needs it.
+_executor = ThreadPoolExecutor(max_workers=int(os.getenv("RAG_MAX_WORKERS", "1")),
+                               thread_name_prefix="rag")
 
-# --------------------------------------------------------------------------- #
-# Health
-# --------------------------------------------------------------------------- #
+# Label shown in the UI while each step runs, in pipeline order.
+STEP_LABELS = {
+    "planner":      "Planning the approach…",
+    "fetch_filing": "Checking the filing index…",
+    "retrieve":     "Searching the filings…",
+    "xbrl":         "Looking up exact figures…",
+    "calculator":   "Computing the metrics…",
+    "market_data":  "Pulling market data…",
+    "web_search":   "Searching the web…",
+    "edgar_search": "Searching EDGAR across companies…",
+    "synthesize":   "Writing the answer…",
+    "critic":       "Fact-checking the draft…",
+}
+_STEPS = list(STEP_LABELS)
+
 
 @app.get("/api/health", response_model=HealthResponse)
-def healthcheck():
-    """Liveness only — the SPA polls this to tell a cold start from a dead
-    backend, and reads nothing but the status code. Deliberately does no work:
-    it must not probe the LLM (burns quota) or the index (slows every poll).
-
-    It needs no readiness flag: `_warm` blocks startup, so this route cannot be
-    reached until the models are loaded. Answering at all IS the ready signal."""
+def health():
+    """Liveness only. Does no work, so the frontend can poll it cheaply."""
     return HealthResponse(status="ok")
 
 
+@app.get("/api/config")
+def config():
+    """The model table the frontend renders. Keeps model names in one place."""
+    return {
+        "roles": {role: {"provider": p, "model": m} for role, (p, m) in ROLES.items()},
+        "writer_models": WRITER_MODELS,
+        # Providers the server has keys for; the others need the user's own key.
+        "server_keys": [p for p in CHAT_PROVIDERS if collect_provider_keys(p)],
+    }
+
+
 # --------------------------------------------------------------------------- #
-# Query — Server-Sent Events
+# Errors
+# --------------------------------------------------------------------------- #
+
+def error_event(e: Exception, own_key: bool = False) -> dict:
+    """An exception as the SSE error the UI shows.
+
+    `code` says what happened; `retryable` and `retry_after` tell the UI whether
+    to retry by itself and when.
+    """
+    from finagent.vectorstore import EmbeddingQuotaExhausted
+
+    # Log the type only: a provider's auth error can echo the API key.
+    print(f"[query error] {type(e).__name__}", flush=True)
+
+    if any(isinstance(c, EmbeddingQuotaExhausted) for c in _chain(e)):
+        return {"type": "error", "code": "quota", "retryable": False,
+                "message": "Today's free embedding quota is used up, so filings cannot "
+                           "be searched or indexed right now. It resets at midnight "
+                           "Pacific time."}
+
+    info = classify_error(e)
+    provider = next((c.provider for c in _chain(e) if isinstance(c, ProviderError)), None)
+    label = PROVIDER_LABELS.get(provider, "The model provider")
+    whose = "Your" if own_key else "The shared"
+    wait = info.retry_after
+    messages = {
+        "rate_limit": f"{label} is rate limiting requests. "
+                      + (f"Retrying in {format_wait(wait)}." if wait else "Retrying shortly."),
+        "busy": f"{label} is busy right now. Retrying shortly.",
+        "quota": f"{whose} {label} key has used up today's free quota. It resets at "
+                 f"midnight Pacific time. You can also switch the writer model or add "
+                 f"your own API key in the model picker.",
+        "too_large": "This question needs more context than the model accepts in one "
+                     "request. Start a new chat to drop the history, or pick another "
+                     "writer model.",
+        "auth": f"{whose} {label} API key was rejected. Check the key in the model picker.",
+        "not_found": f"{label} no longer serves the selected model. Pick another "
+                     f"writer model.",
+    }
+    if info.kind not in messages:
+        return {"type": "error", "code": "error", "retryable": False,
+                "message": f"{type(e).__name__}: {str(e)[:240]}"}
+    event = {"type": "error", "code": info.kind, "retryable": info.retryable,
+             "message": messages[info.kind]}
+    if info.retryable:
+        event["retry_after"] = round(wait if wait is not None else 5.0, 1)
+    return event
+
+
+def _check_writer(request: QueryRequest) -> RuntimeContext:
+    """Reject a writer choice that cannot work, before the run starts."""
+    w = request.writer
+    ctx = RuntimeContext(provider=w.provider if w else None, model=w.model if w else None,
+                         api_key=(w.api_key or "").strip() or None if w else None)
+    provider, _, key = ctx.resolve("writer")
+    if not key and not collect_provider_keys(provider):
+        raise HTTPException(status_code=400, detail=(
+            f"The server has no {PROVIDER_LABELS[provider]} API key. Paste your own "
+            f"key in the model picker to use this model, or switch back to the default."))
+    return ctx
+
+
+# --------------------------------------------------------------------------- #
+# Query
 # --------------------------------------------------------------------------- #
 
 def _sse(event: dict) -> str:
     return f"data: {json.dumps(event, default=str, ensure_ascii=False)}\n\n"
 
 
-def _agent_history(request: QueryRequest) -> list[dict]:
-    """The agent's `chat_history` — the last 6 client-supplied turns, truncated.
-
-    The server stores nothing: the SPA owns the thread (sessionStorage) and
-    replays recent turns with each request, so memory is exactly what the
-    client sent and no more.
-    """
-    return [
-        {"role": t.role, "content": (t.content or "")[:1200]}
-        for t in (request.chat_history or [])
-    ][-6:]
-
-
-# Friendly, market-neutral labels for each graph node, surfaced live as the
-# agent "thinks". Repeated nodes (retrieve/grade across rewrite loops) reuse the
-# same label; the UI de-dupes consecutive repeats.
-_STEP_LABELS = {
-    "planner":        "Planning the approach…",
-    "router":         "Routing the sub-questions…",
-    "fetch_filing":   "Fetching latest filing…",
-    "retrieve":       "Searching the filings…",
-    "xbrl":           "Looking up exact figures…",
-    "calculator":     "Computing the metrics…",
-    "market_data":    "Pulling market data…",
-    "web_search":     "Searching the web…",
-    "edgar_search":   "Searching EDGAR across companies…",
-    "evidence_builder": "Organising the evidence…",
-    "synthesize":     "Writing the answer…",
-    "critic":         "Fact-checking the draft…",
-}
-
-# Canonical pipeline order (for the UI progress bar). The agent skips most of
-# these per query (the dispatcher routes around them), but the position of the
-# furthest stage reached still maps cleanly to "how far along" the run is.
-PIPELINE_ORDER = list(_STEP_LABELS.keys())
-
-
-# --------------------------------------------------------------------------- #
-# Document upload — ephemeral, per-session
-# --------------------------------------------------------------------------- #
-# Uploaded documents are parsed (Docling) into in-memory chunks and held in a
-# TTL dict keyed by upload_id; a query referencing the id rides the agent's
-# existing `fetched_chunks` lane (ranked against the question, never written
-# to the persistent index). Survives neither restarts nor scale-to-zero — the
-# client re-uploads after an idle gap, exactly like the dynamic-fetch path.
-# ponytail: in-memory, single-instance store; deploy pins --max-instances 1.
-# Swap for a GCS-backed store if multi-instance is ever needed.
-_UPLOADS: dict[str, tuple[float, dict]] = {}
-_UPLOAD_TTL_S = 3600
-_UPLOAD_MAX_ENTRIES = 20
-_UPLOAD_MAX_BYTES = 15 * 1024 * 1024
-_UPLOAD_SUFFIXES = {".pdf", ".docx"}
-# Docling parse time scales with pages (~seconds/page on Cloud Run CPU); a big
-# filing both bills the instance for minutes and blocks the single-worker
-# executor behind it (observed: a 197-page 10-Q blew the 600s request timeout).
-# Reject early with a cheap pypdfium2 page count — cost control for a
-# portfolio deployment. ponytail: raise when a separate parse worker exists.
-_UPLOAD_MAX_PAGES = 40
-
-
-def _pdf_page_count(data: bytes):
-    """Page count via pypdfium2 (already in the image as a docling dep).
-    None when unreadable — Docling then gets its own try at the file."""
-    try:
-        import pypdfium2 as pdfium
-        doc = pdfium.PdfDocument(data)
-        try:
-            return len(doc)
-        finally:
-            doc.close()
-    except Exception:
-        return None
-
-
-def _uploads_gc() -> None:
-    now = time.time()
-    expired = [k for k, (ts, _) in _UPLOADS.items() if now - ts > _UPLOAD_TTL_S]
-    for k in expired:
-        _UPLOADS.pop(k, None)
-    while len(_UPLOADS) >= _UPLOAD_MAX_ENTRIES:     # evict oldest
-        _UPLOADS.pop(min(_UPLOADS, key=lambda k: _UPLOADS[k][0]), None)
-
-
-@app.post("/api/upload", response_model=UploadResponse)
-async def upload_document(file: UploadFile = File(...)):
-    suffix = Path(file.filename or "").suffix.lower()
-    if suffix not in _UPLOAD_SUFFIXES:
-        raise HTTPException(status_code=415,
-                            detail="Only PDF and DOCX files are supported.")
-    data = await file.read()
-    if len(data) > _UPLOAD_MAX_BYTES:
-        raise HTTPException(status_code=413, detail="File exceeds the 15 MB limit.")
-    if not data:
-        raise HTTPException(status_code=400, detail="Empty file.")
-    if suffix == ".pdf":
-        pages = _pdf_page_count(data)
-        if pages and pages > _UPLOAD_MAX_PAGES:
-            raise HTTPException(
-                status_code=413,
-                detail=f"PDF has {pages} pages; the limit is {_UPLOAD_MAX_PAGES}. "
-                       "Please upload the relevant section (e.g. the financial "
-                       "statements and MD&A pages).")
-
-    from finagent.ingestion.upload import parse_upload
-
-    # Same single-worker executor as the agent: Docling parsing is serialized
-    # behind RAG runs instead of racing them for CPU/memory.
-    loop = asyncio.get_event_loop()
-    try:
-        parsed = await loop.run_in_executor(
-            _executor, lambda: parse_upload(data, file.filename or "upload.pdf"))
-    except Exception as e:
-        # Full type + message in the server log (the 422 detail stays generic);
-        # a bare class name made the cloud cv2/libGL failure a blind hunt.
-        print(f"[upload error] {type(e).__name__}: {e}", flush=True)
-        raise HTTPException(status_code=422,
-                            detail="Could not parse the document.") from e
-    if not parsed["ok"]:
-        raise HTTPException(status_code=422,
-                            detail="No extractable text found in the document "
-                                   "(scanned/image-only files are not supported).")
-
-    import uuid
-    _uploads_gc()
-    upload_id = uuid.uuid4().hex
-    _UPLOADS[upload_id] = (time.time(), parsed)
-    return UploadResponse(upload_id=upload_id, filename=parsed["filename"],
-                          pages=parsed["pages"], tables=parsed["tables"],
-                          chunks=len(parsed["chunks"]))
-
-
-def _resolve_uploads(upload_ids: list[str]) -> tuple[list[dict], list[str]]:
-    """(chunks, missing_ids) for the requested uploads; touches TTLs."""
-    chunks: list[dict] = []
-    missing: list[str] = []
-    for uid in upload_ids:
-        entry = _UPLOADS.get(uid)
-        if entry is None or time.time() - entry[0] > _UPLOAD_TTL_S:
-            _UPLOADS.pop(uid, None)
-            missing.append(uid)
-            continue
-        _UPLOADS[uid] = (time.time(), entry[1])     # keep alive while in use
-        chunks.extend(entry[1]["chunks"])
-    return chunks, missing
-
-
 class ClientGone(Exception):
-    """The browser disconnected mid-run — abort the graph at the next node.
-
-    Raised from the progress callback, which the graph stream invokes
-    unguarded as every node starts, so it unwinds the run in the worker
-    thread. A cancelled `Future` alone is not enough: `run_in_executor` cannot
-    interrupt a thread that has already started, so without a cooperative
-    check the abandoned run keeps going.
-    """
+    """The browser disconnected. Raised from the progress callback, which runs
+    as each step starts, so an abandoned run stops at the next step."""
 
 
-def _abandon(task: asyncio.Future, cancelled: threading.Event) -> None:
-    """Stop a graph run whose client has gone away.
-
-    Closing the tab used to change nothing: the run held the single executor
-    worker to completion and kept calling the provider, so the next question
-    queued behind it and the shared key pool ate the 429s. Retrying three times
-    stacked three full pipelines. `cancel()` drops the run if it is still
-    queued; the event aborts it at the next node boundary if it already started.
-    """
-    if task.done():
-        return
-    cancelled.set()
-    task.cancel()
-
-
-def _swallow(task: asyncio.Future) -> None:
-    """Retrieve the result of an abandoned task so asyncio does not log its
-    exception as unhandled — nobody is left to await it."""
-    task.add_done_callback(lambda f: f.cancelled() or f.exception())
-
-
-def _classify_provider_error(e: Exception, pc) -> dict:
-    """Classify a provider failure into a user-facing SSE error event
-    (shared by /api/query and /api/research)."""
-    from finagent.llm import (_chain, format_wait, is_daily_quota_error,
-                              is_rate_limit_error, is_request_too_large,
-                              retry_after_seconds)
-    from finagent.vectorstore import EmbeddingQuotaExhausted
-
-    # Log the error type for debugging, but NOT the full exception value —
-    # provider auth errors can echo the API key into logs.
-    print(f"[query error] {type(e).__name__}", flush=True)
-
-    provider = (pc.provider if pc else "gemini")
-
-    # The embedding pool is metered separately from the chat pool and is NOT a
-    # chat rate limit, so it has to be classified before the generic branches
-    # or it would surface as a raw "EmbeddingQuotaExhausted: All 8 keys…".
-    # Retrieval degrades to the tool lanes on its own (see
-    # `FetchNodes.hybrid_retrieve_node`), so reaching here means something that
-    # genuinely cannot proceed without embeddings, such as ingesting a fetched
-    # filing or an uploaded document.
-    if any(isinstance(c, EmbeddingQuotaExhausted) for c in _chain(e)):
-        return {
-            "type": "error", "code": "rate_limit",
-            "message": (
-                "The shared Gemini embedding quota is used up for today, so "
-                "new filings cannot be indexed right now. Questions answered "
-                "from SEC XBRL, live market data, or the web still work. The "
-                "quota resets daily, or you can add your own Gemini API key "
-                "from the model picker to keep going now."
-            ),
-        }
-    # Checked before the rate-limit branch: the provider reports an over-sized
-    # prompt with `code: rate_limit_exceeded`, and telling the user to wait for
-    # a reset that will never help is worse than saying nothing.
-    if is_request_too_large(e):
-        prov = {"groq": "Groq", "gemini": "Gemini", "openai": "OpenAI",
-                "anthropic": "Anthropic"}.get(provider, provider)
-        return {
-            "type": "error", "code": "too_large",
-            "message": (
-                f"This question's context exceeded the {prov} free tier's "
-                f"per-request limit, so it was rejected rather than rate "
-                f"limited — waiting will not help. Start a new chat to drop "
-                f"the conversation history, ask a narrower question, or add "
-                f"your own API key from the model picker for a larger window."
-            ),
-        }
-
-    rate_limited = is_rate_limit_error(e)
-    user_key = bool(pc and pc.api_key)
-    prov_label = {"groq": "Groq", "gemini": "Gemini",
-                  "openai": "OpenAI", "anthropic": "Anthropic"}.get(provider, provider)
-    # Seconds until the limit clears, straight off the provider's 429. None when
-    # the provider didn't say — then the copy stays vague, as it always was.
-    wait = retry_after_seconds(e) if rate_limited else None
-    if rate_limited:
-        code = "rate_limit"
-        daily = is_daily_quota_error(e)
-        # "Wait a minute" was always a guess. When the provider gave a number,
-        # say it — the frontend turns `retry_after` into a live countdown, and
-        # this sentence is the fallback for anything that only reads the text.
-        when = (f"Retry in {format_wait(wait)}." if wait is not None
-                else "Try again tomorrow." if daily
-                else "Please wait a minute and try again.")
-        if user_key:
-            # The user supplied THEIR OWN key — don't blame the shared keys.
-            # Free tiers are tiny (Gemini = 5 req/min) and this agent makes
-            # many model calls per question, so a single query can exhaust
-            # them. Tell them what actually happened and how to recover.
-            window = "daily quota" if daily else "per-minute rate limit"
-            message = (
-                f"Your {prov_label} API key hit its {window}. This agent makes "
-                f"several model calls per question, and free tiers are very low "
-                f"(Gemini allows just 5 requests/min). {when} "
-                f"Or use a higher-tier {prov_label} key."
-            )
-        elif daily:
-            message = (f"We've hit today's usage limit on the shared API keys. "
-                       f"{when} Or add your own API key from the model picker "
-                       f"to keep going now.")
-        else:
-            message = (f"Limit exhausted: all shared API keys have hit their "
-                       f"rate limit. {when} Or add your own API key from the "
-                       f"model picker to keep going now.")
-        return {"type": "error", "code": code, "message": message,
-                **({"retry_after": round(wait, 1)} if wait is not None else {})}
-
-    # Surface a clean provider error (the value may include a key, so the llm
-    # layer already avoids logging it; here we keep the type + a short hint
-    # without echoing the full provider payload).
-    msg = str(e)
-    message = (f"{prov_label} error: {msg[:240]}" if user_key
-               else f"{type(e).__name__}: {msg[:240]}")
-    return {"type": "error", "code": "error", "message": message}
-
-
-async def _run_rag(request: QueryRequest, hist: list[dict],
-                   extra_chunks: list[dict] | None = None,
-                   on_step=None, on_step_done=None) -> dict:
-    loop = asyncio.get_event_loop()
-    pc = request.provider_config
-    provider = (pc.provider if pc else "gemini")
-    synth_model = (pc.synth_model if pc else None)
-    planner_model = (pc.planner_model if pc else None)
-    planner_provider = (pc.planner_provider if pc else None)
-    planner_api_key = (pc.planner_api_key if pc else None)
-    api_key = (pc.api_key if pc else None)
-    # `run_in_executor` doesn't take kwargs — use a small lambda wrapper instead.
-    return await loop.run_in_executor(
-        _executor,
-        lambda: rag_service.run_agentic(
-            request.question, chat_history=hist,
-            provider=provider, synth_model=synth_model,
-            planner_model=planner_model, api_key=api_key,
-            planner_provider=planner_provider, planner_api_key=planner_api_key,
-            session_id=request.session_id or None,
-            extra_chunks=extra_chunks,
-            on_step=on_step, on_step_done=on_step_done,
-        ),
-    )
-
-
-async def _stream_answer(request: QueryRequest) -> AsyncGenerator[str, None]:
+async def _stream_answer(request: QueryRequest, ctx: RuntimeContext) -> AsyncGenerator[str, None]:
     t0 = time.time()
+    history = [{"role": t.role, "content": (t.content or "")[:1200]}
+               for t in (request.chat_history or [])][-6:]
 
-    agent_history = _agent_history(request)
+    # Show the first step at once, before the planner's model call returns.
+    yield _sse({"type": "status", "stage": "planner", "label": STEP_LABELS["planner"],
+                "index": 0, "total": len(_STEPS)})
 
-    # Resolve uploaded-document chunks up front so an expired upload fails the
-    # request cleanly instead of silently answering without the document.
-    upload_chunks: list[dict] = []
-    if request.upload_ids:
-        upload_chunks, missing = _resolve_uploads(request.upload_ids)
-        if missing:
-            yield _sse({"type": "error", "code": "upload_expired",
-                        "message": "The uploaded document has expired "
-                                   "(uploads are kept for 1 hour). Please "
-                                   "re-attach the file and ask again."})
-            yield _sse({"type": "done"})
-            return
-
-    # Emit the first pipeline step UP FRONT so the progress bar appears the
-    # instant the user submits — instead of only after the first node finishes.
-    # This matters most for slow/rate-limited first calls (e.g. a free-tier
-    # Gemini key), where the planner LLM call can take seconds or fail: without
-    # this the user sees a lone "…" with no sign the run started.
-    yield _sse({"type": "status", "stage": "planner",
-                "label": _STEP_LABELS["planner"],
-                "index": 0, "total": len(PIPELINE_ORDER)})
-
-    # Bridge the (synchronous, thread-pool) graph run to this async generator:
-    # the graph pushes node names onto a thread-safe queue as it runs, and we
-    # drain them here into live "status" events so the UI shows real progress
-    # instead of a single static spinner.
+    # The graph runs in a worker thread and pushes progress onto this queue.
     loop = asyncio.get_event_loop()
-    step_queue: asyncio.Queue = asyncio.Queue()
+    queue: asyncio.Queue = asyncio.Queue()
     cancelled = threading.Event()
 
-    def _on_step(node: str) -> None:
-        # Fired when a node STARTS — drives the spinner's current-activity label,
-        # and doubles as the cancellation checkpoint (see `ClientGone`).
+    def on_step(node: str) -> None:
         if cancelled.is_set():
             raise ClientGone()
-        label = _STEP_LABELS.get(node)
-        if label:
-            loop.call_soon_threadsafe(
-                step_queue.put_nowait,
-                {"type": "status", "stage": node, "label": label,
-                 # Position in the canonical pipeline + total, so the UI can show
-                 # a real progress bar / ETA instead of a static spinner.
-                 "index": PIPELINE_ORDER.index(node), "total": len(PIPELINE_ORDER)},
-            )
+        if node in STEP_LABELS:
+            loop.call_soon_threadsafe(queue.put_nowait, {
+                "type": "status", "stage": node, "label": STEP_LABELS[node],
+                "index": _STEPS.index(node), "total": len(_STEPS)})
 
-    def _on_step_done(node: str, detail) -> None:
-        # Fired when a node FINISHES, with a short outcome ("12 passages",
-        # "2 exact figures") — the UI checks the step off and shows the detail.
-        if node in _STEP_LABELS:
-            loop.call_soon_threadsafe(
-                step_queue.put_nowait,
-                {"type": "step_done", "stage": node, "detail": detail},
-            )
+    def on_step_done(node: str, detail) -> None:
+        if node in STEP_LABELS:
+            loop.call_soon_threadsafe(queue.put_nowait, {
+                "type": "step_done", "stage": node, "detail": detail})
 
-    rag_task = asyncio.ensure_future(_run_rag(
-        request, agent_history, extra_chunks=upload_chunks or None,
-        on_step=_on_step, on_step_done=_on_step_done))
-    _swallow(rag_task)
+    task = asyncio.ensure_future(loop.run_in_executor(_executor, lambda: service.run_agent(
+        request.question, chat_history=history, provider=ctx.provider, model=ctx.model,
+        api_key=ctx.api_key, session_id=request.session_id or None,
+        on_step=on_step, on_step_done=on_step_done)))
+    # Nobody awaits an abandoned task; read its result so asyncio stays quiet.
+    task.add_done_callback(lambda f: f.cancelled() or f.exception())
 
     try:
-        while not (rag_task.done() and step_queue.empty()):
+        while not (task.done() and queue.empty()):
             try:
-                evt = await asyncio.wait_for(step_queue.get(), timeout=0.1)
+                yield _sse(await asyncio.wait_for(queue.get(), timeout=0.1))
             except asyncio.TimeoutError:
                 continue
-            yield _sse(evt)
-        result = rag_task.result()
+        result = task.result()
     except Exception as e:
-        err = _classify_provider_error(e, request.provider_config)
-        yield _sse(err)
+        yield _sse(error_event(e, own_key=bool(ctx.api_key)))
         yield _sse({"type": "done"})
         return
     finally:
-        # Reached on a client disconnect too: Starlette closes this generator,
-        # which throws GeneratorExit/CancelledError in at the `yield` above.
-        # Both skip the `except Exception` and land here. No-op once the run
-        # has finished normally.
-        _abandon(rag_task, cancelled)
+        # Also reached when the client disconnects: stop the run.
+        if not task.done():
+            cancelled.set()
+            task.cancel()
 
-    answer = result.get("answer") or ""
-    chunks = result.get("chunks") or []
-    charts = result.get("charts") or []
-    meta = result.get("metadata") or {}
-
-    yield _sse({"type": "sources", "chunks": chunks, "metadata": meta})
-
-    # Charts go on their own channel so the UI attaches them to the message.
-    for chart in charts:
+    meta = result["metadata"]
+    yield _sse({"type": "sources", "chunks": result["chunks"], "metadata": meta})
+    for chart in result["charts"]:
         yield _sse({"type": "chart", "chart": chart})
 
-    # Word-piece pseudo-stream — gives the UI the live feel without a deep
-    # token-streaming refactor on the LLM side. Pacing is capped so the
-    # artificial tail never adds more than ~1.5s on top of the real latency
-    # (3 words / 25ms used to add ~5s to a long answer).
-    for piece in _piecewise(answer, words_per_chunk=6):
-        yield _sse({"type": "chunk", "content": piece})
+    # The answer is complete by now; it is sent in small pieces so the UI can
+    # show it arriving. ponytail: not real token streaming.
+    words = result["answer"].split(" ")
+    for i in range(0, len(words), 6):
+        yield _sse({"type": "chunk", "content": " ".join(words[i:i + 6])
+                    + (" " if i + 6 < len(words) else "")})
         await asyncio.sleep(0.012)
 
-    latency = round(time.time() - t0, 3)
-    meta["latency"] = latency
-
-    yield _sse({
-        "type": "metrics", "latency": latency,
-        "model": meta.get("model"),
-        "input_tokens": meta.get("input_tokens"),
-        "output_tokens": meta.get("output_tokens"),
-        "agentic": meta,
-    })
-
+    yield _sse({"type": "metrics", **meta, "latency": round(time.time() - t0, 3)})
     yield _sse({"type": "done"})
-
-
-def _piecewise(text: str, words_per_chunk: int = 3) -> list[str]:
-    if not text:
-        return []
-    parts: list[str] = []
-    words = text.split(" ")
-    for i in range(0, len(words), words_per_chunk):
-        seg = " ".join(words[i:i + words_per_chunk])
-        if i + words_per_chunk < len(words):
-            seg += " "
-        parts.append(seg)
-    return parts
-
-
-def _validate_provider(request) -> None:
-    """Fail a missing/unknown provider key at the boundary.
-
-    The agent used to validate this in its constructor; now that it is
-    provider-agnostic the check belongs here — and this is the better place
-    anyway, since a bad key returns a clean 400 instead of dying mid-graph.
-    """
-    pc = request.provider_config
-    # Both, because the planner may name its own provider — a Gemini answer
-    # model with a Groq planner needs BOTH keys resolvable, and failing here is
-    # far better than dying in the middle of a graph run.
-    pairs = [((pc.provider if pc else "gemini"), (pc.api_key if pc else None))]
-    if pc and pc.planner_provider and pc.planner_provider != pc.provider:
-        pairs.append((pc.planner_provider, pc.planner_api_key))
-    for provider, key in pairs:
-        _require_key(provider, key)
-
-
-def _require_key(provider: str, key) -> None:
-    from finagent.llm import resolve_api_key
-
-    try:
-        resolve_api_key(provider, key)
-    except ValueError as e:
-        # `resolve_api_key`'s message is developer-facing ("set it in .env").
-        # Only Groq has server-side keys, so for anything else the actionable
-        # instruction is to paste one into the picker — which is what the user
-        # sees after selecting a model whose provider they have no key for.
-        label = {"gemini": "Gemini", "openai": "OpenAI",
-                 "anthropic": "Anthropic"}.get(provider)
-        detail = (
-            f"No {label} API key. This server only provides keys for Groq — "
-            f"paste your {label} key next to the model picker to use it, or "
-            f"switch the answer model back to a Groq model."
-        ) if label else str(e)
-        raise HTTPException(status_code=400, detail=detail) from e
 
 
 @app.post("/api/query")
 async def query(request: QueryRequest):
     if not request.question.strip():
         raise HTTPException(status_code=400, detail="Empty question.")
-    _validate_provider(request)
-    return StreamingResponse(
-        _stream_answer(request),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+    ctx = _check_writer(request)
+    return StreamingResponse(_stream_answer(request, ctx), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 # --------------------------------------------------------------------------- #
-# Deep Research — Server-Sent Events
-#
-# An independent execution path next to /api/query: the orchestrator scopes
-# the request, runs specialist research tasks through the SAME production
-# agent (rag_service.run_agentic, injected), and writes a cited investment
-# report. Streams research_plan / agent_start / agent_done progress events,
-# then the standard sources / chunk / metrics / done frames — so the
-# citations panel and answer streaming reuse the chat pipeline unchanged.
-# --------------------------------------------------------------------------- #
-
-async def _stream_research(request: ResearchRequest) -> AsyncGenerator[str, None]:
-    t0 = time.time()
-
-    # ResearchRequest carries the same chat_history field, so memory behaves
-    # exactly like chat.
-    agent_history = _agent_history(request)
-
-    loop = asyncio.get_event_loop()
-    events: asyncio.Queue = asyncio.Queue()
-    cancelled = threading.Event()
-
-    def _on_event(evt: dict) -> None:
-        # Also the cancellation checkpoint — the orchestrator calls this
-        # unguarded between specialists, and an abandoned research run is the
-        # most expensive thing this service can leave holding the executor
-        # (one full agent pipeline per specialist).
-        if cancelled.is_set():
-            raise ClientGone()
-        loop.call_soon_threadsafe(events.put_nowait, evt)
-
-    pc = request.provider_config
-    provider = (pc.provider if pc else "gemini")
-    synth_model = (pc.synth_model if pc else None)
-    planner_model = (pc.planner_model if pc else None)
-    planner_provider = (pc.planner_provider if pc else None)
-    planner_api_key = (pc.planner_api_key if pc else None)
-    api_key = (pc.api_key if pc else None)
-
-    from finagent.research import DeepResearch
-
-    def _run() -> dict:
-        research = DeepResearch(
-            # Every specialist task runs through the production agent; the
-            # orchestrator itself never talks to retrieval or tools directly.
-            run_fn=lambda q: rag_service.run_agentic(
-                q, provider=provider, synth_model=synth_model,
-                planner_model=planner_model, api_key=api_key,
-                planner_provider=planner_provider,
-                planner_api_key=planner_api_key,
-                session_id=request.session_id or None),
-            provider=provider, model=synth_model, api_key=api_key,
-            max_agents=request.max_agents,
-            session_id=request.session_id or None,
-        )
-        return research.run(request.question, chat_history=agent_history,
-                            on_event=_on_event)
-
-    task = asyncio.ensure_future(loop.run_in_executor(_executor, _run))
-    _swallow(task)
-    try:
-        while not (task.done() and events.empty()):
-            try:
-                evt = await asyncio.wait_for(events.get(), timeout=0.1)
-            except asyncio.TimeoutError:
-                continue
-            yield _sse(evt)
-        result = task.result()
-    except Exception as e:
-        err = _classify_provider_error(e, request.provider_config)
-        yield _sse(err)
-        yield _sse({"type": "done"})
-        return
-    finally:
-        _abandon(task, cancelled)
-
-    report = result.get("report") or ""
-    chunks = result.get("chunks") or []
-    meta = result.get("metadata") or {}
-
-    yield _sse({"type": "sources", "chunks": chunks, "metadata": meta})
-
-    for piece in _piecewise(report, words_per_chunk=8):
-        yield _sse({"type": "chunk", "content": piece})
-        await asyncio.sleep(0.008)
-
-    latency = round(time.time() - t0, 3)
-    meta["latency"] = latency
-    yield _sse({"type": "metrics", "latency": latency,
-                "model": meta.get("model"),
-                "input_tokens": meta.get("input_tokens"),
-                "output_tokens": meta.get("output_tokens"),
-                "agentic": meta})
-
-    yield _sse({"type": "done"})
-
-
-@app.post("/api/research")
-async def research(request: ResearchRequest):
-    if not request.question.strip():
-        raise HTTPException(status_code=400, detail="Empty question.")
-    _validate_provider(request)
-    return StreamingResponse(
-        _stream_research(request),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
-
-
-# --------------------------------------------------------------------------- #
-# Static SPA hosting
-#
-# When `STATIC_DIR` exists, FastAPI serves the built React app from it. The
-# Dockerfile builds the Vite SPA in stage 1 and copies its dist/ into this
-# location, so a single Hugging Face Space serves both the API and the UI
-# at the same origin (no CORS).
+# The built frontend, when it is served from this container
 # --------------------------------------------------------------------------- #
 
 _STATIC_DIR = Path(os.getenv("STATIC_DIR", "static")).resolve()
 
-if _STATIC_DIR.exists() and (_STATIC_DIR / "index.html").exists():
-    # Serve hashed JS/CSS chunks under their real paths.
-    app.mount(
-        "/assets",
-        StaticFiles(directory=str(_STATIC_DIR / "assets")),
-        name="spa-assets",
-    )
+if (_STATIC_DIR / "index.html").exists():
+    app.mount("/assets", StaticFiles(directory=str(_STATIC_DIR / "assets")), name="assets")
 
     @app.get("/", include_in_schema=False)
     def _spa_root():
         return FileResponse(_STATIC_DIR / "index.html")
 
-    # SPA fallback — any non-/api path resolves to index.html so client-side
-    # routing works if we ever add it (current app uses zustand, no router).
     @app.get("/{full_path:path}", include_in_schema=False)
     def _spa_fallback(full_path: str):
         if full_path.startswith("api/"):
             raise HTTPException(status_code=404)
-        # Confine the read to STATIC_DIR. `full_path` is percent-DECODED after
-        # routing, so "..%2f" and "%2e%2e" arrive here as "../" — Starlette's
-        # raw-path normalisation never saw them. Before this guard,
-        # GET /..%2f..%2fproc/self/environ served the container's environment,
-        # i.e. every Secret Manager value on the service.
+        # SECURITY: `full_path` is percent-decoded, so "..%2f" arrives as "../".
+        # Only serve files that resolve inside STATIC_DIR.
         candidate = (_STATIC_DIR / full_path).resolve()
         if candidate.is_relative_to(_STATIC_DIR) and candidate.is_file():
             return FileResponse(candidate)

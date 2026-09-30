@@ -22,7 +22,6 @@ from __future__ import annotations
 
 from typing import Optional
 
-from finagent.tools.base import BaseTool
 from finagent.tools.xbrl import XBRLClient, _year_of
 
 # metric -> (numerator concept, denominator concept, render_as_percent)
@@ -35,10 +34,8 @@ RATIOS: dict[str, tuple[str, str, bool]] = {
     "return_on_equity": ("net_income", "stockholders_equity", True),
     "return_on_assets": ("net_income", "total_assets", True),
     "asset_turnover": ("revenue", "total_assets", False),
-    # Efficiency ratios FinanceBench asks for by name. These are flow ÷ stock,
-    # so the balance-sheet denominator is AVERAGED over (t-1, t) — see
-    # AVG_DENOMINATOR_RATIOS below. (Year-end-only was measurably off: e.g.
-    # fixed-asset turnover 25.65 vs gold 24.26.)
+    # Flow / stock ratios: the balance-sheet denominator is averaged over
+    # (t-1, t). See AVG_DENOMINATOR_RATIOS.
     "fixed_asset_turnover": ("revenue", "ppe_net", False),
     "inventory_turnover": ("cost_of_revenue", "inventory", False),
     # Operating cash flow ratio = CFO / current liabilities (liquidity).
@@ -78,11 +75,9 @@ COMPOSITE_RATIOS: dict[str, dict] = {
 #   ccc = dio + dso − dpo
 WC_DAYS_METRICS = {"dio", "dso", "dpo", "ccc"}
 
-# Flow ÷ stock ratios: the numerator is a flow over the year (revenue, COGS,
-# net income) and the denominator is a balance-sheet stock that convention —
-# and FinanceBench's gold ("average PP&E between FY2018 and FY2019") — AVERAGES
-# over (t-1, t). Computing these against the single year-end balance was the
-# remaining miss class for ratio questions. The numerator stays single-period.
+# Ratios of a full-year flow (revenue, COGS, net income) over a balance-sheet
+# figure. By convention the balance-sheet figure is the average of the prior
+# and current year-end.
 AVG_DENOMINATOR_RATIOS = {
     "fixed_asset_turnover", "inventory_turnover", "asset_turnover",
     "return_on_assets", "return_on_equity",
@@ -150,7 +145,7 @@ def _fmt(value: float, as_percent: bool) -> str:
     return f"{value:,.2f}×"
 
 
-class FinancialCalculator(BaseTool):
+class FinancialCalculator:
     """Compute derived financial metrics from exact XBRL inputs.
 
     Usage:
@@ -161,8 +156,6 @@ class FinancialCalculator(BaseTool):
         c.trend("AAPL", "operating_margin", ["FY2020", "FY2021", "FY2022"])
     """
 
-    name = "financial_calculator"
-    description = "Compute margins, growth rates, ratios, and CAGR from exact XBRL inputs."
 
     def __init__(self, xbrl: Optional[XBRLClient] = None) -> None:
         self.xbrl = xbrl or XBRLClient()
@@ -185,12 +178,10 @@ class FinancialCalculator(BaseTool):
         }
 
     def _avg_input(self, ticker: str, concept: str, period: Optional[str]) -> dict:
-        """A balance-sheet concept AVERAGED over (t-1, t) for flow÷stock ratios.
+        """A balance-sheet concept averaged over (t-1, t).
 
-        Falls back to the single year-end value when the prior year isn't filed
-        (first year in the corpus) — better a year-end answer than a refusal.
-        Carries `_components` (prior + current facts) so the audit trail and the
-        numeric verifier can still ground each underlying figure.
+        Falls back to the year-end value when the prior year is not filed.
+        `_components` carries both underlying facts for the audit trail.
         """
         cur = self._input(ticker, concept, period)
         year = _year_of(period) or (cur.get("fy") if cur.get("ok") else None)
@@ -271,8 +262,7 @@ class FinancialCalculator(BaseTool):
         averaged = name in AVG_DENOMINATOR_RATIOS and not quarterly
         den = (self._avg_input(ticker, den_c, period) if averaged
                else self._input(ticker, den_c, period, quarterly=quarterly, fp=fp))
-        # Expose the underlying (prior, current) facts for an averaged denominator
-        # so the verifier can still ground each one; otherwise just (num, den).
+        # For an averaged denominator, list both underlying facts as inputs.
         inputs = [num] + (den.get("_components") or [den])
         if not (num["ok"] and den["ok"]):
             return self._fail(name, ticker, inputs, "missing XBRL input(s)")
@@ -304,15 +294,12 @@ class FinancialCalculator(BaseTool):
 
     def ratio_from_spec(self, ticker: str, spec: dict, period: Optional[str] = None,
                         metric_name: str = "custom_metric") -> dict:
-        """Compute a metric from an LLM-planned FORMULA over canonical XBRL
-        concepts (see `agents.state.FormulaSpec`).
+        """Compute a metric from an LLM-planned formula (`FormulaSpec`).
 
-        The LLM supplies only the structure (which concepts add/subtract,
-        numerator vs denominator, average?, percent?); every number is an exact
-        XBRL fact and the arithmetic happens HERE — so a planned metric is as
-        auditable and as faithful as a hardcoded ratio. An empty denominator
-        means a dollar-amount metric (numerator only), e.g. unadjusted EBITDA =
-        operating_income + depreciation_amortization.
+        The LLM supplies only the structure: which concepts add or subtract,
+        numerator or denominator, average or not, percent or not. Every number
+        is an exact XBRL fact and the arithmetic happens here. An empty
+        denominator means a dollar amount, e.g. EBITDA = operating income + D&A.
         """
         na = [c for c in (spec.get("numerator_add") or []) if c]
         ns = [c for c in (spec.get("numerator_sub") or []) if c]
@@ -440,8 +427,7 @@ class FinancialCalculator(BaseTool):
         }
         comp_str = ", ".join(f"{k.upper()} = {x:.2f} days"
                              for k, x in components.items())
-        # Components ride along as audit inputs so the verifier can ground the
-        # intermediate DIO/DSO/DPO figures a worked answer states.
+        # The DIO/DSO/DPO components are listed as inputs so the answer can cite them.
         for k, x in components.items():
             inputs.append({"ok": True, "concept": k, "value": x,
                            "value_str": f"{x:.2f} days", "fy": year,

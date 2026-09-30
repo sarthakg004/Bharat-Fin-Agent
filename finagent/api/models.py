@@ -1,4 +1,4 @@
-"""Pydantic request/response models."""
+"""Request and response shapes for the API."""
 
 from __future__ import annotations
 
@@ -6,117 +6,33 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
-# --------------------------------------------------------------------------- #
-# Query
-# --------------------------------------------------------------------------- #
+Provider = Literal["groq", "gemini", "openai", "anthropic"]
 
-class ProviderConfig(BaseModel):
-    """Optional per-request override of which LLM the agent uses.
 
-    The frontend Settings modal collects these from the user (with the API
-    key stored in their browser's localStorage and posted per-request — never
-    persisted server-side). When absent, the agent uses the server-default
-    provider (Gemini) with the keys baked into the Space's environment.
+class WriterConfig(BaseModel):
+    """The user's choice of writer model. Everything else is fixed server-side.
+
+    `api_key` is the user's own key. It is kept in their browser, sent with each
+    request, and never stored. OpenAI and Anthropic always need one.
     """
-    provider: Literal["groq", "gemini", "openai", "anthropic"] = "gemini"
-    synth_model: Optional[str] = Field(
-        default=None,
-        description="Model name for the synthesizer / critic. None → provider default.",
-    )
-    planner_model: Optional[str] = Field(
-        default=None,
-        description="Model name for the planner (question decomposition). "
-                    "Separate from the synthesizer because the two jobs differ: "
-                    "the planner emits structured retrieval keys, the "
-                    "synthesizer writes prose. None → provider default.",
-    )
-    planner_provider: Optional[Literal["groq", "gemini", "openai", "anthropic"]] = Field(
-        default=None,
-        description="Provider for the planner when it differs from the answer "
-                    "model's. Lets a free planner run alongside a paid answer "
-                    "model — the planner makes several small structured calls "
-                    "where a free tier is fine. None → same as `provider`.",
-    )
-    planner_api_key: Optional[str] = Field(
-        default=None,
-        description="Key for `planner_provider`. Required whenever that names "
-                    "a provider the server has no key for.",
-    )
-    api_key: Optional[str] = Field(
-        default=None,
-        description="Caller-supplied API key. None → fall back to server env var.",
-    )
+    provider: Optional[Provider] = None
+    model: Optional[str] = Field(default=None, max_length=100)
+    api_key: Optional[str] = Field(default=None, max_length=300)
 
 
 class ChatTurn(BaseModel):
-    """One prior turn of conversation. The server keeps no chat store, so the
-    client owns the thread and replays recent turns with each request.
-
-    `content` is bounded only as a DoS guard, NOT to the length the agent
-    actually uses. The client replays whole assistant answers verbatim, and a
-    Deep Research report runs to many thousands of characters — capping this
-    near the agent's own budget would 422 a legitimate conversation. The real
-    trimming happens server-side and twice: `_agent_history` keeps 1200 chars
-    per turn, and the planner prompt cuts again to 400.
-    """
     role: Literal["user", "assistant"]
     content: str = Field(max_length=32_000)
 
 
 class QueryRequest(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
-    session_id: Optional[str] = Field(
-        default=None,
-        max_length=64,
-        description="Opaque client-owned thread id. Not persisted — used only to "
-                    "group this run's traces with the rest of the conversation.",
-    )
-    provider_config: Optional[ProviderConfig] = None
-    chat_history: Optional[list[ChatTurn]] = Field(
-        default=None,
-        max_length=50,
-        description="Recent turns for conversation memory; the client owns the thread. "
-                    "The server keeps only the last 6 — the cap is a payload guard.",
-    )
-    upload_ids: Optional[list[str]] = Field(
-        default=None,
-        description="Ids returned by POST /api/upload. The referenced documents' "
-                    "chunks are ranked against this question in memory.",
-    )
-
-
-class ResearchRequest(BaseModel):
-    """Deep Research Mode — a multi-specialist research run (POST /api/research).
-
-    Same provider/memory contract as QueryRequest; `upload_ids` is not
-    supported (research runs over filings + live sources, not attached files).
-    """
-    question: str = Field(min_length=1, max_length=2000)
+    # The client's thread id. Not stored; it only groups the traces of one chat.
     session_id: Optional[str] = Field(default=None, max_length=64)
-    provider_config: Optional[ProviderConfig] = None
-    chat_history: Optional[list[ChatTurn]] = Field(
-        default=None,
-        max_length=50,
-        description="Recent turns, so follow-ups like 'now research it deeply' "
-                    "resolve the company under discussion.",
-    )
-    max_agents: Optional[int] = Field(
-        default=None, ge=3, le=14,
-        description="Cap on specialist agents this run. None → server default.",
-    )
+    writer: Optional[WriterConfig] = None
+    # The server keeps no chat history. The client replays recent turns.
+    chat_history: Optional[list[ChatTurn]] = Field(default=None, max_length=50)
 
-
-class UploadResponse(BaseModel):
-    upload_id: str
-    filename: str
-    pages: int
-    tables: int
-    chunks: int
-
-
-# --------------------------------------------------------------------------- #
-# Health
-# --------------------------------------------------------------------------- #
 
 class HealthResponse(BaseModel):
     status: str

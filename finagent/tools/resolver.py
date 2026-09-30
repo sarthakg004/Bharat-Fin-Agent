@@ -26,17 +26,13 @@ from typing import Optional
 
 import requests
 
-from finagent.tools.base import BaseTool
 
 SEC_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 DEFAULT_CACHE = "data/cache/company_tickers.json"
 DEFAULT_TTL_DAYS = 7
 
-# Major delisted/acquired filers. SEC's company_tickers.json only lists CURRENT
-# registrants, so these vanish from it — but their historical XBRL facts and
-# filings remain fully available by CIK. Without this map, "ATVI" fuzzy-matched
-# to "ATI INC" and the agent answered with the WRONG COMPANY's figures.
-# Live listings always win (applied with setdefault); this only fills gaps.
+# Delisted or acquired companies. The SEC ticker list only has current
+# companies, but their filings and XBRL facts are still available by CIK.
 DELISTED: dict[str, str] = {
     # ticker: (cik, registrant title)
     "ATVI": ("0000718877", "Activision Blizzard, Inc."),
@@ -80,7 +76,7 @@ def pad_cik(cik: int | str) -> str:
     return digits.zfill(10)
 
 
-class TickerCIKResolver(BaseTool):
+class TickerCIKResolver:
     """Resolve a ticker symbol or company name to its SEC CIK.
 
     Usage:
@@ -90,8 +86,6 @@ class TickerCIKResolver(BaseTool):
         r.run("Microsoft")   -> {"cik": "0000789019", "ticker": "MSFT", ...}
     """
 
-    name = "ticker_cik_resolver"
-    description = "Resolve a ticker symbol or company name to its SEC CIK."
 
     def __init__(
         self,
@@ -197,19 +191,12 @@ class TickerCIKResolver(BaseTool):
             return {"query": query, **self._by_name[norm], "match": "name_exact",
                     "score": 1.0}
 
-        # A ticker-shaped query (short, uppercase, single token) that missed the
-        # exact-ticker and exact-name lookups must NOT fall through to prefix /
-        # fuzzy NAME matching — that's how "ATVI" landed on "ATI INC" and the
-        # agent answered with another company's figures. A miss here correctly
-        # hands the question to retrieval / web instead.
+        # A ticker-shaped query that matched no ticker must not be fuzzy-matched to a
+        # company NAME: "ATVI" once resolved to "ATI INC".
         if q.isupper() and q.isalpha() and len(q) <= 5:
             return miss
 
-        # 3. Prefix match: a short query is often a prefix of the full
-        #    normalized title — "Amazon"→"amazon com", "JPMorgan"→"jpmorgan
-        #    chase", "Pepsi"→"pepsico". Pick the closest such title (highest
-        #    similarity) so prefixes resolve before we fall to noisy fuzzy. The
-        #    len>=4 guard keeps tiny queries ("co", "the") from matching broadly.
+        # 3. Prefix: "Amazon" -> "amazon com", "Pepsi" -> "pepsico". Closest title wins.
         if len(norm) >= 4:
             cands = [n for n in self._norm_names if n.startswith(norm)]
             if cands:
@@ -233,5 +220,5 @@ class TickerCIKResolver(BaseTool):
         """Convenience: return just the zero-padded CIK, or ``None``."""
         return self.resolve(query).get("cik")
 
-    def run(self, query: str) -> dict:  # BaseTool interface
+    def run(self, query: str) -> dict:
         return self.resolve(query)

@@ -1,33 +1,11 @@
-"""Query-side symmetry: name the line items, not the ratio.
+"""Add the statement line items a derived metric is computed from.
 
-A planner sub-query asks for the metric a user thinks in — "AMD quick ratio
-FY2022". A filing never uses that phrase; it prints `Total current assets`,
-`Inventories`, `Total current liabilities` on a page titled
-`Consolidated Balance Sheets`. Measured on the 99 served FinanceBench
-questions, these phrases appear in ZERO gold evidence spans while 32 of the
-99 questions have a sub-query using one:
-
-    quick ratio · current ratio · return on assets · asset turnover
-    inventory turnover · free cash flow · EBITDA · dividend payout
-
-Embedders paraphrase; they do not derive. "Capital spending" ≈ "capital
-expenditures" is a paraphrase bge-large handles. "Quick ratio" →
-"(current assets − inventories) ÷ current liabilities" is multi-step domain
-reasoning, and semantically "quick ratio" is nearest to text that *says*
-"quick ratio" — a glossary, not a balance sheet. Six of the sixteen questions
-whose evidence never reached the candidate pool at ANY depth sat at coverage
-0.00-0.06 for exactly this reason.
-
-Appending the line items costs no extra query and no extra context, and it
-feeds BOTH halves of the retriever: the dense vector moves toward statement
-language, and BM25 gets tokens that are actually present. Measured
-(results/RETRIEVAL_EXPERIMENTS.md §13): pool recall 74 → 79 of 99, hit@8
-61 → 63, hit@5 55 → 60.
-
-Every entry also names the STATEMENT, because since §12 the caption is inside
-the chunk text where it is matchable. Balance-sheet entries carry several
-captions since filings disagree — Boeing titles it
-`Consolidated Statements of Financial Position`.
+A user asks for a "quick ratio". A filing never prints that phrase; it prints
+"Total current assets", "Inventories" and "Total current liabilities" on a page
+titled "Consolidated Balance Sheets". Appending those words helps both halves of
+the search: the embedding moves toward statement language and BM25 gets words
+that are really in the filing. Measured effect: evidence in the candidate pool
+for 79 of 99 questions instead of 74 (results/RETRIEVAL_EXPERIMENTS.md, section 13).
 """
 
 from __future__ import annotations
@@ -73,8 +51,7 @@ METRIC_TERMS: dict[str, str] = {
     "dso": f"accounts receivable net sales {_IS} {_BS}",
     "days payable": f"accounts payable cost of goods sold {_IS} {_BS}",
     "dpo": f"accounts payable cost of goods sold {_IS} {_BS}",
-    # Not ratios, but the same synonym gap: filings title the balance sheet
-    # three ways and call capex "capital spending".
+    # Not ratios, but the same gap: statements go by several titles.
     "property plant and equipment": f"property plant and equipment net {_BS}",
     "balance sheet": _BS,
     "income statement": _IS,
@@ -82,8 +59,7 @@ METRIC_TERMS: dict[str, str] = {
     "cash flow statement": _CF,
 }
 
-# Longest-first so "net working capital" cannot match as "working capital"
-# and "return on assets" wins over a bare "roa" substring.
+# Longest phrase first, so "return on assets" wins over a bare "roa".
 _PATTERN = re.compile(
     r"\b(" + "|".join(re.escape(k) for k in
                       sorted(METRIC_TERMS, key=len, reverse=True)) + r")\b",
@@ -91,11 +67,8 @@ _PATTERN = re.compile(
 
 
 def expand_query(query: str) -> str:
-    """`query` plus the line items implied by any derived metric it names.
-
-    Returns `query` byte-identical when it names none — the common case, and
-    padding those would only dilute a query that is already precise.
-    """
+    """`query` plus the line items of any derived metric it names. A query
+    naming none is returned unchanged."""
     seen: set[str] = set()
     out: list[str] = []
     for match in _PATTERN.findall(query):

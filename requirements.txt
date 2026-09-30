@@ -1,64 +1,35 @@
-# ---------------------------------------------------------------------------
-# requirements-app.txt — RUNTIME deps for the deployed (Cloud Run) container.
-#
-# The corpus lives in a remote Qdrant cluster, so the image ships no vector
-# data and no in-process lexical index. Bulk-corpus fetchers (sec/nse/bse) and
-# evaluation (ragas) packages are excluded — but the SEC HTML *parser* is not:
-# the dynamic-fetch feature parses a 10-K at request time. See the note by
-# `unstructured` below.
-#
-# torch is installed CPU-only in the Dockerfile (Cloud Run has no GPU) BEFORE
-# this file, so sentence-transformers reuses it instead of pulling the ~2 GB
-# CUDA build. See finagent/device.py (still auto-detects GPU when present).
-# ---------------------------------------------------------------------------
+# Runtime dependencies for the deployed container.
+# torch is installed CPU-only in the Dockerfile before this file.
+# Evaluation extras (ragas) are in pyproject.toml, not here.
 
-# ── HTTP API ─────────────────────────────────────────────────────────────────
+# API
 fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
-python-multipart>=0.0.9         # FastAPI UploadFile (POST /api/upload)
-
-# ── Core ─────────────────────────────────────────────────────────────────────
 pydantic>=2.0.0
 python-dotenv>=1.0.0
 requests>=2.31.0
-pandas>=2.0.0
+
+# Agent
+langgraph
+langchain-core>=0.3.0
+langchain-groq>=0.2.0            # planner and extractors (Qwen)
+langchain-google-genai>=2.0.0    # writer and critic (Gemini)
+langchain-openai>=0.2.0          # optional writer, with the user's key
+langchain-anthropic>=0.3.0       # optional writer, with the user's key
+langfuse>=4.13,<5                # tracing; off without LANGFUSE_* keys
+langchain>=0.3                   # needed by langfuse's LangChain callback
+
+# Retrieval
+qdrant-client>=1.12
+langchain-qdrant>=0.2
+fastembed>=0.4                   # BM25 sparse vectors
+sentence-transformers>=3.0.0     # local fallback reranker
+
+# Live 10-K fetch: parse and chunk a filing at question time
+unstructured>=0.22
+langchain-text-splitters>=0.3
 tqdm>=4.66.0
 
-# ── LangChain / LangGraph stack ──────────────────────────────────────────────
-langgraph
-langsmith
-langchain-core>=0.3.0
-langchain-huggingface>=0.1.0
-langchain-groq>=0.2.0           # default provider (Groq)
-langchain-google-genai>=2.0.0   # optional per-request provider
-langchain-openai>=0.2.0         # optional per-request provider
-langchain-anthropic>=0.3.0      # optional per-request provider
-langfuse>=4.13,<5               # open-source LLM tracing; inert without LANGFUSE_* keys
-langchain>=0.3                  # required by langfuse.langchain CallbackHandler
-
-# ── Vector store + hybrid retrieval ──────────────────────────────────────────
-qdrant-client>=1.12          # remote vector DB (hybrid dense+sparse search)
-langchain-qdrant>=0.2        # LangChain integration
-fastembed>=0.4               # BM25 sparse vectors (tokenise+weight; no NN)
-rank-bm25                       # BM25 lexical half of hybrid retrieval
-
-# ── Embeddings + rerank ──────────────────────────────────────────────────────
-sentence-transformers>=3.0.0    # bge-small embeddings + bge-reranker
-
-# ── Document upload parsing ──────────────────────────────────────────────────
-docling>=2.0                    # user uploads: PDF/DOCX → text + tables (no OCR)
-langchain-text-splitters>=0.3   # chunking for uploads (was transitive-only)
-
-# ── Dynamic SEC fetch (self-expanding corpus) ────────────────────────────────
-# Not "ingestion-only": `fetch_filing_node` parses a freshly downloaded 10-K on
-# the SERVE path, through the same CorpusIngester the corpus was built with.
-# Leaving this out silently killed the feature in production — every fetch for
-# an un-indexed company raised ImportError and the answer fell back to web
-# noise. pypdf/sec-edgar-downloader stay out: EDGAR serves HTML and the
-# download now goes through the SEC submissions API (plain requests).
-unstructured>=0.22              # SEC HTML → section-aware chunks, tables intact
-
-# ── Tools (live data, web, bilingual) ────────────────────────────────────────
-yfinance>=0.2.40                # market data + charts
-tavily-python>=0.5.0            # web search
-langdetect>=1.0.9               # hi/en detection
+# Tools
+yfinance>=0.2.40
+tavily-python>=0.5.0

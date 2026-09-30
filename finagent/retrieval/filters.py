@@ -1,16 +1,9 @@
-"""
-filters.py  ·  finagent/retrieval/filters.py
+"""Company and year filter, inferred from the question text without an LLM.
 
-Deterministic company/year metadata filtering for retrieval.
-
-Every indexed chunk carries `company` / `year` metadata, but unfiltered
-hybrid search makes a question about one company compete against EVERY other
-filing's near-identical accounting language (the financebench_eval collection
-is ~129k chunks across 84 filings — pool recall@100 was 0.48 unfiltered).
-Restricting the candidate pool to the company the question names (and the
-fiscal year when it names one) removes that distractor mass before BM25 /
-dense / rerank ever run. No LLM call: the company vocabulary comes from the
-collection's own metadata and is matched against the question text.
+Every chunk carries `company` and `year`. Without a filter, a question about one
+company competes with every other filing's near-identical accounting language.
+The company names come from the collection's own metadata and are matched
+against the question.
 """
 
 from __future__ import annotations
@@ -18,8 +11,7 @@ from __future__ import annotations
 import re
 from typing import Optional
 
-# Common spellings that don't substring-match the canonical metadata name.
-# Keys and values are in NORMALISED form (see _norm).
+# Nicknames that do not appear inside the stored company name (normalised form).
 COMPANY_ALIASES: dict[str, str] = {
     "amex": "american express",
     "jnj": "johnson and johnson",
@@ -34,11 +26,7 @@ COMPANY_ALIASES: dict[str, str] = {
     "mgm": "mgm resorts",       # too short for the auto single-token alias
 }
 
-# Fiscal years written either long ("FY2022", "2022") or short ("FY22"). The
-# planner emits BOTH, sometimes inside one plan, and the short form used to
-# parse as no year at all — which silently dropped the year clause here and
-# every extracted period in the numeric lane. A bare "22" stays a quantity: the
-# 2-digit form is only read behind an FY prefix.
+# "FY2022", "2022" and "FY22" are all years. A bare "22" is a quantity.
 _YEAR_RE = re.compile(r"\bFY\s?(\d{2})\b|\b(?:FY\s?)?((?:19|20)\d{2})\b", re.I)
 
 
@@ -50,15 +38,13 @@ def parse_years(text: str) -> list[int]:
         if full:
             out.append(int(full))
         else:
-            # Pivot, so an old "FY98" filing never reads as 2098.
+            # FY98 means 1998, not 2098.
             n = int(short)
             out.append(2000 + n if n < 80 else 1900 + n)
     return out
 
-# 10-K section intent: phrase (in _norm() form) → `item` metadata value tagged
-# at ingestion. Only unambiguous section names — a generic word must never
-# narrow the pool. Matched against the normalised question, so "MD&A" arrives
-# as "md and a".
+# Section names in the question -> the 10-K item the chunk was tagged with.
+# Only unambiguous names; matched on the normalised question ("MD&A" -> "md and a").
 _ITEM_PHRASES: dict[str, str] = {
     "risk factor": "1A",
     "unresolved staff comment": "1B",
@@ -72,29 +58,26 @@ _ITEM_PHRASES: dict[str, str] = {
     "executive compensation": "11",
 }
 
-# The question means "newest data" without naming a year (matched against the
-# _norm()-alised question, so "year-over-year" arrives as "year over year").
+# Words that mean "the newest data" when no year is named.
 _RECENT_RE = re.compile(
     r"\b(latest|most recent|current|year over year|yoy|prior fiscal year"
     r"|last quarter|this quarter|past year)\b")
 
 
 def _norm(s: str) -> str:
-    """Lowercase; '&'→' and '; punctuation→space; collapse whitespace."""
+    """Lowercase; '&' becomes ' and '; punctuation becomes a space."""
     s = (s or "").lower().replace("&", " and ")
     s = re.sub(r"[^a-z0-9]+", " ", s)
     return re.sub(r"\s+", " ", s).strip()
 
 
-# Legal-form suffixes stripped to make a short variant ("GENERAL MILLS INC" →
-# "general mills") so the name a question actually uses matches the metadata.
+# Legal suffixes stripped so "GENERAL MILLS INC" also matches "general mills".
 _LEGAL_SUFFIXES = (
     "incorporated", "international", "corporation", "company", "holdings",
     "group", "corp", "inc", "plc", "ltd", "llc", "co", "sa", "nv", "ag",
 )
 
-# Words too generic to identify a company on their own — never used as a
-# single-token alias ("general" must not match General Mills).
+# Too generic to name a company alone ("general" must not match General Mills).
 _GENERIC_TOKENS = {
     "american", "general", "united", "national", "international", "first",
     "best", "new", "the", "and", "company", "water", "works", "health",
@@ -104,7 +87,7 @@ _GENERIC_TOKENS = {
 
 
 def _name_variants(name: str) -> list[str]:
-    """Normalised name plus progressively suffix-stripped variants."""
+    """The normalised name, plus versions with legal suffixes removed."""
     n = _norm(name)
     out = [n]
     words = n.split()
@@ -116,22 +99,12 @@ def _name_variants(name: str) -> list[str]:
 
 def build_company_vocab(metadatas) -> tuple[dict, dict]:
     """From chunk metadata, build:
-       vocab          — normalised company name (and variants) → canonical value
-       years_by_co    — canonical company → set of metadata `year` strings
+       vocab        normalised company name or alias -> the stored company value
+       years_by_co  stored company value -> the years it has filings for
 
-    Metadata `company` values range from clean names ("3M") through legal names
-    ("BEST BUY CO INC") to bare tickers ("AAPL"); ticker values get their SEC
-    title registered as an alias so "Apple's revenue" still matches 'AAPL'.
-
-    The `ticker` field is registered as an alias too, and this is not
-    redundant with the above: the two fields agree on the curated corpus
-    (company "NVDA", ticker "NVDA") but diverge on a dynamically fetched filing
-    (company "APPLIED MATERIALS INC /DE", ticker "AMAT"). Without it a question
-    that names the company BY TICKER matches nothing, the filter is dropped
-    entirely, and retrieval competes against every other filing in the index —
-    the exact failure that returned Walmart and Corning chunks for an Applied
-    Materials question. Whichever field carries the name the user typed, the
-    question resolves to the same canonical entity.
+    Both the `company` and the `ticker` field become aliases, because they
+    differ: a live-fetched filing stores "APPLIED MATERIALS INC /DE" as the
+    company and "AMAT" as the ticker, and a question may use either.
     """
     vocab: dict[str, str] = {}
     years: dict[str, set] = {}
@@ -151,10 +124,8 @@ def build_company_vocab(metadatas) -> tuple[dict, dict]:
         y = str((m or {}).get("year") or "")
         years.setdefault(c, set()).add(y) if y else years.setdefault(c, set())
 
-    # Bare-ticker company values: alias the SEC registrant title (and its
-    # suffix-stripped variants) to the ticker, via the cached
-    # company_tickers.json the resolver already maintains. Best-effort — a
-    # missing cache or offline run just means ticker-only matching.
+    # When the stored company is a bare ticker ("AAPL"), also accept its SEC
+    # company name, read from the resolver's cached ticker list.
     if tickerish:
         try:
             from finagent.tools.resolver import TickerCIKResolver
@@ -170,19 +141,9 @@ def build_company_vocab(metadatas) -> tuple[dict, dict]:
         except Exception:
             pass
 
-    # Single-token aliases: a distinctive word that belongs to exactly ONE
-    # company becomes an alias for it ("jpmorgan" → JPMORGAN CHASE & CO,
-    # "verizon" → Verizon Communications Inc.) — that's how questions actually
-    # name companies. Generic words and short tokens never qualify.
-    # Three characters, not five. Five silently excluded every SHORT
-    # distinctive name in the corpus — "Ulta Beauty" was reachable only as the
-    # full two-word phrase, so "What was Ulta's revenue?" matched no company at
-    # all, the filter was dropped, and the question competed against every other
-    # filing. Same for AES, CVS and MGM (MGM had to be hand-written into
-    # COMPANY_ALIASES to work around exactly this). The safety does not come
-    # from token length — it comes from the two conditions below: the token must
-    # belong to exactly ONE company, and must not be a generic word. Matching is
-    # whole-word, so a short alias cannot fire on a substring.
+    # A distinctive word owned by exactly one company becomes an alias for it
+    # ("verizon" -> Verizon Communications Inc.). Generic words never qualify, and
+    # matching is whole-word, so a short alias cannot fire inside another word.
     token_owner: dict[str, set] = {}
     for name, canon in list(vocab.items()):
         for tok in name.split():
@@ -197,12 +158,9 @@ def build_company_vocab(metadatas) -> tuple[dict, dict]:
 def infer_filter(question: str, vocab: dict, years_by_co: dict) -> Optional[dict]:
     """{"companies": [...], "years": [...]} for the question, or None.
 
-    Companies: every vocab name (or alias) appearing in the normalised
-    question, longest first so "American Water Works" beats "American".
-    Years: only when exactly ONE company matched — the question's latest year
-    if that company has a filing for it, else the following year (a fiscal-
-    FY2019 answer often lives in the 2020-filed report's comparatives). Both
-    are kept when both exist. No matching year → company-only filter.
+    Years are added only when exactly one company matched: the question's
+    latest year and the year after it (a fiscal-2019 figure often sits in the
+    report filed in 2020), whichever of the two are indexed.
     """
     qn = f" {_norm(question)} "
     matched: list[str] = []
@@ -223,8 +181,7 @@ def infer_filter(question: str, vocab: dict, years_by_co: dict) -> Optional[dict
     items = sorted({item for phrase, item in _ITEM_PHRASES.items()
                     if f" {phrase}" in qn})
     if items:
-        # Soft clause: search() relaxes it (with years) when it over-narrows —
-        # e.g. a collection ingested before `item` tagging existed.
+        # Dropped by search() if it matches nothing.
         flt["items"] = items
     if len(matched) == 1:
         years_avail = years_by_co.get(matched[0], set())
@@ -235,11 +192,8 @@ def infer_filter(question: str, vocab: dict, years_by_co: dict) -> Optional[dict
             if keep:
                 flt["years"] = keep
         elif years_avail and _RECENT_RE.search(qn):
-            # "latest" / "year-over-year" with no year named: restrict to the
-            # two NEWEST indexed years so stale filings' near-identical language
-            # can't outrank the current one. (The newest filing carries the
-            # prior year's comparatives, so two years covers a YoY question;
-            # search() already relaxes the year clause if this over-narrows.)
+            # No year named but the question wants the latest: keep the two newest
+            # indexed years (the newest filing also carries the prior year's figures).
             digit = sorted((y for y in years_avail if str(y).isdigit()), key=int)
             if digit:
                 flt["years"] = digit[-2:]
@@ -247,12 +201,7 @@ def infer_filter(question: str, vocab: dict, years_by_co: dict) -> Optional[dict
 
 
 def qdrant_filter(flt: Optional[dict]):
-    """Translate an inferred filter into a Qdrant `Filter`.
-
-    Each clause is ANDed; values within a clause are ORed (MatchAny). Keys are
-    prefixed with the metadata payload key, since LangChain nests document
-    metadata under it.
-    """
+    """An inferred filter as a Qdrant `Filter`: clauses are ANDed, values within a clause ORed."""
     if not flt:
         return None
     from qdrant_client import models

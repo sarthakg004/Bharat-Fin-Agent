@@ -20,7 +20,6 @@ from typing import Optional
 
 import requests
 
-from finagent.tools.base import BaseTool
 
 EFTS_URL = "https://efts.sec.gov/LATEST/search-index"
 # "Apple Inc.  (AAPL)  (CIK 0000320193)" -> name, ticker, cik
@@ -40,7 +39,7 @@ def _parse_display(display: str) -> tuple[str, str, str]:
     return m.group("name").strip(), (m.group("ticker") or "").strip(), m.group("cik")
 
 
-class EdgarFullTextSearch(BaseTool):
+class EdgarFullTextSearch:
     """Search the full text of SEC filings across many companies.
 
     Usage:
@@ -50,8 +49,6 @@ class EdgarFullTextSearch(BaseTool):
         #     date, url}, ...], "hits": [...]}
     """
 
-    name = "edgar_full_text_search"
-    description = "Search the full text of SEC filings across many companies."
 
     def __init__(self, user_agent: Optional[str] = None, timeout: int = 25) -> None:
         self.user_agent = user_agent or _user_agent()

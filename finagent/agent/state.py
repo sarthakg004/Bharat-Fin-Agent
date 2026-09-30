@@ -1,127 +1,63 @@
-"""
-state.py  ·  finagent/graph/state.py
+"""The shared state every step reads and writes, and the schemas for
+structured LLM output.
 
-Shared state for the agentic RAG LangGraph, plus the Pydantic schemas used
-for structured LLM outputs (planner sub-queries, critic verdict).
-
-`AgentState` is a TypedDict — the canonical LangGraph state schema. Every node
-reads it and returns a partial dict that LangGraph merges back in. Each field
-is written by exactly one node, so no custom reducers are needed.
-
-Optional lanes (web_results, market_data, …) default to empty lists so
-downstream nodes can treat them uniformly whether or not a lane ran.
+`AgentState` is a plain dict. Each step returns only the keys it changed and
+LangGraph merges them back in.
 """
 
 from __future__ import annotations
 
-from typing import Any, Literal, TypedDict
+from typing import Literal, TypedDict
 
 from pydantic import BaseModel, Field
 
 
 class AgentState(TypedDict, total=False):
-    """Shared state passed between every node in the graph."""
+    question: str
+    chat_history: list[dict]        # last turns: [{role, content}]
 
-    question: str                      # the user's original question
-    sub_queries: list[str]             # planner's decomposition (1-3 queries)
-    # The ONE query that searches the filings, written in the filing's own
-    # vocabulary. Retrieval runs on this + the raw question instead of on the
-    # sub-queries (§14). Empty → retrieval falls back to the sub-queries, which
-    # is what happens on a rewrite retry and whenever the planner call failed.
-    retrieval_query: str
-    retrieved_chunks: list[dict]       # [{text, company, year, page, source, sub_query}]
-    web_results: list[Any]             # filled by web_search_node
-    draft_answer: str                  # synthesizer output (pre-critique)
-    final_answer: str                  # answer returned to the caller
-    citations: list[str]               # citation tags used, e.g. "[TCS AR FY23, p. 102]"
-    grading_score: float               # critic: fraction of claims supported (0-1)
-    iteration_count: int               # how many synthesize attempts so far
-    errors: list[str]                  # non-fatal problems logged along the way
-    needs_retry: bool                  # critic flag; drives the critic-retry loop
+    # planner
+    sub_queries: list[str]          # the question split into 1-8 parts
+    query_routes: list[str]         # one lane per part: narrative | numeric | market | external | cross_document
+    retrieval_query: str            # ONE keyword query in the filing's own words; "" = search on the parts
 
-    # --- Corrective-RAG additions (critic retry loop) ---------------------- #
-    company_in_corpus: bool            # retrieve: question's company is indexed → trust the filing
-    critic_iterations: int             # recovery counter (cap = max_critic_retries)
-    critic_feedback: list[str]         # unsupported claims, fed to an active re-draft
-    critic_remedy: str                 # critic's fix: "redraft" | "gather"
+    # filings
+    fetch_status: dict              # what the 10-K fetch gate decided and did
+    retrieved_chunks: list[dict]    # [{text, company, year, page, source, sub_query}]
+    retry_queries: list[str]        # set by the critic: what to search for on a "gather" retry
 
-    # --- Router (v3) ------------------------------------------------------- #
-    query_routes: list[str]            # one of "narrative" | "numeric" | "external" per sub-query
+    # tools
+    xbrl_facts: list[dict]          # exact filed figures
+    calc_results: list[dict]        # ratios, margins, growth computed from XBRL
+    market_data: list[dict]         # yfinance tool calls
+    charts: list[dict]              # chart specs the frontend renders
+    web_results: list[dict]
+    edgar_results: list[dict]
 
-    # --- v4 additions: web search, refusal --------------------------------- #
-    refused: bool                      # set when the agent explicitly declines to answer
-    # Retrieval was skipped because the embedding pool is out of daily quota.
-    # The answer still gets written from the tool lanes; this is what lets the
-    # API tell the user why the filing evidence is missing.
-    embeddings_unavailable: bool
+    # answer
+    evidence: list[dict]            # the numbered evidence the writer was given, in [N] order
+    answer: str
+    citations: list[str]
+    support_score: float            # critic: share of the answer's claims the evidence supports
+    unsupported_claims: list[str]
+    remedy: str                     # critic's fix: "redraft" | "gather"
+    needs_retry: bool
+    recoveries: int                 # recovery passes used (the cap is 1)
+    refused: bool
 
-    # --- Market-data tool results ----------------------------------------- #
-    market_data: list[dict]            # one entry per tool call (quote/history/...)
-    charts: list[dict]                 # frontend-ready chart specs (lightweight-charts JSON)
-
-    # --- XBRL structured facts (Phase 3) ---------------------------------- #
-    xbrl_facts: list[dict]             # one exact reported figure per numeric sub-query
-
-    # --- Derived metrics computed over XBRL (Phase 4) --------------------- #
-    calc_results: list[dict]           # margins/ratios/growth/CAGR/trends from XBRL inputs
-
-    # --- Dynamic SEC fetch (Phase 5) -------------------------------------- #
-    fetch_status: dict                 # {"decision","ticker","chunks_added",...} or {}
-    fetched_chunks: list[dict]         # ephemeral fetch: in-memory chunks (not indexed)
-
-    # --- EDGAR full-text search (Phase 6) --------------------------------- #
-    edgar_results: list[dict]          # one cross-document search result per sub-query
-
-    # --- Conversation memory ---------------------------------------------- #
-    chat_history: list[dict]           # last K turns: [{role: "user"|"assistant", content}]
-
-    # --- Normalised evidence (#3) ----------------------------------------- #
-    # Every lane's output (XBRL, calc, filing text, tables, market, web, EDGAR)
-    # projected into one common shape by `evidence_builder_node`, so downstream
-    # nodes, the audit trail, and cross-source checks read a single structure
-    # instead of seven bespoke ones. Each item:
-    #   {kind, fact, value, unit, source, citation, confidence, sub_query}
-    evidence: list[dict]
-
-    status: str                        # "answered" | "refused"
-
-    # --- Tools-lane corpus fallback ---------------------------------------- #
-    # Set by `evidence_builder_node` when a tools-path question (which skipped
-    # retrieval) produced NO evidence — routes back through fetch_filing →
-    # retrieve so the corpus gets a chance before synthesis. `pending` is the
-    # one-shot routing signal (cleared every evidence_builder pass); `used`
-    # latches so the fallback can only fire once per run.
-    corpus_fallback_pending: bool
+    # one-shot routing flags
+    corpus_fallback_pending: bool   # tool lanes all empty -> try filing search once
     corpus_fallback_used: bool
-
-    # --- Insufficient-draft web escalation --------------------------------- #
-    # Set by `critic_node` when the draft ADMITS the evidence can't answer
-    # ("not specified in the sources", "no information available") and the web
-    # lane hasn't run — routes critic → web_search → re-synthesize so the agent
-    # exhausts its tools before telling the user it doesn't know. Same
-    # pending/used pattern as the corpus fallback above.
-    web_fallback_pending: bool
+    web_fallback_pending: bool      # the draft admits it cannot answer -> try the web once
     web_fallback_used: bool
+
+    log: list[str]                  # what happened, for debugging
+    notices: list[str]              # degraded steps the user should know about
 
 
 # --------------------------------------------------------------------------- #
 # Structured-output schemas (used with llm.with_structured_output(...))
 # --------------------------------------------------------------------------- #
-
-class SubQueries(BaseModel):
-    """Planner output: the question decomposed into focused sub-queries."""
-
-    queries: list[str] = Field(
-        description=(
-            "1 to 8 self-contained sub-queries. Use a SINGLE query for simple "
-            "questions. For comparison / multi-hop questions, FULLY enumerate one "
-            "query per (entity × period × metric) combination so nothing is "
-            "dropped — e.g. 'compare Apple and Microsoft R&D % of revenue over "
-            "2020-2022' becomes SIX queries (each company × each of the 3 years). "
-            "Each sub-query must name its company, metric, and period explicitly."
-        )
-    )
-
 
 class ClaimVerdict(BaseModel):
     """One factual claim from the draft answer and whether the context supports it."""
@@ -149,40 +85,8 @@ class CriticReport(BaseModel):
     )
 
 
-# --------------------------------------------------------------------------- #
-# Router schemas
-# --------------------------------------------------------------------------- #
-
-class QueryRoute(BaseModel):
-    """Per-sub-query routing verdict."""
-
-    sub_query: str = Field(description="The sub-query being classified, copied verbatim.")
-    route: Literal["narrative", "numeric", "market", "external", "cross_document"] = Field(
-        description=(
-            "narrative = text retrieval over filings (default for prose-y questions); "
-            "numeric   = exact figures / ratios from the filings via SEC XBRL + a "
-            "deterministic calculator (ratios from 10-Ks, segment breakdowns, "
-            "multi-year financial comparisons IN the filings); "
-            "market    = live market data via yfinance (current price, intraday move, "
-            "premarket, historical OHLC, charts, news headlines — anything about a "
-            "listed company's market behaviour, not about its filings); "
-            "cross_document = EDGAR full-text search across MANY companies' filings — "
-            "'which companies disclosed/mentioned X', 'list firms that report Y'; the "
-            "answer is a SET of companies, not facts about one named company; "
-            "external  = web search (general news, events, post-cutoff)."
-        )
-    )
-    reason: str = Field(description="One-line justification.")
-
-
-class RouterReport(BaseModel):
-    """Router output: one verdict per sub-query, in the same order."""
-
-    routes: list[QueryRoute] = Field(description="One per sub-query, in input order.")
-
-
 class PlannedQuery(BaseModel):
-    """One sub-query plus the lane that should answer it (fused planner+router)."""
+    """One sub-query plus the lane that should answer it."""
 
     query: str = Field(
         description=(
@@ -201,7 +105,7 @@ class PlannedQuery(BaseModel):
 
 
 class QueryPlan(BaseModel):
-    """Fused planner+router output: routed sub-queries in one structured call."""
+    """Planner output: the question split into routed sub-queries."""
 
     queries: list[PlannedQuery] = Field(
         description=(
@@ -223,7 +127,7 @@ class XBRLQuery(BaseModel):
     (ticker='AAPL', concept='revenue', period='FY2022') so the XBRL client can
     look up the exact reported figure. `answerable` is False when the sub-query
     isn't a single-company single-figure lookup (comparisons, derived ratios,
-    or narrative questions) — those stay with retrieval / the table agent.
+    or narrative questions) — those stay with retrieval and the calculator.
     """
 
     answerable: bool = Field(
@@ -256,7 +160,7 @@ class XBRLQuery(BaseModel):
 
 
 class CalcQuery(BaseModel):
-    """Structured extraction of a *derived-metric* numeric sub-query (Phase 4).
+    """Structured extraction of a *derived-metric* numeric sub-query.
 
     Turns "What was Apple's operating margin trend over the last 3 years?" into
     (is_derived=True, ticker='AAPL', metric='operating_margin',
@@ -360,7 +264,7 @@ class FormulaSpec(BaseModel):
 
 
 class EdgarQuery(BaseModel):
-    """Extraction of an EDGAR full-text search from a cross-document sub-query (Phase 6).
+    """Extraction of an EDGAR full-text search from a cross-document sub-query.
 
     Turns "Which companies disclosed a material weakness in internal controls?"
     into (phrase='material weakness in internal controls', forms='10-K'). The
@@ -381,7 +285,7 @@ class EdgarQuery(BaseModel):
 
 
 class CorpusGateQuery(BaseModel):
-    """The primary company a question is about, for the dynamic-fetch gate (Phase 5).
+    """The primary company a question is about, for the dynamic-fetch gate.
 
     Extracts the single company/ticker the question concerns so the gate can
     decide whether to fetch its 10-K. Empty when the question names no specific
@@ -398,9 +302,8 @@ class CorpusGateQuery(BaseModel):
 class MarketIntent(BaseModel):
     """The market-data node's plan — a SINGLE tool call.
 
-    Deliberately a FLAT schema (no nested list of objects): small models like
-    gpt-oss reliably emit a flat object but choke on `list[NestedModel]`,
-    failing the function call. One call covers virtually every market question
+    A flat schema on purpose: small models fill a flat object reliably and
+    often fail on a nested list of objects. One call covers virtually every market question
     (`compare` itself takes a list of tickers).
     """
 

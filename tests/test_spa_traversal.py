@@ -10,7 +10,6 @@ every Secret Manager value injected into the Cloud Run service.
 from __future__ import annotations
 
 import importlib
-import os
 
 import pytest
 from fastapi.testclient import TestClient
