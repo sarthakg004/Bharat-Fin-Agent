@@ -138,3 +138,30 @@ def test_web_search_is_not_added_on_top_of_filing_evidence():
     assert searched == []
     E.web_search(agent, {**base, "retrieved_chunks": []})       # nothing found: the web is the fallback
     assert searched == ["What are 3M's segments?"]
+
+
+def test_a_company_named_in_the_sub_query_overrides_a_guessed_ticker():
+    """The extractor once turned "Amcor" into AMR, another company's ticker."""
+    from types import SimpleNamespace
+
+    from finagent.agent import numeric
+    from finagent.agent.prompts import XBRL_EXTRACT_PROMPT, XBRL_EXTRACT_SYSTEM
+    from finagent.agent.state import XBRLQuery, XBRLQueryBatch
+
+    known = {"amcor": {"cik": "1", "ticker": "AMCR", "match": "name_exact"},
+             "amr": {"cik": "2", "ticker": "AMR", "match": "ticker"},
+             "googl": {"cik": "3", "ticker": "GOOGL", "match": "ticker"}}
+    resolver = SimpleNamespace(resolve=lambda q: known.get(q.lower(), {"cik": None, "match": "none"}))
+    guesses = iter(["AMR", "GOOGL"])
+    llm = SimpleNamespace(with_structured_output=lambda schema: SimpleNamespace(
+        invoke=lambda msgs: XBRLQuery(answerable=True, ticker=next(guesses), concept="revenue")))
+    agent = SimpleNamespace(xbrl=SimpleNamespace(resolver=resolver), llm=lambda role: llm,
+                            log=lambda state, msg: state.setdefault("log", []).append(msg))
+
+    def ticker(sub_query):
+        return numeric._extract(agent, {"question": "q"}, [sub_query], XBRLQueryBatch, XBRLQuery,
+                                XBRL_EXTRACT_SYSTEM, XBRL_EXTRACT_PROMPT)[0][1].ticker
+
+    assert ticker("Amcor's net accounts receivable, FY2020") == "AMCR"
+    # No registrant is called "Google": the model's ticker is all there is.
+    assert ticker("Google revenue FY2023") == "GOOGL"

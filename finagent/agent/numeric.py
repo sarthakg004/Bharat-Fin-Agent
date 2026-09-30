@@ -36,6 +36,28 @@ def _numeric_subs(state: AgentState) -> list[str]:
     return [s for s, r in zip(sub_queries, routes) if r == "numeric"]
 
 
+def _trust_the_named_company(agent, state: AgentState, sub_q: str, q) -> None:
+    """Replace a ticker the model guessed with the company the sub-query names.
+
+    The extractor sometimes recalls a ticker from memory and gets it wrong
+    ("Amcor" -> AMR, which is Alpha Metallurgical Resources), and a figure for
+    the wrong company would be presented as exact. When the sub-query opens
+    with a registrant's exact name, that company wins.
+    """
+    if q is None or not getattr(q, "ticker", ""):
+        return
+    resolver = agent.xbrl.resolver
+    words = re.findall(r"[\w&.-]+", re.sub(r"['’]s\b", "", sub_q))[:4]
+    for n in range(len(words), 0, -1):
+        named = resolver.resolve(" ".join(words[:n]))
+        if named.get("match") == "name_exact":
+            if resolver.resolve(q.ticker).get("cik") != named["cik"]:
+                agent.log(state, f"company corrected: {q.ticker!r} -> {named['ticker']} "
+                                 f"(named in {sub_q!r})")
+                q.ticker = named["ticker"]
+            return
+
+
 def _extract(agent, state: AgentState, sub_queries: list[str], batch_schema,
              single_schema, system: str, single_prompt: str) -> list[tuple]:
     """One structured extraction per sub-query: [(sub_query, extraction or None)].
@@ -56,6 +78,8 @@ def _extract(agent, state: AgentState, sub_queries: list[str], batch_schema,
                                      f"in the same order ({len(sub_queries)} entries)."),
             ])
             if len(out.queries or []) == len(sub_queries):
+                for sub_q, q in zip(sub_queries, out.queries):
+                    _trust_the_named_company(agent, state, sub_q, q)
                 return list(zip(sub_queries, out.queries))
             agent.log(state, "batch extraction misaligned; extracting one by one")
         except Exception as e:
@@ -71,6 +95,7 @@ def _extract(agent, state: AgentState, sub_queries: list[str], batch_schema,
         except Exception as e:
             agent.llm_failed(state, "Number lookup", e)
             q = None
+        _trust_the_named_company(agent, state, sub_q, q)
         pairs.append((sub_q, q))
     return pairs
 
