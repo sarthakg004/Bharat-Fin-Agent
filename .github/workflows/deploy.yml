@@ -1,14 +1,13 @@
 name: Deploy
 
-# CI/CD: on every push to main, deploy the backend to Cloud Run and the
-# frontend to Firebase Hosting. Authentication is keyless (Workload Identity
-# Federation) — no service-account JSON is ever stored in GitHub.
+# On every push to main: run the tests, then deploy the backend to Cloud Run and
+# the frontend to Firebase Hosting. Auth to Google Cloud is keyless (Workload
+# Identity Federation), so no service-account key is stored in GitHub.
 on:
   push:
     branches: [main]
-  workflow_dispatch: {}        # lets you trigger a deploy by hand from the Actions tab
+  workflow_dispatch: {}
 
-# Never run two deploys at once; cancel an in-flight one if a newer push lands.
 concurrency:
   group: deploy-${{ github.ref }}
   cancel-in-progress: true
@@ -17,79 +16,43 @@ env:
   PROJECT_ID: fin-agent-498211
   REGION: asia-south1
   SERVICE: finagent
-  # Served Qdrant collection. Must match the embedder/geometry in the code
-  # of the same commit -- see results/RETRIEVAL_EXPERIMENTS.md §7.
-  #
-  # This value is FORCED onto the service on every deploy
-  # (--update-env-vars below), so it must name a collection that actually
-  # exists. It said `us_filings_v2` while the live service ran `us_filings_v3`,
-  # which means the next deploy would have pointed Cloud Run at a collection
-  # that had already been deleted and taken every retrieval query down with it.
-  # If you rebuild the index, change this in the SAME commit as the code that
-  # matches it.
-  #
-  # v4 = the first collection built with §12 context headers. The §13 retrieval
-  # changes were measured on headed chunks and the cap-ranking rule REVERSES
-  # without them, so this code must never be served against a pre-v4 index.
-  #
-  # v5_gemini = embedded with `gemini-embedding-2` at 1536 dims. A collection
-  # and its embedder are ONE choice: querying this with the old bge-large model
-  # is not an error, it is silently empty results. That is why the collection
-  # name and EMBEDDING_MODEL below move in the same commit as the code.
+  # The collection, its embedder and the reranker are pinned here and forced
+  # onto the service on every deploy. A collection can only be searched with
+  # the embedder it was built with, so these two must change together.
   US_COLLECTION: us_filings_v5_gemini
-  # Pinned rather than left to the code defaults, so a stray edit to
-  # `vectorstore.DEFAULT_EMBED_MODEL` or `config.DEFAULT_RERANKER` cannot
-  # silently re-point production at an embedder the collection was not built
-  # with. `cohere:` falls back to the baked local cross-encoder when its key
-  # pool is spent.
   EMBEDDING_MODEL: gemini-embedding-2
   RERANKER_MODEL: cohere:rerank-v4.0-pro
-  DATA_BUCKET: gs://fin-agent-498211-data
-  # Public Cloud Run URL — baked into the frontend bundle so the SPA calls the API.
   BACKEND_URL: https://finagent-237355589454.asia-south1.run.app
 
 permissions:
   contents: read
-  id-token: write              # REQUIRED for Workload Identity Federation
+  id-token: write              # required for Workload Identity Federation
 
 jobs:
-  # Gate: nothing deploys unless the test suite and the frontend typecheck pass.
   test:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: pip
 
       - name: Install dependencies (CPU torch)
         run: |
-          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
-          # pypdf: test-only (test_upload_guards builds fixture PDFs with it).
-          pip install -r requirements.txt pytest pypdf
-          # unstructured pip-installs this spaCy model on first partition_html.
-          # Doing it here keeps the HTML-chunker tests off a mid-test download
-          # (the Dockerfile bakes it the same way).
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt pytest
           python -m spacy download en_core_web_sm
 
       - name: Run tests
         env:
-          # The smoke tests build the agent (which requires a key to be
-          # PRESENT) but never call the network — a dummy satisfies them.
-          # BOTH providers are needed: the default provider is gemini (the
-          # reasoning roles) while the `router` role is pinned to groq (the
-          # tool extractors), so the API's key check rejects a request unless
-          # each has something.
+          # The tests never call a provider; the keys only have to be present.
           GROQ_API_KEY: ci-dummy-key
           GEMINI_API_KEY: ci-dummy-key
         run: pytest tests/ -q
 
-      - name: Set up Node
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
@@ -104,70 +67,30 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     needs: test
-    # Scoped to THIS job, deliberately not to the workflow. Runtime config in
-    # the workflow-level `env:` also reaches the test job, and several tests
-    # decide whether to run by looking for exactly these variables —
-    # `test_qdrant_writes.py` skips unless QDRANT_URL is set. Declaring
-    # QDRANT_URL globally un-skipped it, so CI tried to reach the live cluster
-    # without the API key (a secret the test job does not receive) and failed
-    # 403. Deploy-time config belongs to the deploy job.
-    #
-    # These are re-asserted on every deploy so a hand-run
-    # `gcloud run services update --set-env-vars` can never leave them missing
-    # again: that flag REPLACES the whole non-secret environment, and running it
-    # to change US_COLLECTION at the v3 cutover wiped QDRANT_URL — every
-    # retrieval query then failed with "QDRANT_URL is not set" for several
-    # revisions before anyone noticed.
-    #
-    # The cluster ENDPOINT is not a secret; QDRANT_API_KEY stays in Secret
-    # Manager and is attached to the service separately.
+    # Kept on this job, not the workflow: tests must not see the live cluster URL.
+    # Re-asserted on every deploy so a manual `gcloud run services update` cannot
+    # leave them missing.
     env:
       QDRANT_URL: https://9eeb62bc-b2f8-479f-87b1-255415dac7ca.eu-west-2-0.aws.cloud.qdrant.io
       ALLOWED_ORIGINS: https://fin-agent-498211.web.app,https://fin-agent-498211.firebaseapp.com
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      # Keyless auth to GCP. The provider + SA are not secrets — access is
-      # gated by the repo binding we created with gcloud.
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: projects/237355589454/locations/global/workloadIdentityPools/github-pool/providers/github-provider
           service_account: github-deployer@fin-agent-498211.iam.gserviceaccount.com
 
-      - name: Set up gcloud
-        uses: google-github-actions/setup-gcloud@v2
+      - uses: google-github-actions/setup-gcloud@v2
 
-      # Backend → Cloud Run. `--source .` builds the Dockerfile via Cloud Build.
-      # --update-env-vars only ADDS/overrides the named key, so the API keys and
-      # ALLOWED_ORIGINS already configured on the service are preserved.
-      #
-      # US_COLLECTION rides the deploy so the served collection and the code that
-      # matches it land in ONE revision. They cannot be changed separately: the
-      # embedder's dimensionality is baked into the collection, so old code with
-      # a new collection (or the reverse) fails every query. Cloud Run switches
-      # revisions atomically, so there is no window where they disagree.
-      # Rollback = revert the code commit; this env var follows it.
+      # `--source .` builds the Dockerfile with Cloud Build.
+      # --max-instances 1 caps the bill; the service still scales to zero.
+      # --cpu 8 / 8Gi: sized for the local fallback reranker, which is slow on
+      #   few cores (1.4 s per passage on 2 vCPU). Cohere is the normal path.
+      # --update-env-vars only changes the named keys; secrets stay attached.
       - name: Deploy backend to Cloud Run
         run: |
-          # --max-instances 1: uploaded documents live in one instance's memory
-          # (see /api/upload); a second instance would randomly miss them. Also
-          # caps the worst-case bill. Scale-to-zero still applies.
-          #
-          # --cpu 8: the cross-encoder is the wall clock, not the LLM.
-          # bge-reranker-v2-m3 costs 1,414 ms/pair on 2 vCPU
-          # (results/reranker_bench.json), and one narrative question reranks
-          # ~180 pairs across its sub-queries + the rewrite loop — ~275 s of
-          # pure torch. That forward pass is a dense matmul that scales with
-          # cores, so the torch half is ~4x faster for ~the same vCPU-seconds.
-          #
-          # It is NOT free overall: ~165 s per question is spent waiting on
-          # Groq, which does not scale with cores and now bills at 4x the rate.
-          # Net ~8 min -> ~4.4 min for ~+70% per question (~+$0.023). A latency
-          # purchase, not a capacity one — drop to 4 for roughly half the
-          # increase and ~1 min more latency.
-          # (8 vCPU requires >=4 GiB; we already ask for 8 GiB.)
           gcloud run deploy "${SERVICE}" \
             --source . \
             --project "${PROJECT_ID}" \
@@ -180,14 +103,12 @@ jobs:
             --update-env-vars "^@^US_COLLECTION=${US_COLLECTION}@EMBEDDING_MODEL=${EMBEDDING_MODEL}@RERANKER_MODEL=${RERANKER_MODEL}@QDRANT_URL=${QDRANT_URL}@ALLOWED_ORIGINS=${ALLOWED_ORIGINS}" \
             --quiet
 
-      - name: Set up Node
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
-      # Frontend → build with the Cloud Run URL baked in, then deploy to Firebase.
       - name: Build frontend
         working-directory: frontend
         env:
@@ -196,8 +117,6 @@ jobs:
           npm ci
           npm run build
 
-      # firebase-tools picks up the credentials from the auth step above
-      # (GOOGLE_APPLICATION_CREDENTIALS), so no FIREBASE_TOKEN is needed.
       - name: Deploy frontend to Firebase Hosting
         run: |
           npx --yes firebase-tools@latest deploy \

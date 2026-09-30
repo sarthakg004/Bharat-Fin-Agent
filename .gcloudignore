@@ -1,14 +1,5 @@
-# Controls what `gcloud run deploy --source .` uploads to Cloud Build.
-#
-# The corpus lives in Qdrant now, so the image needs NO data at all — see the
-# Dockerfile header and .dockerignore, which excludes data/ outright. Every
-# byte of data/ we upload here is therefore paid for twice (Cloud Build ingress
-# + a source archive kept in GCS forever) and then discarded by the build.
-#
-# This file used to preserve data/chroma for the old Chroma-in-the-image
-# architecture, which meant ~2.4 GB per deploy of pure waste. Keep data/
-# excluded wholesale; if the image ever needs a data file again, add that ONE
-# path back rather than reopening the directory.
+# What `gcloud run deploy --source .` uploads to Cloud Build. The image needs
+# only finagent/, frontend/ and the requirements, so everything else stays out.
 
 .git/
 .github/
@@ -29,15 +20,11 @@ tests/
 .pytest_cache/
 .ruff_cache/
 
-# The whole corpus — 6.5 GB locally, none of it wanted by the build.
 data/
 chroma.tar.gz
 
-# Documentation and working notes. The image never COPYs these, but without
-# them listed they still ride along in the Cloud Build source upload.
 logs/
 scripts/
-CLAUDE.md
-STRUCTURE.md
+interview_notes/
 *.md
 !README.md
