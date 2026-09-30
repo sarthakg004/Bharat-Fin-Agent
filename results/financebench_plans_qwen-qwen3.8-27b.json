@@ -1,0 +1,128 @@
+{
+  "financebench_id_03029": {
+    "question": "What is the FY2018 capital expenditure amount (in USD millions) for 3M? Give a response to the question by relying on the details shown in the cash flow statement.",
+    "sub_queries": [
+      "3M FY2018 capital expenditure amount in USD millions from the cash flow statement"
+    ],
+    "query_routes": [
+      "numeric"
+    ],
+    "retrieval_query": "3M 2018 consolidated statements of cash flows purchases of property and equipment capital expenditures"
+  },
+  "financebench_id_04672": {
+    "question": "Assume that you are a public equities analyst. Answer the following question by primarily using information that is shown in the balance sheet: what is the year end FY2018 net PPNE for 3M? Answer in USD billions.",
+    "sub_queries": [
+      "3M net property, plant, and equipment (net PPNE) as of the end of FY2018, in USD billions"
+    ],
+    "query_routes": [
+      "numeric"
+    ],
+    "retrieval_query": "3M 2018 consolidated balance sheets property plant and equipment net"
+  },
+  "financebench_id_00499": {
+    "question": "Is 3M a capital-intensive business based on FY2022 data?",
+    "sub_queries": [
+      "3M capital expenditures and depreciation and amortization for FY2022",
+      "3M property, plant, and equipment net and total assets for FY2022",
+      "3M revenue for FY2022"
+    ],
+    "query_routes": [
+      "numeric",
+      "numeric",
+      "numeric"
+    ],
+    "retrieval_query": "3M 2022 consolidated statements of cash flows purchases of property and equipment depreciation amortization and depletion consolidated balance sheets property plant and equipment"
+  },
+  "financebench_id_01226": {
+    "question": "What drove operating margin change as of FY2022 for 3M? If operating margin is not a useful metric for a company like this, then please state that and explain why.",
+    "sub_queries": [
+      "3M operating margin, FY2022 vs FY2021",
+      "3M revenue, FY2022 vs FY2021",
+      "3M cost of sales, FY2022 vs FY2021",
+      "3M selling, general and administrative expenses, FY2022 vs FY2021",
+      "3M research and development expenses, FY2022 vs FY2021",
+      "3M MD&A explanation of operating margin change, FY2022"
+    ],
+    "query_routes": [
+      "numeric",
+      "numeric",
+      "numeric",
+      "numeric",
+      "numeric",
+      "narrative"
+    ],
+    "retrieval_query": "3M 2022 2021 consolidated statements of operations net sales cost of sales selling general and administrative expenses operating income"
+  },
+  "financebench_id_01865": {
+    "question": "If we exclude the impact of M&A, which segment has dragged down 3M's overall growth in 2022?",
+    "sub_queries": [
+      "3M segment revenue growth rates for 2022 vs 2021, excluding M&A impact",
+      "3M MD&A commentary on which segment dragged down overall growth in 2022 excluding M&A"
+    ],
+    "query_routes": [
+      "numeric",
+      "narrative"
+    ],
+    "retrieval_query": "3M 2022 2021 segment information total sales by segment industrial safety and graphics transportation and electronics healthcare water and industrial"
+  },
+  "financebench_id_00807": {
+    "question": "Does 3M have a reasonably healthy liquidity profile based on its quick ratio for Q2 of FY2023? If the quick ratio is not relevant to measure liquidity, please state that and explain why.",
+    "sub_queries": [
+      "3M quick ratio for Q2 of FY2023",
+      "3M liquidity profile and cash position for Q2 of FY2023"
+    ],
+    "query_routes": [
+      "numeric",
+      "narrative"
+    ],
+    "retrieval_query": "3M 2023 consolidated balance sheets cash and cash equivalents short-term investments accounts receivable net inventories total current liabilities"
+  },
+  "financebench_id_00941": {
+    "question": "Which debt securities are registered to trade on a national securities exchange under 3M's name as of Q2 of 2023?",
+    "sub_queries": [
+      "List the debt securities registered to trade on a national securities exchange under 3M's name as of Q2 2023"
+    ],
+    "query_routes": [
+      "narrative"
+    ],
+    "retrieval_query": "3M 2023 consolidated balance sheets debt securities registered national securities exchange"
+  },
+  "financebench_id_01858": {
+    "question": "Does 3M maintain a stable trend of dividend distribution?",
+    "sub_queries": [
+      "3M dividend per share and total dividends paid, latest fiscal year vs prior fiscal year",
+      "3M dividend payout ratio and dividend growth rate, latest fiscal year vs prior fiscal year",
+      "3M management commentary on dividend policy and stability in the latest annual report"
+    ],
+    "query_routes": [
+      "numeric",
+      "numeric",
+      "narrative"
+    ],
+    "retrieval_query": "3M consolidated statements of cash flows dividends paid 2023 2022 2021"
+  },
+  "financebench_id_02987": {
+    "question": "What is the FY2019 fixed asset turnover ratio for Activision Blizzard? Fixed asset turnover ratio is defined as: FY2019 revenue / (average PP&E between FY2018 and FY2019). Round your answer to two decimal places. Base your judgments on the information provided primarily in the statement of income and the statement of financial position.",
+    "sub_queries": [
+      "Activision Blizzard FY2019 total revenue",
+      "Activision Blizzard FY2019 net property, plant, and equipment",
+      "Activision Blizzard FY2018 net property, plant, and equipment"
+    ],
+    "query_routes": [
+      "numeric",
+      "numeric",
+      "numeric"
+    ],
+    "retrieval_query": "Activision Blizzard 2019 2018 consolidated statements of operations total revenues consolidated balance sheets property and equipment net"
+  },
+  "financebench_id_07966": {
+    "question": "What is the FY2017 - FY2019 3 year average of capex as a % of revenue for Activision Blizzard? Answer in units of percents and round to one decimal place. Calculate (or extract) the answer from the statement of income and the cash flow statement.",
+    "sub_queries": [
+      "Activision Blizzard capital expenditures (capex) and total revenue for FY2017, FY2018, and FY2019, to compute capex as a % of revenue for each year and the 3-year average"
+    ],
+    "query_routes": [
+      "numeric"
+    ],
+    "retrieval_query": "Activision Blizzard 2017 2018 2019 consolidated statements of cash flows purchases of property and equipment consolidated statements of income total revenues"
+  }
+}
