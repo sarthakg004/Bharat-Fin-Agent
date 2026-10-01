@@ -387,13 +387,19 @@ class XBRLClient:
             # facts and instants. Quarterly periodic forms carry fp Q1-Q4.
             return d is not None and 80 <= d <= 100
 
+        if quarterly and fp:
+            # A named fiscal quarter: match the 10-Q's own fiscal year and quarter,
+            # not the calendar year (Best Buy's Q2 FY2024 ended July 2023). Its
+            # 3-month figure, or for a balance its quarter-end value (the latest
+            # instant in that 10-Q). Nothing filed means None, never another
+            # quarter. ponytail: Q4 has no 10-Q, so it always misses; derive FY − 9M
+            # if Q4 questions matter.
+            pool = [f for f in unit_facts if f.get("fp") == fp
+                    and (is_quarter(f) or cls._duration_days(f) is None)
+                    and (year is None or f.get("fy", cls._fiscal_year(f)) == year)]
+            return max(pool, key=lambda f: f.get("end", "")) if pool else None
         if quarterly:
             qs = [f for f in unit_facts if is_quarter(f)]
-            if fp:
-                # Same-quarter YoY: pin to the requested fiscal quarter.
-                # ponytail: Q4 is usually only derivable (FY − 9M), not filed —
-                # fp='Q4' falls back to any quarter; derive Q4 if it matters.
-                qs = [f for f in qs if f.get("fp") == fp] or qs
             # Instant concepts (balance-sheet items) have no quarter duration —
             # fall back to the latest instant at a quarter-end.
             pool = qs or [f for f in unit_facts if cls._duration_days(f) is None]
@@ -531,8 +537,11 @@ class XBRLClient:
         is_money = unit_key == "USD"
         value_str = (dual_scale_money(value) if is_money and isinstance(value, (int, float))
                      else f"{value:,}" if isinstance(value, (int, float)) else str(value))
-        fy = self._fiscal_year(fact) or fact.get("fy")
         fp = fact.get("fp")
+        # A quarter takes its 10-Q's fiscal year (Best Buy's Q2 FY2024 ends in
+        # July 2023); a year takes the year of its end date.
+        fy = ((fact.get("fy") if quarterly and fp != "FY" else None)
+              or self._fiscal_year(fact) or fact.get("fy"))
         # "Q1 2026" for a quarter, "FY2025" for a year.
         period_label = (f"{fp} {fy}" if quarterly and fp and fp != "FY" else f"FY{fy}")
         return {

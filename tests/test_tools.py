@@ -27,6 +27,24 @@ def test_a_quarter_is_pinned_for_same_quarter_comparisons():
     assert XBRLClient._select_fact(facts, None, quarterly=True, fp="Q1")["val"] == 12   # newest
 
 
+def test_a_named_quarter_uses_the_fiscal_year_and_never_returns_another_quarter():
+    """Best Buy's Q2 FY2024 ended in July 2023. A balance is the latest instant
+    in that 10-Q; a flow reported only year-to-date is a miss, not Q1."""
+    facts = [
+        {"start": "2023-04-30", "end": "2023-07-29", "fy": 2024, "fp": "Q2", "val": 2, "form": "10-Q"},
+        {"start": "2023-07-30", "end": "2023-10-28", "fy": 2024, "fp": "Q3", "val": 3, "form": "10-Q"},
+        {"end": "2023-07-29", "fy": 2024, "fp": "Q2", "val": 20, "form": "10-Q"},   # Q2 balance
+        {"end": "2023-01-28", "fy": 2024, "fp": "Q2", "val": 19, "form": "10-Q"},   # prior year-end
+        {"start": "2022-01-30", "end": "2022-07-30", "fy": 2023, "fp": "Q2", "val": 6, "form": "10-Q"},
+    ]
+    durations = [f for f in facts if "start" in f]
+    assert XBRLClient._select_fact(durations, 2024, quarterly=True, fp="Q2")["val"] == 2
+    assert XBRLClient._select_fact([f for f in facts if "start" not in f], 2024,
+                                   quarterly=True, fp="Q2")["val"] == 20
+    # FY2023 Q2 only has a 6-month figure: no answer rather than a wrong quarter.
+    assert XBRLClient._select_fact(durations, 2023, quarterly=True, fp="Q2") is None
+
+
 def test_an_llm_picked_tag_must_share_a_word_with_the_concept():
     """Otherwise a real figure is returned under the wrong name."""
     assert not XBRLClient._tag_relevant("restructuring costs", "AssetImpairmentCharges")
@@ -58,6 +76,23 @@ def test_calculator_computes_margins_and_growth_from_the_facts():
     # No period given: the latest period against the one before, not 0% growth.
     growth = calc.growth("NOW", "revenue", None, None, quarterly=True)
     assert abs(growth["value"] - 0.20) < 1e-9
+
+
+def test_a_ratio_never_divides_figures_from_different_years():
+    """Best Buy: gross profit runs to FY2026, the old revenue tag stops at
+    FY2018. With no year named, both inputs must come from one year."""
+    class Stale:
+        LATEST = {"gross_profit": 2026, "revenue": 2018}
+
+        def run(self, ticker, concept, period=None, quarterly=False, fp=None):
+            fy = int(period[2:]) if period else self.LATEST[concept]
+            if fy > self.LATEST[concept]:
+                return {"ok": False, "error": "no fact"}
+            return {"ok": True, "value": 10.0, "value_str": "$10", "tag": concept, "fy": fy,
+                    "fp": "FY", "form": "10-K", "source": "fake", "ticker": ticker}
+
+    r = FinancialCalculator(xbrl=Stale()).ratio("BBY", "gross_margin", None)
+    assert not r["ok"] and [i.get("fy") for i in r["inputs"]] == [2026, None]
 
 
 # Shape of data.sec.gov/submissions/CIK##########.json, trimmed to the keys read.

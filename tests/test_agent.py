@@ -179,3 +179,25 @@ def test_a_company_named_in_the_sub_query_overrides_a_guessed_ticker():
     assert ticker("Amcor's net accounts receivable, FY2020") == "AMCR"
     # No registrant is called "Google": the model's ticker is all there is.
     assert ticker("Google revenue FY2023") == "GOOGL"
+
+
+def test_a_packed_numeric_sub_query_looks_up_every_line_item_and_year():
+    from finagent.agent import numeric
+    from finagent.agent.state import XBRLQuery
+
+    calls = []
+    agent = FinAgent(collection="stub")
+    query = XBRLQuery(answerable=True, ticker="MMM", concept="capital expenditures",
+                      other_concepts=["depreciation and amortization"],
+                      period="FY2021", other_periods=["FY2022"], fiscal_quarter="")
+    agent.llm = lambda role: type("M", (), {"with_structured_output": lambda self, s: self,
+                                            "invoke": lambda self, msgs: query})()
+    agent._xbrl = type("X", (), {
+        "resolver": type("R", (), {"resolve": lambda self, name: {}})(),
+        "run": lambda self, **kw: calls.append((kw["concept"], kw["period"])) or {"ok": True}})()
+    state = {"question": "q", "sub_queries": ["3M capex and D&A for FY2021 and FY2022"],
+             "query_routes": ["numeric"], "log": []}
+    assert len(numeric.xbrl(agent, state)["xbrl_facts"]) == 4
+    assert calls == [("capital expenditures", "FY2021"), ("capital expenditures", "FY2022"),
+                     ("depreciation and amortization", "FY2021"),
+                     ("depreciation and amortization", "FY2022")]

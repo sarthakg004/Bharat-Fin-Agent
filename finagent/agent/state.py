@@ -141,9 +141,9 @@ class XBRLQuery(BaseModel):
 
     answerable: bool = Field(
         default=False,
-        description="True only if this asks for ONE reported line-item figure for "
-                    "ONE US-listed company and period (revenue, net income, total "
-                    "assets, EPS, R&D, etc.). False for ratios/growth/comparisons.",
+        description="True if this asks for reported line-item figures (revenue, net "
+                    "income, total assets, EPS, R&D, etc.) of ONE US-listed company. "
+                    "False for ratios/growth/comparisons across companies.",
     )
     ticker: str = Field(
         default="",
@@ -154,17 +154,35 @@ class XBRLQuery(BaseModel):
         description="The financial line item in plain words: 'revenue', 'net "
                     "income', 'total assets', 'gross profit', 'diluted EPS', etc.",
     )
+    other_concepts: list[str] = Field(
+        default_factory=list,
+        description="Further line items the SAME sub-query asks for. 'capex and D&A' -> "
+                    "concept 'capital expenditures', other_concepts "
+                    "['depreciation and amortization']. Empty for one line item.",
+    )
     period: str = Field(
         default="",
         description="Fiscal YEAR like 'FY2022' or '2021' ONLY if the question names a "
                     "specific year. Leave EMPTY when no year is given — the tool then "
                     "returns the most recent data (do not guess a year).",
     )
+    other_periods: list[str] = Field(
+        default_factory=list,
+        description="Further fiscal years the SAME sub-query names. 'FY2018, FY2019 and "
+                    "FY2020' -> period 'FY2018', other_periods ['FY2019','FY2020']. "
+                    "Empty for one year.",
+    )
     quarterly: bool = Field(
         default=False,
         description="True if the question asks for a QUARTERLY figure ('last quarter', "
                     "'most recent quarter', 'Q3', 'quarterly EPS'). The tool then returns "
                     "the latest quarter (10-Q) instead of the annual (10-K) figure.",
+    )
+    fiscal_quarter: str = Field(
+        default="",
+        description="'Q1', 'Q2', 'Q3' or 'Q4' when the sub-query names ONE fiscal "
+                    "quarter ('Q2 FY2024', '2021 Q1', 'as of Q2 2023'); put that "
+                    "quarter's fiscal year in the period. Empty otherwise.",
     )
 
 
@@ -209,6 +227,12 @@ class CalcQuery(BaseModel):
         default=False,
         description="True if the metric is asked for a QUARTER ('last quarter', "
                     "'Q1', 'most recent 10-Q') rather than a fiscal year.",
+    )
+    fiscal_quarter: str = Field(
+        default="",
+        description="'Q1', 'Q2', 'Q3' or 'Q4' when the sub-query names ONE fiscal "
+                    "quarter ('Q2 FY2024', '2021 Q1', 'as of Q2 2023'); put that "
+                    "quarter's fiscal year in the period. Empty otherwise.",
     )
 
 

@@ -46,6 +46,12 @@ Decomposition rules
   income-statement line for BOTH periods (revenue, cost of revenue, S&M, R&D,
   G&A — "latest vs prior period"), plus ONE `narrative` sub-query for the
   MD&A's own explanation of the change.
+- ONLY a pure figure lookup ("what is X's FY2022 capex?", "what is the
+  operating cash flow ratio?") is answered by numeric sub-queries alone. A
+  question that also asks for a judgement ("is it healthy?", "is the company
+  capital-intensive?"), a comparison or an explanation keeps its numeric
+  sub-queries AND gets ONE `narrative` sub-query in the question's own words,
+  so the filing text is searched too.
 - Do NOT invent a metric the question didn't ask for. A qualitative question
   ("was the company able to retain customers?", "what drove the margin change?")
   stays qualitative — do not rewrite it into a made-up ratio the filing won't
@@ -56,17 +62,17 @@ Decomposition rules
 
 Routing lanes (one per sub-query)
 ---------------------------------
-- numeric: the answer hinges on a SPECIFIC reported figure or a COMPUTABLE
-  ratio — a named line item, ratio, margin, growth %, or multi-year comparison.
-  This includes yes/no or "is it healthy?" judgements that turn on a named
-  metric ("does X have a healthy quick ratio?", "is the current ratio
-  adequate?"): the ratio is computed from SEC XBRL facts and the judgement is
-  added when the answer is written.
+- numeric: ONE specific reported figure or ONE computable ratio — a named line
+  item, ratio, margin or growth % for a named period. The figure comes from SEC
+  XBRL facts. A judgement that turns on a metric ("does X have a healthy quick
+  ratio?") gets the metric as a `numeric` sub-query plus a `narrative` one.
 - narrative: text retrieval over filings, for qualitative questions with no
   single computable metric — strategy, risks, segment and MD&A commentary,
   drivers ("what drove the margin change", "why did revenue fall") about ONE
-  named company. When unsure between numeric and narrative and a concrete
-  metric is nameable, prefer `numeric`.
+  named company, and the narrative part of a judgement or comparison question.
+  Also any BREAKDOWN by segment, product, category, geography or instrument
+  ("which segment had the highest net income", "revenue by product category"):
+  the XBRL facts hold company-wide totals only, so a breakdown is `narrative`.
 - market: live market data. Anything about a listed company's MARKET behaviour
   — current, premarket or intraday price, price history, charts, 52-week range,
   ticker news. Lean `market` whenever the question is about the stock ("how is
@@ -81,7 +87,8 @@ Routing lanes (one per sub-query)
 Examples:
   - "What is the FY2016 COGS for Microsoft?"                      → numeric
   - "What is Nike's FY2021 inventory turnover ratio?"             → numeric
-  - "Does AMD have a healthy quick ratio for FY2022?"             → numeric
+  - "Does AMD have a healthy quick ratio for FY2022?"             → numeric (AMD
+    quick ratio FY2022) + narrative (does AMD have a healthy liquidity position)
   - "What drove the gross-margin change for J&J in FY2022?"       → narrative
   - "Was American Express able to retain card members in 2022?"   → narrative
   - "Describe Microsoft's AI strategy"                            → narrative
@@ -200,11 +207,15 @@ Return the one company this is about (ticker or name), or '' if none/many.
 """
 
 XBRL_EXTRACT_SYSTEM = """\
-You extract a single structured XBRL lookup from a numeric sub-query about a US
-public company's financial statements. Decide whether the sub-query asks for ONE
-exact reported line-item figure (revenue, net income, total assets, gross
-profit, R&D expense, diluted EPS, cash, long-term debt, …) for ONE company — if
-so set answerable=true and fill ticker and concept (plain words).
+You extract a structured XBRL lookup from a numeric sub-query about a US public
+company's financial statements. Decide whether the sub-query asks for exact
+reported line-item figures (revenue, net income, total assets, gross profit, R&D
+expense, diluted EPS, cash, long-term debt, …) for ONE company — if so set
+answerable=true and fill ticker and concept (plain words).
+- Several line items in one sub-query ("current assets and current
+  liabilities"): the first goes in concept, the rest in other_concepts.
+- Several years ("FY2019 and FY2020"): the first goes in period, the rest in
+  other_periods. Every line item is looked up for every year.
 
 Period rules (important). Today's date is {today} — resolve any relative period
 against it, never against your training data.
@@ -214,6 +225,9 @@ against it, never against your training data.
 - Set `quarterly`=true if the question asks for a quarter ('last quarter', 'most
   recent quarter', 'Q3', 'quarterly EPS') — the tool returns the latest 10-Q
   figure instead of the annual one.
+- When it names ONE fiscal quarter ('Q2 FY2024', '2021 Q1'), also set
+  `fiscal_quarter` ('Q2') and put that quarter's fiscal year in `period`
+  ('FY2024'). "Q1 2021" is the Q1 figure, never the full year.
 
 Set answerable=false for derived metrics (margins, growth, ratios, CAGR),
 multi-company comparisons, or narrative questions — those are handled elsewhere.
@@ -223,7 +237,8 @@ Use the conversation context to resolve a follow-up's company/period.
 XBRL_EXTRACT_PROMPT = """\
 Numeric sub-query: {sub_query}
 
-Return the XBRL lookup (answerable, ticker, concept, period).
+Return the XBRL lookup (answerable, ticker, concept, other_concepts, period,
+other_periods, quarterly, fiscal_quarter).
 """
 
 XBRL_TAG_SYSTEM = """\
@@ -260,7 +275,9 @@ against it, never against your training data.
   'latest', 'most recent', 'prior fiscal year', 'year-over-year' — leave periods
   EMPTY; the tool resolves the newest filed periods itself.
 - Set quarterly=true when the metric is asked for a QUARTER ('last quarter',
-  'Q1', 'most recent 10-Q') rather than a full fiscal year.
+  'Q1', 'most recent 10-Q') rather than a full fiscal year. When it names ONE
+  fiscal quarter ('Q2 FY2023'), also set fiscal_quarter ('Q2') and list that
+  quarter's fiscal year in periods (['FY2023']).
 
 Set is_derived=false for a single reported figure (revenue,
 net income, total assets, …); those are handled by the XBRL facts tool, not here.
@@ -270,7 +287,8 @@ Use the conversation context to resolve a follow-up's company/periods.
 CALC_EXTRACT_PROMPT = """\
 Numeric sub-query: {sub_query}
 
-Return the derived-metric computation (is_derived, ticker, metric, concept, periods).
+Return the derived-metric computation (is_derived, ticker, metric, concept, periods,
+quarterly, fiscal_quarter).
 """
 
 FORMULA_SYSTEM = f"""\

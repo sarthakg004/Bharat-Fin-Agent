@@ -121,7 +121,8 @@ ALIASES: dict[str, str] = {
     "capital expenditure as % of revenue": "capex_to_revenue",
     "ebitda margin": "ebitda_margin", "ebitda % margin": "ebitda_margin",
     "unadjusted ebitda margin": "ebitda_margin",
-    "unadjusted_ebitda_margin": "ebitda_margin", "ebitda": "ebitda_margin",
+    "unadjusted_ebitda_margin": "ebitda_margin",
+    # Plain "ebitda" is a dollar amount, not a margin: the formula planner builds it.
     "cash conversion cycle": "ccc", "cash_conversion_cycle": "ccc",
     "days inventory outstanding": "dio", "days_inventory_outstanding": "dio",
     "inventory days": "dio",
@@ -206,14 +207,34 @@ class FinancialCalculator:
 
     # --- ratios / margins ----------------------------------------------------
 
-    def _composite_ratio(self, ticker: str, name: str, period: Optional[str]) -> dict:
+    def _pinned(self, ticker: str, concepts: list[str], period: Optional[str],
+                quarterly: bool, fp: Optional[str]) -> dict:
+        """Fetch every input for ONE period. With no year named, the first input
+        found sets it: each concept's own "latest" can differ (Best Buy's old
+        revenue tag stops in 2018, its gross profit runs to 2026)."""
+        got: dict = {}
+        for c in dict.fromkeys(concepts):
+            got[c] = inp = self._input(ticker, c, period, quarterly=quarterly, fp=fp)
+            if inp["ok"] and period is None:
+                period = f"FY{inp['fy']}"
+                fp = inp.get("fp") if quarterly else fp
+        return got
+
+    @staticmethod
+    def _mixed_periods(inputs: list[dict]) -> bool:
+        return len({(i.get("fy"), i.get("fp")) for i in inputs if i.get("ok")}) > 1
+
+    def _composite_ratio(self, ticker: str, name: str, period: Optional[str],
+                         quarterly: bool = False, fp: Optional[str] = None) -> dict:
         """Compute a ratio whose numerator combines several concepts, e.g. the
         quick ratio = (current assets − inventory) / current liabilities."""
         spec = COMPOSITE_RATIOS[name]
         optional = spec.get("optional", set())
         concepts = spec["add"] + spec["sub"] + [spec["den"]]
-        got = {c: self._input(ticker, c, period) for c in dict.fromkeys(concepts)}
+        got = self._pinned(ticker, concepts, period, quarterly, fp)
         inputs = list(got.values())
+        if self._mixed_periods(inputs):
+            return self._fail(name, ticker, inputs, "inputs come from different periods")
 
         def val(c: str) -> Optional[float]:
             inp = got[c]
@@ -251,11 +272,14 @@ class FinancialCalculator:
         quarter `fp` of `period`'s year, e.g. fp='Q1' — same-quarter YoY)."""
         name = _canonical_metric(metric)
         if name in COMPOSITE_RATIOS:
-            return self._composite_ratio(ticker, name, period)
+            return self._composite_ratio(ticker, name, period, quarterly, fp)
         if name not in RATIOS:
             return self._fail(metric, ticker, [], f"unknown ratio metric '{metric}'")
         num_c, den_c, as_pct = RATIOS[name]
         num = self._input(ticker, num_c, period, quarterly=quarterly, fp=fp)
+        if num["ok"] and period is None:          # the denominator takes the same period
+            period = f"FY{num['fy']}"
+            fp = num.get("fp") if quarterly else fp
         # Flow÷stock ratios average the balance-sheet denominator over (t-1, t).
         # ponytail: averaging is an annual convention — quarterly uses the
         # point-in-time balance; add quarterly averaging only if a metric needs it.
@@ -266,6 +290,8 @@ class FinancialCalculator:
         inputs = [num] + (den.get("_components") or [den])
         if not (num["ok"] and den["ok"]):
             return self._fail(name, ticker, inputs, "missing XBRL input(s)")
+        if not averaged and self._mixed_periods([num, den]):
+            return self._fail(name, ticker, inputs, "inputs come from different periods")
         if not den["value"]:
             return self._fail(name, ticker, inputs, "denominator is zero")
         value = num["value"] / den["value"]
@@ -576,8 +602,9 @@ class FinancialCalculator:
             concept: str = "", periods: Optional[list[str]] = None,
             period_from: Optional[str] = None, period_to: Optional[str] = None,
             start_period: Optional[str] = None, end_period: Optional[str] = None,
-            quarterly: bool = False, **_: object) -> dict:
+            quarterly: bool = False, fp: Optional[str] = None, **_: object) -> dict:
         """Single entry point. Routes on `metric` and the periods provided.
+        `fp` ('Q1'-'Q4') pins the fiscal quarter of a ratio or trend.
 
         - metric == "growth"  -> growth(concept, period_from, period_to)
         - metric == "cagr"    -> cagr(concept, start_period, end_period)
@@ -601,9 +628,9 @@ class FinancialCalculator:
             return self.cagr(ticker, concept or "revenue",
                             start_period or period_from, end_period or period_to)
         if periods and len(periods) > 1:
-            return self.trend(ticker, m, periods, quarterly=quarterly)
+            return self.trend(ticker, m, periods, quarterly=quarterly, fp=fp)
         return self.ratio(ticker, m, period or (periods[0] if periods else None),
-                          quarterly=quarterly)
+                          quarterly=quarterly, fp=fp)
 
     # --- helpers -------------------------------------------------------------
 

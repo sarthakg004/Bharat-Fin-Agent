@@ -30,6 +30,12 @@ _COMPARE_RE = re.compile(
 _QUARTERLY_RE = re.compile(r"\bq[1-4]\b|quarter|10[\s-]?q\b", re.I)
 
 
+def _quarter(q) -> Optional[str]:
+    """The named fiscal quarter ('Q2'), or None."""
+    fq = str(getattr(q, "fiscal_quarter", "") or "").strip().upper()
+    return fq if fq in ("Q1", "Q2", "Q3", "Q4") else None
+
+
 def _numeric_subs(state: AgentState) -> list[str]:
     sub_queries = state.get("sub_queries") or [state["question"]]
     routes = state.get("query_routes") or ["narrative"] * len(sub_queries)
@@ -100,8 +106,13 @@ def _extract(agent, state: AgentState, sub_queries: list[str], batch_schema,
     return pairs
 
 
+# One sub-query may name several line items and years ("capex and D&A for
+# FY2021 and FY2022"); every pair is looked up, up to this many.
+MAX_LOOKUPS_PER_SUB_QUERY = 9
+
+
 def xbrl(agent, state: AgentState) -> dict:
-    """For each numeric sub-query asking for ONE reported figure, fetch it from
+    """For each numeric sub-query asking for reported figures, fetch them from
     SEC XBRL. These are the highest-priority evidence the writer gets."""
     subs = _numeric_subs(state)
     if not subs:
@@ -111,17 +122,22 @@ def xbrl(agent, state: AgentState) -> dict:
                              XBRL_EXTRACT_SYSTEM, XBRL_EXTRACT_PROMPT):
         if q is None or not q.answerable or not (q.ticker and q.concept):
             continue
-        try:
-            res = agent.xbrl.run(ticker=q.ticker, concept=q.concept,
-                                 period=q.period or None, quarterly=q.quarterly)
-        except Exception as e:
-            agent.log(state, f"xbrl lookup failed for {sub_q!r}: {e}")
-            continue
-        res["sub_query"] = sub_q
-        if res.get("ok"):
-            facts.append(res)
-        else:
-            agent.log(state, f"xbrl miss for {sub_q!r}: {res.get('error')}")
+        fp = _quarter(q)
+        concepts = list(dict.fromkeys([q.concept, *(q.other_concepts or [])]))
+        periods = list(dict.fromkeys([q.period or None, *(q.other_periods or [])]))
+        pairs = [(c, p) for c in concepts if c for p in periods][:MAX_LOOKUPS_PER_SUB_QUERY]
+        for concept, period in pairs:
+            try:
+                res = agent.xbrl.run(ticker=q.ticker, concept=concept, period=period,
+                                     quarterly=q.quarterly or bool(fp), fp=fp)
+            except Exception as e:
+                agent.log(state, f"xbrl lookup failed for {sub_q!r} ({concept}, {period}): {e}")
+                continue
+            res["sub_query"] = sub_q
+            if res.get("ok"):
+                facts.append(res)
+            else:
+                agent.log(state, f"xbrl miss for {sub_q!r} ({concept}, {period}): {res.get('error')}")
     return {"xbrl_facts": facts}
 
 
@@ -198,7 +214,8 @@ def _run_calc(agent, state: AgentState, sub_q: str, q) -> Optional[dict]:
     from finagent.tools.calculator import (AVG_DENOMINATOR_RATIOS, COMPOSITE_RATIOS,
                                            RATIOS, _canonical_metric)
 
-    quarterly = bool(getattr(q, "quarterly", False) or _QUARTERLY_RE.search(sub_q))
+    fp = _quarter(q)
+    quarterly = bool(getattr(q, "quarterly", False) or fp or _QUARTERLY_RE.search(sub_q))
     try:
         metric = _canonical_metric(q.metric)
         # "latest vs prior" with no year named: find the newest filed period,
@@ -220,7 +237,8 @@ def _run_calc(agent, state: AgentState, sub_q: str, q) -> Optional[dict]:
             metric=q.metric, ticker=q.ticker, concept=q.concept, quarterly=quarterly,
             periods=q.periods, period=first,
             period_from=first if span else None, period_to=q.periods[-1] if span else None,
-            start_period=first if span else None, end_period=q.periods[-1] if span else None)
+            start_period=first if span else None, end_period=q.periods[-1] if span else None,
+            fp=fp)
     except Exception as e:
         agent.log(state, f"calc failed for {sub_q!r}: {e}")
         return None
