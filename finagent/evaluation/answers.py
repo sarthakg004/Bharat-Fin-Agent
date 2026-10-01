@@ -11,12 +11,15 @@ RAGAS metrics, and what each one can and cannot tell you:
     context_precision   are the retrieved passages relevant?
     context_recall      do the retrieved passages cover the gold answer?
     answer_correctness  does the answer match the gold answer?
+    verdict             same answer as the gold, whatever the length? (1 or 0)
 
-Only the last one compares against the gold answer. The first two stay high
+Only the last two compare against the gold answer. The first two stay high
 for an honest "the evidence does not say" and for an answer faithful to the
 wrong passage. And answer_correctness counts every extra true statement as a
 mistake: gold answers are one line, so a correct but long answer scores about
-0.4. Read `numeric_accuracy` next to it.
+0.4. `verdict` is our own yes/no criterion (RAGAS AspectCritic), not a
+standard metric: it ignores length, and the report checks it against the
+judge-free `numeric_accuracy` on the numeric questions.
 
 Both steps are resumable: re-running continues where the last run stopped.
 
@@ -26,8 +29,8 @@ Both steps are resumable: re-running continues where the last run stopped.
 The free-tier judge cannot score 127 answers in a day. With the Claude Code CLI
 logged in, Claude can write and judge instead, with no API key:
 
-    ... run   --output results/v7/answers.json --writer sonnet
-    ... score --output results/v7/answers.json --judge-provider claude-cli --judge-model haiku
+    ... run   --output results/v7/answers.json --writer haiku
+    ... score --output results/v7/answers.json --judge-provider claude-cli --judge-model claude-sonnet-5
 """
 
 from __future__ import annotations
@@ -58,10 +61,15 @@ os.environ.setdefault("FINANCEBENCH_COLLECTION", "sweep_p2500_c600_gemini-embedd
 os.environ.setdefault("RAGAS_DO_NOT_TRACK", "true")
 
 METRICS = ("faithfulness", "groundedness", "answer_relevancy",
-           "context_precision", "context_recall", "answer_correctness")
-# A different model from the writer and the critic, so the judge does not grade
-# its own family's daily quota away.
-JUDGE = ("gemini", "gemini-3.7-flash")
+           "context_precision", "context_recall", "answer_correctness", "verdict")
+VERDICT_DEFINITION = (
+    "Compare the response with the reference answer. Answer Yes if the response reaches "
+    "the same answer: the same figure (rounding and units aside) or the same conclusion. "
+    "Extra correct detail does not matter, however long. Answer No if the figure or "
+    "conclusion differs, or if the response does not answer (a refusal or 'cannot be "
+    "determined').")
+# A different model from the writer (Haiku in the Claude runs) and stronger.
+JUDGE = ("claude-cli", "claude-sonnet-5")
 QUESTION_TIMEOUT_S = 300
 # The judge reads the retrieved passages; these caps keep its prompt bounded.
 CONTEXT_CHAR_CAP, CONTEXT_TOTAL_CHAR_CAP = 2000, 24000
@@ -261,6 +269,14 @@ def numeric_accuracy(rows: list[dict]) -> dict:
     return {"n": n, "correct": sum(verdicts), "accuracy": round(sum(verdicts) / n, 4) if n else None}
 
 
+def verdict_agreement(rows: list[dict], scored: dict) -> dict:
+    """How often the judge's verdict agrees with the judge-free numeric check."""
+    pairs = [(v, scored[r["financebench_id"]]["verdict"] == 1) for r in rows
+             if r.get("qtype") == "numeric" and (scored.get(r["financebench_id"]) or {}).get("verdict") is not None
+             and (v := numeric_match(r.get("gold", ""), r.get("answer", ""))) is not None]
+    return {"n": len(pairs), "agree": sum(a == b for a, b in pairs)}
+
+
 # --------------------------------------------------------------------------- #
 # score: RAGAS
 # --------------------------------------------------------------------------- #
@@ -302,8 +318,10 @@ def _score_row(row: dict, prior: dict, llm, embeddings) -> dict:
     """Score one answer. Metrics already scored in `prior` are kept, not re-bought."""
     from ragas import evaluate
     from ragas.dataset_schema import EvaluationDataset, SingleTurnSample
-    from ragas.metrics import (AnswerCorrectness, Faithfulness, LLMContextPrecisionWithReference,
-                               LLMContextRecall, ResponseGroundedness, ResponseRelevancy)
+    from ragas.metrics import (AnswerCorrectness, AspectCritic, Faithfulness,
+                               LLMContextPrecisionWithReference, LLMContextRecall,
+                               ResponseGroundedness, ResponseRelevancy)
+    from ragas.metrics.base import MetricType
     from ragas.run_config import RunConfig
 
     factories = {
@@ -311,6 +329,10 @@ def _score_row(row: dict, prior: dict, llm, embeddings) -> dict:
         "answer_relevancy": lambda: ResponseRelevancy(strictness=1),
         "context_precision": LLMContextPrecisionWithReference,
         "context_recall": LLMContextRecall, "answer_correctness": AnswerCorrectness,
+        # Question, answer and gold only: the passages would turn it into a support check.
+        "verdict": lambda: AspectCritic(name="verdict", definition=VERDICT_DEFINITION,
+                                        required_columns={MetricType.SINGLE_TURN: {
+                                            "user_input", "response", "reference"}}),
     }
     ragas_names = {"nv_response_groundedness": "groundedness",
                    "response_relevancy": "answer_relevancy",
@@ -319,7 +341,7 @@ def _score_row(row: dict, prior: dict, llm, embeddings) -> dict:
     scores = {m: prior.get(m) for m in METRICS}
     gold = str(row.get("gold", ""))
     wanted = [m for m in METRICS if scores[m] is None
-              and not (m == "answer_correctness" and not gold.strip())]
+              and not (m in ("answer_correctness", "verdict") and not gold.strip())]
     if wanted:
         sample = SingleTurnSample(user_input=row["question"], response=row["answer"],
                                   reference=gold,
@@ -403,6 +425,7 @@ def report(output: Path, scored: dict) -> dict:
         "refusal_rate": round(len(refused) / n, 4) if n else None,
         "error_rate": round(len(errors) / n, 4) if n else None,
         "numeric_accuracy": numeric_accuracy(rows),
+        "verdict_vs_numeric": verdict_agreement(rows, scored),
         "latency_s": {"p50": latencies[len(latencies) // 2], "p95": latencies[int(len(latencies) * .95)]}
         if latencies else None,
         "ragas": ragas(all_ids),
@@ -420,6 +443,8 @@ def report(output: Path, scored: dict) -> dict:
         f"| error rate | {out['error_rate']} |",
         f"| numeric accuracy (gold figure in the answer, 1% tolerance) | "
         f"{na['correct']}/{na['n']} = {na['accuracy']} |",
+        f"| verdict agrees with numeric accuracy | "
+        f"{out['verdict_vs_numeric']['agree']}/{out['verdict_vs_numeric']['n']} |",
         f"| latency p50 / p95 (s) | "
         + (f"{out['latency_s']['p50']} / {out['latency_s']['p95']}" if out["latency_s"] else "n/a")
         + " |", "",
