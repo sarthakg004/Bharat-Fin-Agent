@@ -46,7 +46,7 @@ class AgentState(TypedDict, total=False):
     refused: bool
 
     # one-shot routing flags
-    corpus_fallback_pending: bool   # tool lanes all empty -> try filing search once
+    corpus_fallback_pending: bool   # tool lanes empty, or the draft admits a gap -> filing search once
     corpus_fallback_used: bool
     web_fallback_pending: bool      # the draft admits it cannot answer -> try the web once
     web_fallback_used: bool
@@ -81,6 +81,15 @@ class CriticReport(BaseModel):
             "the same evidence fixes it. 'gather' = the evidence genuinely "
             "does not contain the fact, so more retrieval is needed. Ignored "
             "when every claim is supported."
+        ),
+    )
+    draft_says_evidence_missing: bool = Field(
+        default=False,
+        description=(
+            "True when the draft itself says it cannot fully answer because a "
+            "figure or fact is missing from the evidence (\"cash from operations "
+            "is not in the evidence, so the ratio can't be computed\"). False "
+            "when the draft gives a complete answer, right or wrong."
         ),
     )
 

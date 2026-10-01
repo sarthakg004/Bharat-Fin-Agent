@@ -13,7 +13,7 @@ from finagent.agent.state import AgentState, CriticReport
 from finagent.llm import text_of
 
 # The draft itself saying the evidence cannot answer ("not specified in the
-# provided sources"). The most reliable sign that more evidence is needed.
+# provided sources"). A fallback for when the critic misses it or fails.
 _INSUFFICIENT_RE = re.compile(
     r"not (?:explicitly )?(?:specified|stated|provided|available|disclosed"
     r"|described|outlined|mentioned)"
@@ -200,11 +200,13 @@ def critic(agent, state: AgentState) -> dict:
     """Check every claim in the draft against the evidence the writer was given,
     and choose at most one recovery:
 
-        web search   the draft admits the evidence cannot answer, web unused
+        filing search  the draft admits a gap and the question skipped filing search
+        web search     the draft admits a gap, filings already searched, web unused
         retrieve     the evidence lacks the fact ("gather")
         redraft      the evidence is fine, the draft overstated it
     """
-    out: dict = {"needs_retry": False, "web_fallback_pending": False, "retry_queries": []}
+    out: dict = {"needs_retry": False, "web_fallback_pending": False,
+                 "corpus_fallback_pending": False, "retry_queries": []}
     answer = state.get("answer", "")
     context = "\n\n".join(f"[{i}] {e['prompt']}"
                           for i, e in enumerate(state.get("evidence") or [], 1)) or "No evidence."
@@ -229,8 +231,15 @@ def critic(agent, state: AgentState) -> dict:
     recoveries = state.get("recoveries", 0)
     if recoveries >= agent.MAX_RECOVERIES:
         return out
-    if (not state.get("web_results") and not state.get("web_fallback_used")
-            and _INSUFFICIENT_RE.search(answer)):
+    routes = state.get("query_routes") or []
+    admits_gap = report.draft_says_evidence_missing or bool(_INSUFFICIENT_RE.search(answer))
+    if (admits_gap and routes and "narrative" not in routes
+            and not state.get("corpus_fallback_used")):
+        agent.log(state, "draft admits a missing figure; searching the filings")
+        out.update(corpus_fallback_pending=True, corpus_fallback_used=True,
+                   recoveries=recoveries + 1)
+    elif (admits_gap and not state.get("web_results")
+            and not state.get("web_fallback_used")):
         agent.log(state, "draft admits the evidence can't answer; trying web search")
         out.update(web_fallback_pending=True, web_fallback_used=True, recoveries=recoveries + 1)
     elif unsupported:

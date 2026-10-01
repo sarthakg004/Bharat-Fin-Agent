@@ -87,6 +87,9 @@ class ClaudeCLI(BaseChatModel):
     Code login instead of an API key. One process per call, no tools."""
 
     model: str = "sonnet"
+    # The CLI thinks by default. Off for the judge: 1,118 -> 150 output tokens
+    # on one statement-classification prompt.
+    thinking: bool = True
 
     @property
     def _llm_type(self) -> str:
@@ -108,7 +111,8 @@ class ClaudeCLI(BaseChatModel):
         for attempt in range(4):
             # An empty directory: the CLI must not pick up this project's notes.
             done = subprocess.run(cmd, input=prompt, capture_output=True, text=True,
-                                  timeout=600, cwd=tempfile.gettempdir())
+                                  timeout=600, cwd=tempfile.gettempdir(),
+                                  env=None if self.thinking else {**os.environ, "MAX_THINKING_TOKENS": "0"})
             try:
                 out = json.loads(done.stdout)
             except ValueError:
@@ -299,7 +303,7 @@ def _ragas_clients(judge_provider: str, judge_model: str):
     # A small local embedder for the similarity parts of two metrics.
     embeddings = HuggingFaceEmbeddings(model_name="BAAI/bge-small-en-v1.5",
                                        encode_kwargs={"normalize_embeddings": True})
-    judge = (ClaudeCLI(model=judge_model) if judge_provider == "claude-cli"
+    judge = (ClaudeCLI(model=judge_model, thinking=False) if judge_provider == "claude-cli"
              else build_llm(judge_provider, judge_model))
     return LangchainLLMWrapper(judge), LangchainEmbeddingsWrapper(embeddings)
 

@@ -9,10 +9,10 @@ from finagent.agent import external as E
 from finagent.agent.state import ClaimVerdict, CriticReport
 
 
-def _agent_with_critic(verdicts, remedy="redraft"):
+def _agent_with_critic(verdicts, remedy="redraft", missing=False):
     """An agent whose critic model returns a fixed report."""
     agent = FinAgent(collection="stub")
-    report = CriticReport(remedy=remedy, verdicts=[
+    report = CriticReport(remedy=remedy, draft_says_evidence_missing=missing, verdicts=[
         ClaimVerdict(claim=c, supported=ok, reason="") for c, ok in verdicts])
     model = type("M", (), {"with_structured_output": lambda self, schema: self,
                            "invoke": lambda self, msgs: report})()
@@ -74,6 +74,20 @@ def test_a_draft_that_admits_it_cannot_answer_goes_to_the_web_once():
     # Not again once the web lane has run.
     again = A.critic(agent, {"answer": draft, "evidence": [], "web_fallback_used": True})
     assert not again["web_fallback_pending"]
+
+
+def test_a_numeric_draft_that_admits_a_missing_figure_searches_the_filings_once():
+    # Wording the old pattern missed; the critic's flag catches it.
+    draft = "The ratio cannot be settled: cash from operations is missing."
+    agent = _agent_with_critic([("cash from operations is missing", True)], missing=True)
+    state = {"answer": draft, "evidence": [], "query_routes": ["numeric"]}
+    out = A.critic(agent, state)
+    assert out["corpus_fallback_pending"] and out["recoveries"] == 1
+    assert agent._after_critic(out) == "filings"
+    assert FinAgent._after_retrieve({**state, **out}) == "synthesize"     # then rewrite
+    # The one recovery is spent: the next draft is not sent anywhere.
+    again = A.critic(agent, {**state, **out})
+    assert not again["corpus_fallback_pending"] and agent._after_critic(again) == "end"
 
 
 def test_a_failed_fact_check_ships_the_draft_and_tells_the_user():

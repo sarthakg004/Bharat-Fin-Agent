@@ -533,6 +533,12 @@ gets exactly one retry and has to spend it on the right thing:
     evidence is enough.
   - "gather" when the evidence simply does not contain the fact. Rewriting cannot
     invent it, so the agent must go and retrieve more evidence.
+
+Separately, set draft_says_evidence_missing to true when the answer itself admits
+it cannot fully answer because a figure or fact is missing from the evidence, in
+any wording ("X is not in the evidence", "cannot be computed", "is missing").
+An honest admission like this is fully supported, yet the question is not
+answered, so the agent searches for the missing piece.
 """
 
 REFUSAL_TEMPLATE = (

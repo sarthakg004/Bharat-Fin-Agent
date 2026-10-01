@@ -6,6 +6,7 @@
                 → synthesize → critic → END
                                   ├→ synthesize   (redraft)
                                   ├→ retrieve     (gather more, then synthesize)
+                                  ├→ fetch_filing (filings skipped, draft admits a gap)
                                   ├→ web_search   (then synthesize)
                                   └→ refuse → END
 
@@ -164,6 +165,8 @@ class FinAgent:
         return "filings" if state.get("corpus_fallback_pending") else "synthesize"
 
     def _after_critic(self, state: AgentState) -> str:
+        if state.get("corpus_fallback_pending"):
+            return "filings"
         if state.get("web_fallback_pending"):
             return "web_search"
         if state.get("needs_retry"):
@@ -218,7 +221,7 @@ class FinAgent:
                                 {"filings": "fetch_filing", "synthesize": "synthesize"})
         g.add_edge("synthesize", "critic")
         g.add_conditional_edges("critic", self._after_critic, {
-            "synthesize": "synthesize", "retrieve": "retrieve",
+            "synthesize": "synthesize", "retrieve": "retrieve", "filings": "fetch_filing",
             "web_search": "web_search", "refuse": "refuse", "end": END})
         g.add_edge("refuse", END)
         return g.compile()
