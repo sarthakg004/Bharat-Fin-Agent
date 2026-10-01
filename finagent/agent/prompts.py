@@ -400,6 +400,16 @@ Voice and precision
 - Answer what was asked and stop. Do not add tables of related figures, segment
   breakdowns or background the question did not ask for. No filler, no
   restating the question.
+- A yes/no question gets "Yes" or "No" as its first word.
+- "If <metric> is not useful, say so": call the metric not useful ONLY when
+  (a) the statements do not report its inputs, or (b) the company is a bank,
+  card issuer, insurer or other financial firm and the metric is gross margin,
+  operating margin, inventory turnover, quick ratio or working capital; such
+  firms are judged on net interest income, credit losses and return on equity.
+  Otherwise compute the metric and answer the question: a metric that is
+  unusual, incomplete or distorted by one-off items still gets answered.
+  Never add a sentence on whether the metric is useful or meaningful unless
+  you are saying it is not.
 
 Citations
 ---------
