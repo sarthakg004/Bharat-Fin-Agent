@@ -153,6 +153,15 @@ def test_web_search_is_not_added_on_top_of_filing_evidence():
     E.web_search(agent, {**base, "retrieved_chunks": []})       # nothing found: the web is the fallback
     assert searched == ["What are 3M's segments?"]
 
+    # "latest" is the planner's own wording for a question with no year, not a
+    # request for news: filing evidence found means no web search.
+    searched.clear()
+    E.web_search(agent, {"question": "Does 3M maintain a stable trend of dividend distribution?",
+                         "sub_queries": ["3M dividend per share, latest fiscal year vs prior fiscal year"],
+                         "query_routes": ["numeric"], "xbrl_facts": [{"value": 1}],
+                         "retrieved_chunks": [{"text": "dividends"}], "log": []})
+    assert searched == []
+
 
 def test_a_company_named_in_the_sub_query_overrides_a_guessed_ticker():
     """The extractor once turned "Amcor" into AMR, another company's ticker."""

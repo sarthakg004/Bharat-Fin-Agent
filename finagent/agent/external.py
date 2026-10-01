@@ -26,19 +26,6 @@ _MARKET_MARKERS = (
     "stock performance", "price performance", "how has the stock",
 )
 
-# Words that mean "this needs the web" even when no part was routed `external`.
-# Kept news-specific: a bare "current" also appears in "current ratio".
-_WEB_NEWS_MARKERS = (
-    "news", "latest", "headline", "press release", "announcement",
-    "outlook", "forecast", "guidance", "analyst", "expected to perform",
-    "upcoming month", "coming month", "next quarter", "this week", "today's",
-    "recently", "happening", "sentiment", "what's new",
-    "acquisition", "acquisitions", "acquire", "acquired", "merger", "merged",
-    "takeover", "divestiture", "divest", "spin-off", "spinoff", "joint venture",
-    "partnership", "deal", "buyout",
-    "8-k", "8k",                    # event filings are not in the index
-)
-
 # US exchange suffixes a model sometimes appends (".NASDAQ"). Any other suffix
 # (.NS, .L, .TO) is a real foreign listing and is kept.
 _US_SUFFIX_RE = re.compile(r"\.(NASDAQ|NYSE|NYS|NMS|NASD|NAS|OQ|N|O|A|P|Z|BATS|ARCA)$", re.I)
@@ -131,15 +118,16 @@ def market_data(agent, state: AgentState) -> dict:
 # --------------------------------------------------------------------------- #
 
 def web_search(agent, state: AgentState) -> dict:
-    """Search the web when a part was routed `external`, when the question asks
-    for news, when the critic sent us here, or when there is no filing evidence."""
+    """The web is a fallback: it runs for a part routed `external`, when the
+    critic sends the question here, or when the filings returned nothing.
+
+    It no longer runs on news-like words: the planner writes "latest fiscal
+    year" into every sub-query without a year, and that sent filing questions
+    to the web (3M's FY2022 dividend record answered from 2026 articles)."""
     question = state["question"]
     sub_queries = state.get("sub_queries") or [question]
     routes = state.get("query_routes") or ["narrative"] * len(sub_queries)
     queries = [s for s, r in zip(sub_queries, routes) if r == "external"]
-    for s in [*sub_queries, question]:
-        if s not in queries and any(m in (s or "").lower() for m in _WEB_NEWS_MARKERS):
-            queries.append(s)
     if state.get("web_fallback_pending") and question not in queries:
         queries.append(question)
 
