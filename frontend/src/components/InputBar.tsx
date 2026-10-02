@@ -130,8 +130,8 @@ function ModelBar({ config }: { config: ServerConfig }) {
   return (
     <>
       <span
-        className="font-mono text-[10px] uppercase tracking-wider text-text-muted"
-        title="The planner splits your question and picks the sources. It is fixed."
+        className="cursor-help font-mono text-[10px] uppercase tracking-wider text-text-muted"
+        title="The planner splits your question and picks the sources. Set by the server."
       >
         Plan <span className="normal-case text-text-secondary">{short(config.roles.planner.model)}</span>
       </span>
@@ -166,11 +166,20 @@ function ModelBar({ config }: { config: ServerConfig }) {
         <ChevronDown size={12} className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 text-text-muted" />
       </div>
 
+      {/* Not a control: the fact-checker is set by the server, and is never the
+          writer's model (the server swaps to the default writer's model then). */}
       <span
-        className="font-mono text-[10px] uppercase tracking-wider text-text-muted"
-        title="The critic fact-checks every claim in the draft against the evidence. It is fixed."
+        className="cursor-help font-mono text-[10px] uppercase tracking-wider text-text-muted"
+        title="Fact-checks every claim in the draft against the evidence. Set by the server, and always a different model from the writer."
       >
-        Check <span className="normal-case text-text-secondary">{short(config.roles.critic.model)}</span>
+        Fact-check{" "}
+        <span className="normal-case text-text-secondary">
+          {short(
+            writer.provider === config.roles.critic.provider && writer.model === config.roles.critic.model
+              ? config.roles.writer.model
+              : config.roles.critic.model,
+          )}
+        </span>
       </span>
 
       {/* The server has no key for this provider: ask for the user's own. */}

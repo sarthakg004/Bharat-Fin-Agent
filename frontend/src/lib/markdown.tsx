@@ -181,3 +181,15 @@ export function MarkdownAnswer({ text }: Props) {
     </div>
   );
 }
+
+/** A source passage (a filing excerpt, a computed metric) as markdown, so its
+ *  tables and bold figures render. No citation chips: passages cite nothing. */
+export function MarkdownSource({ text }: Props) {
+  return (
+    <div className="font-ui text-[12.5px] leading-relaxed text-text-primary">
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={COMPONENTS}>
+        {text}
+      </ReactMarkdown>
+    </div>
+  );
+}

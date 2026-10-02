@@ -152,3 +152,10 @@ def test_concurrent_requests_do_not_share_a_context():
 
     with ThreadPoolExecutor(max_workers=16) as ex:
         assert list(ex.map(run, range(64))) == [f"key-{i}" for i in range(64)]
+
+
+def test_critic_is_never_the_writer_model():
+    from finagent.runtime import ROLES, RuntimeContext
+    assert RuntimeContext().resolve("critic")[:2] == ROLES["critic"]
+    same = RuntimeContext(provider=ROLES["critic"][0], model=ROLES["critic"][1])
+    assert same.resolve("critic")[:2] != same.resolve("writer")[:2]

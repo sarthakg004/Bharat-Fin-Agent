@@ -70,5 +70,9 @@ COPY --from=builder /app/.fastembed /app/.fastembed
 COPY finagent/      ./finagent/
 COPY --from=spa /spa/dist ./static
 
+# The runtime is offline; fail the build if the baked BM25 model will not load
+# (fastembed once refused its own cache and every filing search failed).
+RUN python -c "from finagent.vectorstore import get_sparse_embeddings; get_sparse_embeddings()"
+
 EXPOSE 8080
 CMD ["sh", "-c", "uvicorn finagent.api.main:app --host 0.0.0.0 --port ${PORT:-8080} --workers 1"]

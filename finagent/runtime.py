@@ -63,6 +63,11 @@ class RuntimeContext:
 
     def resolve(self, role: str) -> tuple[str, str, Optional[str]]:
         """(provider, model, api_key) for a role. Only the writer is overridable."""
+        if role == "critic":
+            # The critic must be a different model from the writer: when the user
+            # picks the critic's model to write, check with the default writer's.
+            same = self.resolve("writer")[:2] == ROLES["critic"]
+            return (*(ROLES["writer"] if same else ROLES["critic"]), None)
         if role != "writer":
             return (*ROLES[role], None)
         provider = (self.provider or ROLES["writer"][0]).lower()

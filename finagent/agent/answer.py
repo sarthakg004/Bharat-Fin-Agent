@@ -51,6 +51,41 @@ def format_calc_result(r: dict) -> str:
     return "\n".join(lines)
 
 
+def _short(value_str: str) -> str:
+    """"$10,069,000,000 ($10,069 million; $10.07 billion)" -> "$10,069 million"."""
+    m = re.search(r"\(([^;)]+)", value_str or "")
+    return m.group(1).strip() if m else (value_str or "?")
+
+
+def _readable_formula(formula: str) -> str:
+    """"cost_of_revenue / avg(inventory)" -> "cost of revenue ÷ average inventory"."""
+    f = re.sub(r"avg\(([^)]*)\)", r"average \1", formula or "")
+    return f.replace("_", " ").replace(" / ", " ÷ ").replace(" * ", " × ")
+
+
+def format_calc_card(r: dict) -> str:
+    """A calculator result for a person to read (the source card): the value,
+    the formula in words, and the inputs as a table. The models read
+    `format_calc_result` instead."""
+    ticker = r.get("ticker", "")
+    metric = str(r.get("metric", "")).replace("_", " ")
+    if r.get("series"):
+        rows = [f"| {s.get('period_label') or 'FY' + str(s.get('fy', s.get('period')))} "
+                f"| {_short(s.get('value_str', ''))} |" for s in r["series"] if s.get("ok")]
+        out = [f"**{ticker} {metric} trend**", "", "| Period | Value |", "|---|---|", *rows]
+        return "\n".join(out + ([f"\n{r['summary']}"] if r.get("summary") else []))
+    out = [f"**{ticker} {metric}: {r.get('value_str', '')}**"]
+    if r.get("formula"):
+        out += ["", f"Formula: {_readable_formula(r['formula'])}"]
+    inputs = [i for i in (r.get("inputs") or []) if isinstance(i, dict)]
+    if inputs:
+        out += ["", "| Input | Period | Value |", "|---|---|---|"]
+        out += [f"| {str(i.get('concept', '?')).replace('_', ' ')} "
+                f"| {i.get('period', i.get('fy', '?'))} "
+                f"| {_short(str(i.get('value_str', i.get('value', '?'))))} |" for i in inputs]
+    return "\n".join(out)
+
+
 def format_edgar_result(r: dict) -> str:
     lines = [f"  - {c.get('company', '?')}{(' (' + c['ticker'] + ')') if c.get('ticker') else ''}"
              f" — {c.get('form', '')} {c.get('date', '')}  {c.get('url', '')}"
@@ -109,14 +144,15 @@ def build_evidence(state: AgentState) -> list[dict]:
             f"XBRL FACT (authoritative — exact figure as filed) — {entity} "
             f"{f.get('concept', '')} {period}: {f.get('value_str', '')}\n"
             f"Source: {f.get('source', '')} (us-gaap:{f.get('tag', '')}).",
-            f"{entity} {f.get('concept', '')} ({period}) = {f.get('value_str', '')}\nExact figure as "
-            f"filed — us-gaap:{f.get('tag', '')}, {f.get('form', '')} {f.get('end', '')}.",
+            f"**{entity} {f.get('concept', '')} ({period}): {_short(f.get('value_str', ''))}**\n\n"
+            f"Exact figure as filed: {f.get('value_str', '')}, us-gaap:{f.get('tag', '')}, "
+            f"{f.get('form', '')} for the period ending {f.get('end', '')}.",
             company=entity, ticker=f.get("ticker", ""), year=f.get("fy", "?"),
             citation=f.get("source", ""), sub_query=f.get("sub_query", ""))
 
     for r in state.get("calc_results") or []:               # math over those figures
         text = format_calc_result(r)
-        add("calc", f"DERIVED METRIC (computed from exact XBRL inputs) — {text}", text,
+        add("calc", f"DERIVED METRIC (computed from exact XBRL inputs) — {text}", format_calc_card(r),
             company=r.get("ticker", "?"), ticker=r.get("ticker", ""),
             year=r.get("fy", r.get("end_period", "?")),
             citation=f"(Computed: {str(r.get('metric', '')).replace('_', ' ')} from XBRL)",

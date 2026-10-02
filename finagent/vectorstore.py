@@ -228,6 +228,14 @@ def get_sparse_embeddings():
     """The shared BM25 encoder (tokenise and weight terms; no neural net)."""
     from langchain_qdrant import FastEmbedSparse
 
+    # The image bakes the model and runs offline (HF_HUB_OFFLINE=1). fastembed
+    # 0.8.1's offline check wants two files the Hugging Face repo does not ship
+    # (mock.file, tamil.txt), so it refuses its own cache. Point it at the baked
+    # snapshot directly; without one (local dev, online), let it download.
+    cache = Path(os.getenv("FASTEMBED_CACHE_PATH", ""))
+    snapshots = sorted(cache.glob("models--Qdrant--bm25/snapshots/*")) if cache.name else []
+    if snapshots:
+        return FastEmbedSparse(model_name=SPARSE_MODEL, specific_model_path=str(snapshots[-1]))
     return FastEmbedSparse(model_name=SPARSE_MODEL)
 
 

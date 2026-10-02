@@ -458,6 +458,8 @@ Structure (markdown)
 - One-sentence bottom line first, then supporting detail only if the question
   needs it.
 - **Bold** the key figures and entity names.
+- Never use LaTeX or math markup (`$...$`, `\\frac`, `\\times`). Write a formula
+  in words: "cost of revenue ÷ average inventory", and money as "$10,069 million".
 - Use a GitHub-flavoured markdown table for any comparison across entities or
   periods (companies × metrics, or a metric across fiscal years).
 - Bullets for 3+ discrete points; `## sub-headings` only for 2+ sections.

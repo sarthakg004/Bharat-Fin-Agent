@@ -5,6 +5,7 @@ import { ExternalLink, ChevronDown } from "lucide-react";
 import type { Chunk } from "@/lib/api";
 import { useChatStore } from "@/store/chatStore";
 import { cls } from "@/lib/utils";
+import { MarkdownSource } from "@/lib/markdown";
 
 interface Props {
   chunk: Chunk;
@@ -99,14 +100,9 @@ export function ChunkCard({ chunk, index, accent }: Props) {
 
       {/* Body */}
       <div className="px-3 py-3">
-        <p
-          className={cls(
-            "font-ui text-[12.5px] leading-relaxed text-text-primary",
-            !expanded && "line-clamp-3",
-          )}
-        >
-          {chunk.text}
-        </p>
+        <div className={cls(!expanded && "max-h-[5.5rem] overflow-hidden")}>
+          <MarkdownSource text={chunk.text} />
+        </div>
         {chunk.text.length > 200 && (
           <button
             onClick={() => setExpanded((v) => !v)}
