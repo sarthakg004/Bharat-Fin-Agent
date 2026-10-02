@@ -1,5 +1,8 @@
 # Retrieval experiments — July 2026
 
+> The raw result files cited below were removed from `results/` on 2026-10-02;
+> they are in git history at commit `99da65d`.
+
 Everything here was measured on the FinanceBench eval set (150 questions, 84
 10-K filings). Numbers that were *not* measured are marked as such. Where an
 earlier conclusion was overturned by a later experiment, the retraction is kept

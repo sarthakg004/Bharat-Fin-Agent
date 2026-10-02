@@ -1,6 +1,6 @@
 # Answer evaluation
 
-`results/v7/answers.json`, 127 questions.
+`results/answers/answers.json`, 127 questions.
 
 | behaviour | value |
 |---|---|

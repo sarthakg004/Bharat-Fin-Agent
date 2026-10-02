@@ -28,24 +28,10 @@ logs/
 # Firebase deploy cache
 .firebase/
 
-# Eval shard intermediates (merged file is the artifact) + per-run logs.
-# Matches both the flat layout (results/shards/) and versioned runs
-# (results/v2/shards/, results/v2/score.log).
-results/shards/
+# Eval shard intermediates and run logs.
 results/**/shards/
 results/**/score.log
 
 # Claude working notes: a local aid, not a project file.
 CLAUDE.md
 
-# Eval run artifacts: raw outputs and caches, not reports. The v5 RAGAS pass
-# was only partially complete (41/127), so its metrics would mislead anyone
-# reading them as a result. Keep the write-ups (RETRIEVAL_EXPERIMENTS.md,
-# v1-v4 final_metrics.md) and leave the bulk data on disk.
-results/v5/
-# v6 is still being generated (a metered multi-day run); a mid-run snapshot
-# reads as a finished result but isn't. Ignore until the run completes.
-results/v6_partial/
-results/financebench_gold_*.json
-results/financebench_retrieval_queries_*.json
-results/financebench_full_outputs*.json

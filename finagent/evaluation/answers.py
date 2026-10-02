@@ -23,14 +23,14 @@ judge-free `numeric_accuracy` on the numeric questions.
 
 Both steps are resumable: re-running continues where the last run stopped.
 
-    python -m finagent.evaluation.answers run   --output results/v7/answers.json
-    python -m finagent.evaluation.answers score --output results/v7/answers.json
+    python -m finagent.evaluation.answers run   --output results/answers/answers.json
+    python -m finagent.evaluation.answers score --output results/answers/answers.json
 
 The free-tier judge cannot score 127 answers in a day. With the Claude Code CLI
 logged in, Claude can write and judge instead, with no API key:
 
-    ... run   --output results/v7/answers.json --writer haiku
-    ... score --output results/v7/answers.json --judge-provider claude-cli --judge-model claude-sonnet-5
+    ... run   --output results/answers/answers.json --writer haiku
+    ... score --output results/answers/answers.json --judge-provider claude-cli --judge-model claude-sonnet-5
 """
 
 from __future__ import annotations

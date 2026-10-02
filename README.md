@@ -146,8 +146,8 @@ as SEC HTML, of which 99 have evidence the HTML parser can recover.
 python -m finagent.evaluation.retrieval
 
 # Answer every question with the production agent, then score it.
-python -m finagent.evaluation.answers run   --output results/v7/answers.json
-python -m finagent.evaluation.answers score --output results/v7/answers.json
+python -m finagent.evaluation.answers run   --output results/answers/answers.json
+python -m finagent.evaluation.answers score --output results/answers/answers.json
 ```
 
 Retrieval reports pool recall, evidence coverage and hit rate at 5 and 8, figure
@@ -187,7 +187,7 @@ earlier experiment, including the ones that lost.
 
 ### Answer quality
 
-The last full run (`results/v7/`) answered all 127 questions with the production
+The last full run (`results/answers/`) answered all 127 questions with the production
 agent, with Claude Haiku as the writer and critic (production uses Gemini for
 both), and scored them with Claude Sonnet 5 as the judge.
 
@@ -195,8 +195,9 @@ The numbers below leave out 15 questions whose filing is not in the eval index:
 the match from FinanceBench to SEC documents picked the wrong period for 8
 filings (for example the Q3 10-Q for a Q2 question). Those questions cannot be
 answered from the index. The list is `FILING_NOT_INDEXED` in
-`finagent/evaluation/answers.py`; `results/v7/answers_report.md` has every
-question too.
+`finagent/evaluation/answers.py`; `results/answers/answers_report.md` has every
+question too. Earlier runs, and what changed between them, are in
+`results/README.md`.
 
 | Metric (112 questions) | Score |
 |---|---|
@@ -225,7 +226,7 @@ Why three of the scores are low:
   company (the writer's copy of the same fact does). The judge cannot confirm the "3M's" in "3M's FY2018 capital
   expenditure was $1,577 million", so exactly right answers score 0.
   Groundedness, which grades the answer as a whole, is 0.97. The fact line now
-  names the company (`finagent/agent/answer.py`); v7 was scored before that.
+  names the company (`finagent/agent/answer.py`); the scores above predate it.
 - **context_precision (0.38)** asks the judge, for each piece of evidence in
   order, whether it helped reach the gold answer, then weights the yes answers
   by rank. Extra evidence after the useful piece costs nothing; the score is low
