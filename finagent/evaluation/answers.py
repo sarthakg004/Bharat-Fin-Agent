@@ -76,6 +76,19 @@ CONTEXT_CHAR_CAP, CONTEXT_TOTAL_CHAR_CAP = 2000, 24000
 REFUSAL_PREFIX = "I don't have enough information to answer this"
 # The 99 questions whose evidence survives HTML parsing (the retrieval eval's set).
 RECOVERABLE_IDS = Path("results/financebench_retrieval_queries.json")
+# FinanceBench filings the eval index holds the wrong period of (the SEC match picked
+# the next quarter or the prior fiscal year), or none at all. Their questions cannot
+# be answered from the index, so the report also scores the set without them.
+FILING_NOT_INDEXED = {
+    "JOHNSON_JOHNSON_2022_10K",   # jnj-20220102 is FY2021
+    "BESTBUY_2024Q2_10Q",         # bby-20241102 is Q3 FY2025
+    "AMCOR_2023Q2_10Q",           # amcr-20231231 is Q2 FY2024
+    "JPMORGAN_2021Q1_10Q",        # jpm-20210930 is Q3
+    "JPMORGAN_2022Q2_10Q",        # not fetched
+    "JPMORGAN_2023Q2_10Q",        # jpm-20230930 is Q3
+    "MGMRESORTS_2023Q2_10Q",      # mgm-20230930 is Q3
+    "Pfizer_2023Q2_10Q",          # pfe-20231001 is Q3
+}
 
 
 # --------------------------------------------------------------------------- #
@@ -423,6 +436,9 @@ def report(output: Path, scored: dict) -> dict:
                     "n": sum(1 for s in picked if s.get(m) is not None)} for m in METRICS}
 
     all_ids = [r["financebench_id"] for r in rows]
+    from finagent.evaluation.retrieval import load_questions
+    not_indexed = {q["financebench_id"] for q in load_questions()
+                   if q.get("doc_name") in FILING_NOT_INDEXED}
     out = {
         "questions": n,
         "answer_rate": round((n - len(errors) - len(refused)) / n, 4) if n else None,
@@ -434,6 +450,8 @@ def report(output: Path, scored: dict) -> dict:
         if latencies else None,
         "ragas": ragas(all_ids),
         "ragas_recoverable": ragas([i for i in all_ids if i in recoverable]),
+        "filing_not_indexed": len(not_indexed & set(all_ids)),
+        "ragas_filing_indexed": ragas([i for i in all_ids if i not in not_indexed]),
         "ragas_by_type": {t: ragas([r["financebench_id"] for r in rows if r.get("qtype") == t])
                           for t in sorted({r.get("qtype") for r in rows if r.get("qtype")})},
     }
@@ -452,9 +470,12 @@ def report(output: Path, scored: dict) -> dict:
         f"| latency p50 / p95 (s) | "
         + (f"{out['latency_s']['p50']} / {out['latency_s']['p95']}" if out["latency_s"] else "n/a")
         + " |", "",
-        "| RAGAS metric | all | rows scored | evidence-recoverable subset |", "|---|---|---|---|",
+        f"| RAGAS metric | all | rows scored | evidence-recoverable subset | without the "
+        f"{out['filing_not_indexed']} questions whose filing is not in the index |",
+        "|---|---|---|---|---|",
         *(f"| {m} | {out['ragas'][m]['mean']} | {out['ragas'][m]['n']} | "
-          f"{out['ragas_recoverable'][m]['mean']} |" for m in METRICS), "",
+          f"{out['ragas_recoverable'][m]['mean']} | {out['ragas_filing_indexed'][m]['mean']} |"
+          for m in METRICS), "",
         "By question type:", "",
         "| type | " + " | ".join(METRICS) + " |", "|---|" + "---|" * len(METRICS),
         *(f"| {t} | " + " | ".join(str(v[m]["mean"]) for m in METRICS) + " |"
