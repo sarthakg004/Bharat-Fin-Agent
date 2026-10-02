@@ -384,7 +384,16 @@ class _Structured(Runnable):
     def _strict(self, llm):
         return llm.with_structured_output(
             _strict_schema(self.schema), method="json_schema", strict=True
-        ) | self.schema.model_validate
+        ) | self._validate
+
+    def _validate(self, data):
+        # Groq's strict mode is not airtight: Qwen once answered {"tikr": "AES"}
+        # for a `company` field, and pydantic dropped the unknown key, leaving
+        # the field empty. An unknown key falls through to tool calling instead.
+        unknown = set(data or {}) - set(self.schema.model_fields)
+        if unknown:
+            raise ValueError(f"unexpected fields {sorted(unknown)}")
+        return self.schema.model_validate(data)
 
     def _is_qwen(self) -> bool:
         return (self.rot.provider == "groq" and self.rot.chat_model.startswith("qwen/")

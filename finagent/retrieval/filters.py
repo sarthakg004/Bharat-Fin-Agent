@@ -97,6 +97,13 @@ def _name_variants(name: str) -> list[str]:
     return out
 
 
+def _ticker_key(ticker: str) -> str:
+    """A ticker's vocab key. Tickers match only as written in capitals
+    ("COST", not the word "cost" in "cost of sales"), so they are kept apart
+    from names, which match case-insensitively."""
+    return "$" + ticker.strip().upper()
+
+
 def build_company_vocab(metadatas) -> tuple[dict, dict]:
     """From chunk metadata, build:
        vocab        normalised company name or alias -> the stored company value
@@ -113,14 +120,17 @@ def build_company_vocab(metadatas) -> tuple[dict, dict]:
         c = (m or {}).get("company") or ""
         if not c:
             continue
+        bare_ticker = c.isupper() and 1 < len(c) <= 5 and " " not in c
         if c not in years:
-            for v in _name_variants(c):
-                vocab.setdefault(v, c)
-            if c.isupper() and 1 < len(c) <= 5 and " " not in c:
+            if bare_ticker:
                 tickerish.add(c)
+                vocab.setdefault(_ticker_key(c), c)
+            else:
+                for v in _name_variants(c):
+                    vocab.setdefault(v, c)
         t = str((m or {}).get("ticker") or "").strip()
         if t and _norm(t):
-            vocab.setdefault(_norm(t), c)
+            vocab.setdefault(_ticker_key(t), c)
         y = str((m or {}).get("year") or "")
         years.setdefault(c, set()).add(y) if y else years.setdefault(c, set())
 
@@ -165,7 +175,11 @@ def infer_filter(question: str, vocab: dict, years_by_co: dict) -> Optional[dict
     qn = f" {_norm(question)} "
     matched: list[str] = []
     for norm_name in sorted(vocab, key=len, reverse=True):
-        if norm_name and f" {norm_name} " in qn:
+        if norm_name.startswith("$"):
+            hit = re.search(rf"(?<![A-Za-z0-9]){re.escape(norm_name[1:])}(?![A-Za-z0-9])", question or "")
+        else:
+            hit = norm_name and f" {norm_name} " in qn
+        if hit:
             canon = vocab[norm_name]
             if canon not in matched:
                 matched.append(canon)

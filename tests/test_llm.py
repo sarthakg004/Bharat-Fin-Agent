@@ -159,3 +159,17 @@ def test_critic_is_never_the_writer_model():
     assert RuntimeContext().resolve("critic")[:2] == ROLES["critic"]
     same = RuntimeContext(provider=ROLES["critic"][0], model=ROLES["critic"][1])
     assert same.resolve("critic")[:2] != same.resolve("writer")[:2]
+
+
+def test_an_unknown_key_from_qwen_is_rejected_not_dropped():
+    import pytest
+    from pydantic import BaseModel
+    from finagent.llm import _Structured
+
+    class Gate(BaseModel):
+        company: str = ""
+
+    s = _Structured(None, Gate, {})
+    assert s._validate({"company": "AES"}).company == "AES"
+    with pytest.raises(ValueError):
+        s._validate({"tikr": "AES"})      # was silently Gate(company="")

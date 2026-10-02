@@ -149,3 +149,16 @@ def test_chunker_output_matches_the_recorded_digest():
         h.update(str(d.metadata.get("element_type")).encode())
     assert (len(docs), h.hexdigest()) == (16, "8bfe1cf7e5be91af77ea635d73f2cfd66c8608e2")
     assert docs[0].page_content.startswith("ACME 2022")        # the context header
+
+
+def test_a_ticker_matches_only_in_capitals():
+    from finagent.retrieval.filters import build_company_vocab
+    vocab, years = build_company_vocab([
+        {"company": "COST", "ticker": "COST", "year": "2023"},
+        {"company": "ADVANCED MICRO DEVICES INC", "ticker": "AMD", "year": "2024"}])
+    # "cost of sales" is not Costco (the AES question that searched Costco's filing).
+    assert infer_filter("AES 2022 cost of sales and inventories", vocab, years) is None
+    assert infer_filter("COST revenue in 2023", vocab, years)["companies"] == ["COST"]
+    assert infer_filter("AMD revenue 2024", vocab, years)["companies"] == ["ADVANCED MICRO DEVICES INC"]
+    assert infer_filter("advanced micro devices revenue", vocab, years)["companies"] == [
+        "ADVANCED MICRO DEVICES INC"]
