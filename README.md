@@ -220,16 +220,21 @@ rounding in 3 (8.74 against a gold of 8.70) and too lenient in 1.
 Why three of the scores are low:
 
 - **faithfulness (0.77)** checks every statement against the passages. A figure
-  from the SEC's structured data reaches the writer as a fact line such as
+  from the SEC's structured data reaches the judge as a fact line such as
   `capital expenditure (FY2018) = $1,577,000,000 (...)`, which does not name the
-  company. The judge cannot confirm the "3M's" in "3M's FY2018 capital
+  company (the writer's copy of the same fact does). The judge cannot confirm the "3M's" in "3M's FY2018 capital
   expenditure was $1,577 million", so exactly right answers score 0.
   Groundedness, which grades the answer as a whole, is 0.97.
-- **context_precision (0.38)** asks whether each passage given to the writer
-  was needed for the gold answer. The writer gets a median of 8 pieces of
-  evidence (up to 20 when a question has several parts), and a one-figure
-  question needs one of them, so most count as noise. Structured facts also do not look like filing text
-  to it, so answers built only from them often score 0.
+- **context_precision (0.38)** asks the judge, for each piece of evidence in
+  order, whether it helped reach the gold answer, then weights the yes answers
+  by rank. Extra evidence after the useful piece costs nothing; the score is low
+  because 58 of 127 answers scored 0, meaning the judge found no piece useful,
+  and 39 of those 58 answers were correct. 44 of the 58 start with structured
+  facts. For "3-year average capex as % of revenue" the evidence was exactly
+  the six inputs (capex and revenue for three years), the gold answer was
+  "1.9%", and the score was 0: the judge does not connect `capital expenditures
+  (FY2017) = $155,000,000` to a one-number gold answer, and the fact line does
+  not name the company.
 - **answer_correctness (0.49)** is mostly F1 over statements against a
   one-line gold answer. Every extra true statement (the inputs of a ratio, a
   driver of a change) counts as a false positive, so a correct answer of three
