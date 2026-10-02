@@ -109,7 +109,7 @@ def build_evidence(state: AgentState) -> list[dict]:
             f"XBRL FACT (authoritative — exact figure as filed) — {entity} "
             f"{f.get('concept', '')} {period}: {f.get('value_str', '')}\n"
             f"Source: {f.get('source', '')} (us-gaap:{f.get('tag', '')}).",
-            f"{f.get('concept', '')} ({period}) = {f.get('value_str', '')}\nExact figure as "
+            f"{entity} {f.get('concept', '')} ({period}) = {f.get('value_str', '')}\nExact figure as "
             f"filed — us-gaap:{f.get('tag', '')}, {f.get('form', '')} {f.get('end', '')}.",
             company=entity, ticker=f.get("ticker", ""), year=f.get("fy", "?"),
             citation=f.get("source", ""), sub_query=f.get("sub_query", ""))

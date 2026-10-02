@@ -224,7 +224,8 @@ Why three of the scores are low:
   `capital expenditure (FY2018) = $1,577,000,000 (...)`, which does not name the
   company (the writer's copy of the same fact does). The judge cannot confirm the "3M's" in "3M's FY2018 capital
   expenditure was $1,577 million", so exactly right answers score 0.
-  Groundedness, which grades the answer as a whole, is 0.97.
+  Groundedness, which grades the answer as a whole, is 0.97. The fact line now
+  names the company (`finagent/agent/answer.py`); v7 was scored before that.
 - **context_precision (0.38)** asks the judge, for each piece of evidence in
   order, whether it helped reach the gold answer, then weights the yes answers
   by rank. Extra evidence after the useful piece costs nothing; the score is low
