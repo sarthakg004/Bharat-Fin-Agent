@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import sys
 
 from finagent.tools.calculator import FinancialCalculator
 from finagent.tools.sec_fetch import SecFilingFetcher
@@ -148,3 +149,16 @@ def test_a_dead_sec_endpoint_degrades_instead_of_raising(tmp_path):
 
     f._sec_get = boom
     assert f._download("AMAT", "", "10-K", 1) == ([], None)
+
+
+def test_fetch_picks_the_10k_for_the_year_asked(tmp_path, monkeypatch):
+    import copy
+    from finagent.tools import sec_fetch
+    subs = copy.deepcopy(FAKE_SUBMISSIONS)
+    subs["filings"]["recent"]["reportDate"] = ["", "2025-10-26", "", "2025-07-27", "2024-10-27"]
+    monkeypatch.setattr(sys.modules[__name__], "FAKE_SUBMISSIONS", subs)
+    downloads: list[str] = []
+    records, _ = _fetcher(tmp_path, downloads)._download("AMAT", "", "10-K", 1, fiscal_years=[2024])
+    assert [r["source_url"].rsplit("/", 1)[-1] for r in records] == ["amat-20241027.htm"]
+    # A 52/53-week year ending in early January is the year before (J&J FY2022).
+    assert sec_fetch.fiscal_year("2023-01-01") == 2022 and sec_fetch.fiscal_year("2024-02-03") == 2024

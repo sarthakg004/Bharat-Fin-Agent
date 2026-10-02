@@ -29,9 +29,21 @@ def _form_key(form: str) -> str:
 
 def _filing_rows(block: dict) -> list[dict]:
     """The SEC submissions index (one array per field) as one dict per filing."""
-    cols = ("form", "filingDate", "accessionNumber", "primaryDocument")
-    return [dict(zip(("form", "date", "accession", "doc"), row))
-            for row in zip(*(block.get(c) or [] for c in cols))]
+    cols = ("form", "filingDate", "accessionNumber", "primaryDocument", "reportDate")
+    n = len(block.get("form") or [])
+    return [dict(zip(("form", "date", "accession", "doc", "period"), row))
+            for row in zip(*((block.get(c) or [""] * n) for c in cols))]
+
+
+def fiscal_year(period_end: str) -> Optional[int]:
+    """The fiscal year a report covers, from its period-end date. A 52/53-week
+    year that ends in the first week of January belongs to the year before
+    (J&J's fiscal 2022 ended on 1 January 2023)."""
+    try:
+        y, m, d = (int(x) for x in period_end[:10].split("-"))
+    except ValueError:
+        return None
+    return y - 1 if m == 1 and d <= 7 else y
 
 
 class SecFilingFetcher:
@@ -127,10 +139,11 @@ class SecFilingFetcher:
             "market": "us",
         }
 
-    def _download(self, ticker: str, company: str, filing_type: str,
-                  n: int) -> tuple[list[dict], Optional[str]]:
-        """Download the latest `n` annual filings. Tries 10-K, then 20-F and
-        40-F for foreign and Canadian issuers. One form type per fetch."""
+    def _download(self, ticker: str, company: str, filing_type: str, n: int,
+                  fiscal_years: Optional[list[int]] = None) -> tuple[list[dict], Optional[str]]:
+        """Download the annual filings for `fiscal_years`, or the latest `n` when
+        no year is given. Tries 10-K, then 20-F and 40-F for foreign and Canadian
+        issuers. One form type per fetch."""
         cik = self.resolver.resolve(ticker).get("cik")
         if not cik:
             return [], None
@@ -139,18 +152,21 @@ class SecFilingFetcher:
         if not filings:
             return [], None
         used_form = filings[0]["form"]
-        records = [rec for f in [x for x in filings if x["form"] == used_form][:n]
+        pick = [x for x in filings if x["form"] == used_form]
+        pick = ([x for x in pick if fiscal_year(x.get("period") or "") in set(fiscal_years)]
+                if fiscal_years else pick)[:n]
+        records = [rec for f in pick
                    if (rec := self._download_filing(str(cik), ticker, company, f))]
         return records, (used_form if records else None)
 
     # --- fetch + ingest -----------------------------------------------------
 
-    def fetch_and_ingest(self, ticker: str, company: str = "",
-                         filing_type: str = "10-K", n: int = 1) -> dict:
-        """Download the latest `n` filings and ingest them into the collection."""
+    def fetch_and_ingest(self, ticker: str, company: str = "", filing_type: str = "10-K",
+                         n: int = 1, fiscal_years: Optional[list[int]] = None) -> dict:
+        """Download the filings for `fiscal_years` (or the latest `n`) and ingest them."""
         from finagent.ingestion.ingest import CorpusIngester
 
-        records, used_form = self._download(ticker, company, filing_type, n)
+        records, used_form = self._download(ticker, company, filing_type, n, fiscal_years)
         if not records:
             return {"ok": False, "ticker": ticker, "chunks_added": 0,
                     "error": "no filing downloaded", "source_urls": []}

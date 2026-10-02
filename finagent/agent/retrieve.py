@@ -16,6 +16,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from finagent.agent.prompts import GATE_PROMPT, GATE_SYSTEM, history_block
 from finagent.agent.state import AgentState, CorpusGateQuery
+from finagent.retrieval.filters import parse_years
 from finagent.runtime import current_context
 
 # Passages the raw question contributes next to the rewritten query. Measured:
@@ -84,28 +85,27 @@ def fetch_filing(agent, state: AgentState) -> dict:
         agent.log(state, f"{company!r} is indexed but retrieval cannot match its name; fetching")
         gate = {**gate, "decision": "fetch"}
 
-    # How many annual filings to walk back. A 10-K also carries the prior
-    # year's figures, hence the -1.
-    years = [int(y) for y in re.findall(r"\b((?:19|20)\d{2})\b", question)]
-    today = date.today()
+    # The fiscal years the question names ("FY2022", "FY22", "2022"): fetch the
+    # 10-Ks that cover them. No year means the latest filing.
+    years = sorted(set(parse_years(question)), reverse=True)[:MAX_FETCH_FILINGS]
     if gate["decision"] == "already_indexed":
-        # "Indexed" is per company. If the question names a year the index does
-        # not hold (or names none, meaning the latest), fetch the missing filings.
+        # "Indexed" is per company. The index labels a filing by the year it was
+        # filed, which is the fiscal year or the one after.
         indexed = {int(y) for y in _indexed_years(agent, gate.get("ticker") or company)
                    if y.isdigit()}
-        target = min(years) if years else today.year - 1
-        if indexed and ({target, target + 1} & indexed):
+        wanted = years or [date.today().year - 1]           # no year: the latest
+        missing = [y for y in wanted if not ({y, y + 1} & indexed)]
+        if indexed and not missing:
             return {"fetch_status": gate}
-        n = (max(indexed) if indexed else today.year) - target
+        years = missing if years else []
         agent.log(state, f"index covers {sorted(indexed) or '?'} for {gate.get('ticker')} "
-                         f"but the question needs {target}")
-    else:
-        n = today.year - min(years) - 1 if years else 1
-    n = max(1, min(MAX_FETCH_FILINGS, n))
+                         f"but the question needs {years or 'the latest year'}")
 
-    agent.log(state, f"fetching {n} filing(s) for {gate['ticker']} from EDGAR")
+    agent.log(state, f"fetching the 10-K for {', '.join(f'FY{y}' for y in years) or 'the latest year'}"
+                     f" for {gate['ticker']} from EDGAR")
     try:
-        res = agent.fetcher.fetch_and_ingest(gate["ticker"], company=gate.get("company") or "", n=n)
+        res = agent.fetcher.fetch_and_ingest(gate["ticker"], company=gate.get("company") or "",
+                                             n=max(1, len(years)), fiscal_years=years or None)
     except Exception as e:
         agent.log(state, f"fetch failed for {gate['ticker']}: {e}")
         if type(e).__name__ == "EmbeddingQuotaExhausted":
