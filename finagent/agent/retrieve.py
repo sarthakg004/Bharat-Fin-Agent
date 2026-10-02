@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import os
 import re
-from datetime import date
 from typing import Optional
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -18,6 +17,7 @@ from finagent.agent.prompts import GATE_PROMPT, GATE_SYSTEM, history_block
 from finagent.agent.state import AgentState, CorpusGateQuery
 from finagent.retrieval.filters import parse_quarter, parse_years
 from finagent.runtime import current_context
+from finagent.tools.sec_fetch import fiscal_year, is_filing_indexed
 
 # Passages the raw question contributes next to the rewritten query. Measured:
 # 1 slot -> 64 of 99 questions with evidence in the final 8, 2 -> 66, 5 -> 67,
@@ -97,17 +97,19 @@ def fetch_filing(agent, state: AgentState) -> dict:
             return done
 
     if gate["decision"] == "already_indexed":
-        # "Indexed" is per company. The index labels a filing by the year it was
-        # filed, which is the fiscal year or the one after.
-        indexed = {int(y) for y in _indexed_years(agent, gate.get("ticker") or company)
-                   if y.isdigit()}
-        wanted = years or [date.today().year - 1]           # no year: the latest
-        missing = [y for y in wanted if not ({y, y + 1} & indexed)]
-        if indexed and not missing:
+        # "Indexed" is per company, so check the exact 10-K each year needs (no
+        # year: the latest). The index's year label is the filing year, which
+        # cannot tell a December company's FY2022 10-K (filed 2023) from FY2023.
+        wanted = agent.fetcher.pick_filings(gate["cik"], n=max(1, len(years)),
+                                            fiscal_years=years or None)
+        urls = _indexed_values(agent, "source_url", gate.get("ticker") or company)
+        missing = [f for f in wanted if not is_filing_indexed(f, urls)]
+        if not missing:          # also when EDGAR lists none: search what is indexed
             return {"fetch_status": gate}
-        years = missing if years else []
-        agent.log(state, f"index covers {sorted(indexed) or '?'} for {gate.get('ticker')} "
-                         f"but the question needs {years or 'the latest year'}")
+        if years:
+            years = [fiscal_year(f["period"]) for f in missing]
+        agent.log(state, f"the index lacks {gate.get('ticker')}'s 10-K for "
+                         f"{', '.join(f'FY{y}' for y in years) or 'the latest year'}")
 
     agent.log(state, f"fetching the 10-K for {', '.join(f'FY{y}' for y in years) or 'the latest year'}"
                      f" for {gate['ticker']} from EDGAR")
@@ -156,10 +158,6 @@ def _vocab_can_match(agent, *names: Optional[str]) -> bool:
                    for name in names)
     except Exception:
         return True
-
-
-def _indexed_years(agent, ticker: str) -> set[str]:
-    return _indexed_values(agent, "year", ticker)
 
 
 def _indexed_values(agent, field: str, ticker: str) -> set[str]:
@@ -241,6 +239,12 @@ def _search(agent, state: AgentState) -> list[dict]:
                 "source": citation_tag(meta),
                 "sub_query": query,
             })
+    if retry:
+        # A retry adds to the first search's passages instead of replacing them,
+        # so the claims that were supported keep their evidence. The cap below
+        # keeps each query's best passage, old and new, then the best by score.
+        fresh = {c["text"] for c in chunks}
+        chunks = [c for c in state.get("retrieved_chunks") or [] if c["text"] not in fresh] + chunks
     return _cap_pool(agent, state, chunks)
 
 

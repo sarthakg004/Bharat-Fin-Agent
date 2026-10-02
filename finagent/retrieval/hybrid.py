@@ -70,12 +70,15 @@ class HybridRetriever:
     def get_pool(self, query: str, flt: Optional[dict] = None) -> list[tuple[str, dict]]:
         """The fused (dense + BM25) candidate pool, before reranking."""
         from finagent.retrieval.filters import qdrant_filter
+        from finagent.vectorstore import EmbeddingQuotaExhausted
 
         try:
             # Must be `similarity_search`: LangChain's MMR search is dense-only
             # and would silently skip the BM25 half.
             docs = self.store.similarity_search(query, k=self.pool_top_k,
                                                 filter=qdrant_filter(flt))
+        except EmbeddingQuotaExhausted:
+            raise                       # the caller tells the user
         except Exception:
             return []                   # missing collection or cluster error
         seen, out = set(), []

@@ -164,6 +164,14 @@ def test_fetch_picks_the_10k_for_the_year_asked(tmp_path, monkeypatch):
     assert sec_fetch.fiscal_year("2023-01-01") == 2022 and sec_fetch.fiscal_year("2024-02-03") == 2024
 
 
+def test_a_filing_is_indexed_under_its_sec_url_or_its_curated_path():
+    from finagent.tools.sec_fetch import is_filing_indexed
+    f = {"accession": "0000002488-24-000012", "date": "2024-01-31"}
+    assert is_filing_indexed(f, {"data/us/pdfs/AMD/2024_000012.htm"})
+    assert is_filing_indexed(f, {"https://www.sec.gov/Archives/edgar/data/2488/000000248824000012/amd.htm"})
+    assert not is_filing_indexed(f, {"data/us/pdfs/AMD/2025_000012.htm"})
+
+
 def test_the_10q_is_found_by_the_companys_own_quarter_label():
     from finagent.tools.xbrl import XBRLClient
     x = XBRLClient.__new__(XBRLClient)

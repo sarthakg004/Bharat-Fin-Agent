@@ -143,6 +143,11 @@ and downloads it from EDGAR when the index lacks it:
 A quarter no filing is labelled with falls back to the year's 10-K. The fetched
 filing is chunked and embedded like the rest of the index and stays in it.
 
+"The index lacks it" is checked on the exact filing (its accession number), not
+on the year label: the index labels a filing by the year it was filed, so a
+December company's FY2022 10-K carries the label 2023 and would otherwise pass
+for FY2023.
+
 ## Project layout
 
 ```

@@ -431,9 +431,3 @@ def count(collection_name: str) -> int:
     if not client.collection_exists(collection_name):
         return 0
     return client.count(collection_name, exact=True).count
-
-
-def delete_collection(collection_name: str) -> None:
-    client = get_client()
-    if client.collection_exists(collection_name):
-        client.delete_collection(collection_name)

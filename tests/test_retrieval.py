@@ -111,6 +111,60 @@ def test_a_critic_retry_searches_the_failed_claims(monkeypatch):
     assert [q for q, _ in agent._retriever.searched] == ["supporting evidence for: claim", "q"]
 
 
+def test_a_critic_retry_keeps_the_first_search_passages(monkeypatch):
+    """Replacing them would strip the evidence of the claims that were supported."""
+    agent = _agent(monkeypatch)
+    out = R.retrieve(agent, {"question": "q", "sub_queries": ["s"], "query_routes": ["narrative"],
+                             "retrieved_chunks": [{"text": "first evidence", "sub_query": "s"}],
+                             "retry_queries": ["supporting evidence for: claim"]})
+    assert "first evidence" in [c["text"] for c in out["retrieved_chunks"]]
+
+
+def test_a_spent_embedding_quota_is_reported_not_hidden(monkeypatch):
+    from finagent.vectorstore import EmbeddingQuotaExhausted
+
+    class QuotaStore(StubStore):
+        def similarity_search(self, *a, **kw):
+            raise EmbeddingQuotaExhausted("all keys spent")
+
+    agent = _agent(monkeypatch)
+    agent._retriever = HybridRetriever(QuotaStore())
+    agent._retriever._company_vocab, agent._retriever._years_by_co = {}, {}
+    state = {"question": "q", "sub_queries": ["q"], "query_routes": ["narrative"], "notices": []}
+    assert R.retrieve(agent, state) == {"retrieved_chunks": []}
+    assert "embedding quota" in state["notices"][0]
+
+
+def test_a_year_is_fetched_when_its_own_10k_is_missing_whatever_the_year_labels(monkeypatch):
+    """AES's FY2022 10-K was filed in 2023 and is labelled 2023, which used to
+    pass for FY2023 too. The check is now on the exact filing."""
+    from finagent.agent.state import CorpusGateQuery
+
+    monkeypatch.delenv("DISABLE_DYNAMIC_FETCH", raising=False)
+    agent = _agent(monkeypatch)
+    llm = type("L", (), {"with_structured_output": lambda self, schema: self,
+                         "invoke": lambda self, msgs: CorpusGateQuery(company="AES")})()
+    monkeypatch.setattr(agent, "llm", lambda role: llm)
+    tenk = {2022: {"accession": "0000874761-23-000010", "date": "2023-02-27", "period": "2022-12-31"},
+            2023: {"accession": "0000874761-24-000012", "date": "2024-02-26", "period": "2023-12-31"}}
+    ingested = []
+    agent._fetcher = type("F", (), {
+        "gate": lambda self, c: {"decision": "already_indexed", "ticker": "AES",
+                                 "cik": "874761", "company": "AES CORP"},
+        "pick_filings": lambda self, cik, n=1, fiscal_years=None: [tenk[y] for y in fiscal_years],
+        "fetch_and_ingest": lambda self, t, company="", **kw: ingested.append(kw) or {"ok": True},
+    })()
+    monkeypatch.setattr(R, "_vocab_can_match", lambda *a: True)
+    monkeypatch.setattr(R, "_indexed_values", lambda a, f, t: {
+        "https://www.sec.gov/Archives/edgar/data/874761/000087476123000010/aes-20221231.htm"})
+
+    R.fetch_filing(agent, {"question": "AES risk factors in FY2023"})
+    assert ingested == [{"n": 1, "fiscal_years": [2023]}]
+    ingested.clear()
+    assert R.fetch_filing(agent, {"question": "AES risk factors in FY2022"})["fetch_status"][
+        "decision"] == "already_indexed" and ingested == []
+
+
 def test_the_cap_keeps_the_best_passage_of_every_query(monkeypatch):
     """On a comparison question one company must not crowd the other out."""
     scores = {f"A passage {i}": 9 - i for i in range(3)} | {f"B passage {i}": 1 - i for i in range(3)}

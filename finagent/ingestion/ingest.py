@@ -286,12 +286,6 @@ class CorpusIngester:
         self._print_summary(stats)
         return stats
 
-    def reset_collection(self) -> None:
-        from finagent.vectorstore import delete_collection
-
-        delete_collection(self.collection_name)
-        self._store = None
-
     @staticmethod
     def _print_summary(stats: IngestionStats) -> None:
         print(f"\nIngested {stats.files_processed} file(s), {stats.total_chunks} chunks, "

@@ -23,11 +23,3 @@ export function isMac(): boolean {
 export function modKey(): string {
   return isMac() ? "⌘" : "Ctrl";
 }
-
-/** Map a score in [0,1] to one of "good" | "okay" | "bad" for badge colours. */
-export function scoreTier(score: number | null | undefined): "good" | "okay" | "bad" | "none" {
-  if (score == null || Number.isNaN(score)) return "none";
-  if (score >= 0.8) return "good";
-  if (score >= 0.6) return "okay";
-  return "bad";
-}

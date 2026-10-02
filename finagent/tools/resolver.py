@@ -81,9 +81,8 @@ class TickerCIKResolver:
 
     Usage:
         r = TickerCIKResolver()
-        r.cik("AAPL")        -> "0000320193"
-        r.cik("Apple")       -> "0000320193"
-        r.run("Microsoft")   -> {"cik": "0000789019", "ticker": "MSFT", ...}
+        r.resolve("AAPL")       -> {"cik": "0000320193", "ticker": "AAPL", ...}
+        r.resolve("Microsoft")  -> {"cik": "0000789019", "ticker": "MSFT", ...}
     """
 
 
@@ -215,10 +214,3 @@ class TickerCIKResolver:
                         "match": "name_fuzzy", "score": round(score, 3)}
 
         return miss
-
-    def cik(self, query: str) -> Optional[str]:
-        """Convenience: return just the zero-padded CIK, or ``None``."""
-        return self.resolve(query).get("cik")
-
-    def run(self, query: str) -> dict:
-        return self.resolve(query)

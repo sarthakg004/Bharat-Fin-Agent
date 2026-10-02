@@ -46,6 +46,15 @@ def fiscal_year(period_end: str) -> Optional[int]:
     return y - 1 if m == 1 and d <= 7 else y
 
 
+def is_filing_indexed(filing: dict, indexed_urls: set[str]) -> bool:
+    """Is this SEC filing among the company's indexed `source_url`s? A fetched
+    filing is stored under its SEC URL (which holds the accession number), a
+    curated one under its local path "{TICKER}/{filing year}_{accession tail}.htm"."""
+    acc = filing["accession"]
+    tail = f"/{filing['date'][:4]}_{acc.split('-')[-1]}.htm"
+    return any(acc.replace("-", "") in u or u.endswith(tail) for u in indexed_urls)
+
+
 class SecFilingFetcher:
     # Fetched filings are saved under corpus_dir/dynamic-fetch/, apart from the
     # curated corpus, so rebuilding the corpus does not pick them up.
@@ -146,15 +155,13 @@ class SecFilingFetcher:
             "market": "us",
         }
 
-    def _download(self, ticker: str, company: str, filing_type: str, n: int,
-                  fiscal_years: Optional[list[int]] = None,
-                  accession: Optional[str] = None) -> tuple[list[dict], Optional[str]]:
-        """Download one exact filing (`accession`), the annual filings for
-        `fiscal_years`, or the latest `n`. Annual tries 10-K, then 20-F and 40-F
-        for foreign and Canadian issuers. One form type per fetch."""
-        cik = self.resolver.resolve(ticker).get("cik")
-        if not cik:
-            return [], None
+    def pick_filings(self, cik: str, filing_type: str = "10-K", n: int = 1,
+                     fiscal_years: Optional[list[int]] = None,
+                     accession: Optional[str] = None) -> list[dict]:
+        """The filings a fetch would download: one exact filing (`accession`),
+        the annual filings for `fiscal_years`, or the latest `n`. Annual tries
+        10-K, then 20-F and 40-F for foreign and Canadian issuers. One form
+        type per fetch."""
         forms = (filing_type,) if filing_type != "10-K" else ("10-K", "20-F", "40-F")
 
         def choose(filings):
@@ -169,6 +176,15 @@ class SecFilingFetcher:
         pick = choose(self._list_filings(str(cik), forms))
         if not pick and (accession or fiscal_years):        # older than the recent list
             pick = choose(self._list_filings(str(cik), forms, older=True))
+        return pick
+
+    def _download(self, ticker: str, company: str, filing_type: str, n: int,
+                  fiscal_years: Optional[list[int]] = None,
+                  accession: Optional[str] = None) -> tuple[list[dict], Optional[str]]:
+        cik = self.resolver.resolve(ticker).get("cik")
+        if not cik:
+            return [], None
+        pick = self.pick_filings(str(cik), filing_type, n, fiscal_years, accession)
         if not pick:
             return [], None
         used_form = pick[0]["form"]
