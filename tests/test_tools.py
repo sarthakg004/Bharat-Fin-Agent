@@ -162,3 +162,16 @@ def test_fetch_picks_the_10k_for_the_year_asked(tmp_path, monkeypatch):
     assert [r["source_url"].rsplit("/", 1)[-1] for r in records] == ["amat-20241027.htm"]
     # A 52/53-week year ending in early January is the year before (J&J FY2022).
     assert sec_fetch.fiscal_year("2023-01-01") == 2022 and sec_fetch.fiscal_year("2024-02-03") == 2024
+
+
+def test_the_10q_is_found_by_the_companys_own_quarter_label():
+    from finagent.tools.xbrl import XBRLClient
+    x = XBRLClient.__new__(XBRLClient)
+    x._load_companyfacts = lambda cik: {"facts": {"dei": {"EntityCommonStockSharesOutstanding": {
+        "units": {"shares": [
+            {"form": "10-Q", "fy": 2024, "fp": "Q1", "accn": "0000764478-23-000030"},
+            {"form": "10-Q", "fy": 2024, "fp": "Q2", "accn": "0000764478-23-000041"},
+            {"form": "10-K", "fy": 2024, "fp": "FY", "accn": "0000764478-24-000010"}]}}}}}
+    # Best Buy's fiscal 2024 Q2 ended in July 2023; its own label says so.
+    assert x.filing_accession("764478", "10-Q", 2024, "Q2") == "0000764478-23-000041"
+    assert x.filing_accession("764478", "10-Q", 2024, "Q3") is None

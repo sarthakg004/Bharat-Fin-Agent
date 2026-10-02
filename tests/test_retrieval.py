@@ -162,3 +162,12 @@ def test_a_ticker_matches_only_in_capitals():
     assert infer_filter("AMD revenue 2024", vocab, years)["companies"] == ["ADVANCED MICRO DEVICES INC"]
     assert infer_filter("advanced micro devices revenue", vocab, years)["companies"] == [
         "ADVANCED MICRO DEVICES INC"]
+
+
+def test_a_quarter_question_also_searches_the_year_before():
+    from finagent.retrieval.filters import parse_quarter
+    vocab, years = {"best buy": "BBY"}, {"BBY": {"2023", "2024", "2025"}}
+    assert parse_quarter("store count in Q2 of FY2024") == "Q2"
+    assert parse_quarter("second quarter 2023") == "Q2" and parse_quarter("FY2022 revenue") is None
+    assert infer_filter("Best Buy stores in Q2 FY2024", vocab, years)["years"] == ["2023", "2024", "2025"]
+    assert infer_filter("Best Buy revenue FY2024", vocab, years)["years"] == ["2024", "2025"]

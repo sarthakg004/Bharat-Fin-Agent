@@ -43,6 +43,22 @@ def parse_years(text: str) -> list[int]:
             out.append(2000 + n if n < 80 else 1900 + n)
     return out
 
+_QUARTER_RE = re.compile(
+    r"\bq([1-4])\b|\b(first|second|third|fourth|[1-4](?:st|nd|rd|th))\s+(?:fiscal\s+)?quarter\b",
+    re.I)
+_QUARTER_WORDS = {"first": 1, "second": 2, "third": 3, "fourth": 4}
+
+
+def parse_quarter(text: str) -> Optional[str]:
+    """The fiscal quarter a question names: "Q2 FY2024", "2021 Q1" and "second
+    quarter" all give "Q2"/"Q1". None when it names none."""
+    m = _QUARTER_RE.search(text or "")
+    if not m:
+        return None
+    word = (m.group(2) or "").lower()
+    return f"Q{m.group(1) or _QUARTER_WORDS.get(word) or word[0]}"
+
+
 # Section names in the question -> the 10-K item the chunk was tagged with.
 # Only unambiguous names; matched on the normalised question ("MD&A" -> "md and a").
 _ITEM_PHRASES: dict[str, str] = {
@@ -202,7 +218,10 @@ def infer_filter(question: str, vocab: dict, years_by_co: dict) -> Optional[dict
         yrs = parse_years(question)
         if yrs and years_avail:
             target = max(yrs)
-            keep = [str(y) for y in (target, target + 1) if str(y) in years_avail]
+            # A quarter of a fiscal year that ends early in the calendar year was
+            # filed the year before (Best Buy's Q2 FY2024 10-Q: September 2023).
+            span = (target - 1, target, target + 1) if parse_quarter(question) else (target, target + 1)
+            keep = [str(y) for y in span if str(y) in years_avail]
             if keep:
                 flt["years"] = keep
         elif years_avail and _RECENT_RE.search(qn):

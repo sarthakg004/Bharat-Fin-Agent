@@ -215,6 +215,22 @@ class XBRLClient:
 
     # --- companyfacts load / cache ------------------------------------------
 
+    def filing_accession(self, cik: str, form: str, fy: int, fp: str) -> Optional[str]:
+        """The accession number of the filing the company itself labelled fiscal
+        year `fy`, period `fp` ("Q2"). Every fact carries its filing's own
+        DocumentFiscalYearFocus / DocumentFiscalPeriodFocus, so Best Buy's
+        "FY2024 Q2" is its July 2023 10-Q with no date arithmetic."""
+        data = self._load_companyfacts(str(cik).zfill(10))
+        facts = data.get("facts") or {}
+        for taxonomy in ("dei", "us-gaap"):            # dei is small; us-gaap if it is missing
+            for concept in (facts.get(taxonomy) or {}).values():
+                for unit in (concept.get("units") or {}).values():
+                    for f in unit:
+                        if (f.get("form") == form and f.get("fy") == fy
+                                and f.get("fp") == fp and f.get("accn")):
+                            return f["accn"]
+        return None
+
     def _load_companyfacts(self, cik: str) -> dict:
         if cik in self._facts_cache:
             self._facts_cache.move_to_end(cik)      # mark most-recently-used

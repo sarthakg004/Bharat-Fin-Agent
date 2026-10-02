@@ -16,7 +16,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from finagent.agent.prompts import GATE_PROMPT, GATE_SYSTEM, history_block
 from finagent.agent.state import AgentState, CorpusGateQuery
-from finagent.retrieval.filters import parse_years
+from finagent.retrieval.filters import parse_quarter, parse_years
 from finagent.runtime import current_context
 
 # Passages the raw question contributes next to the rewritten query. Measured:
@@ -88,6 +88,14 @@ def fetch_filing(agent, state: AgentState) -> dict:
     # The fiscal years the question names ("FY2022", "FY22", "2022"): fetch the
     # 10-Ks that cover them. No year means the latest filing.
     years = sorted(set(parse_years(question)), reverse=True)[:MAX_FETCH_FILINGS]
+
+    # A named quarter (Q1-Q3; Q4 is in the 10-K) wants that quarter's 10-Q.
+    quarter = parse_quarter(question)
+    if years and quarter in ("Q1", "Q2", "Q3"):
+        done = _fetch_quarter(agent, state, gate, company, years[0], quarter)
+        if done is not None:
+            return done
+
     if gate["decision"] == "already_indexed":
         # "Indexed" is per company. The index labels a filing by the year it was
         # filed, which is the fiscal year or the one after.
@@ -103,9 +111,33 @@ def fetch_filing(agent, state: AgentState) -> dict:
 
     agent.log(state, f"fetching the 10-K for {', '.join(f'FY{y}' for y in years) or 'the latest year'}"
                      f" for {gate['ticker']} from EDGAR")
+    return _ingest(agent, state, gate, company, n=max(1, len(years)), fiscal_years=years or None)
+
+
+def _fetch_quarter(agent, state: AgentState, gate: dict, company: str, fy: int,
+                   quarter: str) -> Optional[dict]:
+    """Fetch the 10-Q the company itself labelled fiscal year `fy`, `quarter`.
+    None when no 10-Q carries that label (no XBRL data, or not filed yet): the
+    caller then fetches the year's 10-K instead."""
     try:
-        res = agent.fetcher.fetch_and_ingest(gate["ticker"], company=gate.get("company") or "",
-                                             n=max(1, len(years)), fiscal_years=years or None)
+        accn = agent.xbrl.filing_accession(gate["cik"], "10-Q", fy, quarter)
+    except Exception as e:
+        agent.log(state, f"could not look up the {quarter} FY{fy} 10-Q for {gate['ticker']}: {e}")
+        return None
+    if not accn:
+        agent.log(state, f"no 10-Q labelled {quarter} FY{fy} for {gate['ticker']}; using the 10-K")
+        return None
+    urls = _indexed_values(agent, "source_url", gate.get("ticker") or company)
+    if any(accn.replace("-", "") in u for u in urls):
+        return {"fetch_status": {**gate, "decision": "already_indexed"}}
+    agent.log(state, f"fetching the {quarter} FY{fy} 10-Q for {gate['ticker']} from EDGAR")
+    return _ingest(agent, state, gate, company, filing_type="10-Q", accession=accn)
+
+
+def _ingest(agent, state: AgentState, gate: dict, company: str, **kw) -> dict:
+    """Download and index filings for the gated company; report how it went."""
+    try:
+        res = agent.fetcher.fetch_and_ingest(gate["ticker"], company=gate.get("company") or "", **kw)
     except Exception as e:
         agent.log(state, f"fetch failed for {gate['ticker']}: {e}")
         if type(e).__name__ == "EmbeddingQuotaExhausted":
@@ -127,10 +159,14 @@ def _vocab_can_match(agent, *names: Optional[str]) -> bool:
 
 
 def _indexed_years(agent, ticker: str) -> set[str]:
+    return _indexed_values(agent, "year", ticker)
+
+
+def _indexed_values(agent, field: str, ticker: str) -> set[str]:
     from finagent.vectorstore import distinct_values
 
     try:
-        return distinct_values(agent.collection, "year", where_field="ticker", where_value=ticker)
+        return distinct_values(agent.collection, field, where_field="ticker", where_value=ticker)
     except Exception:
         return set()
 
