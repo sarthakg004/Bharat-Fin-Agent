@@ -18,6 +18,9 @@
 import { type ComponentPropsWithoutRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
+import "katex/dist/katex.min.css";
 import { visit, SKIP } from "unist-util-visit";
 import type { Plugin } from "unified";
 import type { Root, Text, Link, PhrasingContent } from "mdast";
@@ -61,6 +64,21 @@ const remarkCitations: Plugin<[], Root> = () => (tree) => {
     return [SKIP, index + segments.length];
   });
 };
+
+/**
+ * Math in an answer. A single `$` is money here ("$604 million"), so only
+ * `$$...$$` counts as math (remark-math with singleDollarTextMath off).
+ * Before parsing: `\\(...\\)` and `\\[...\\]` become `$$...$$`; a lone
+ * `$...$` that holds a LaTeX command becomes `$$...$$`; and a money amount
+ * wrapped as math (`$\\$10,069$`) goes back to plain text.
+ */
+export function normalizeMath(text: string): string {
+  return text
+    .replace(/\$\\\$([^$\n]+?)\$/g, (_, amount) => "$" + amount)
+    .replace(/\\\[([\s\S]+?)\\\]/g, (_, m) => `\n$$\n${m.trim()}\n$$\n`)
+    .replace(/\\\(([\s\S]+?)\\\)/g, (_, m) => `$$${m.trim()}$$`)
+    .replace(/(^|[^$])\$([^$\n]*\\[a-zA-Z]+[^$\n]*)\$(?!\$)/g, (_, pre, m) => `${pre}$$${m}$$`);
+}
 
 interface AProps extends ComponentPropsWithoutRef<"a"> {
   href?: string;
@@ -173,10 +191,11 @@ export function MarkdownAnswer({ text }: Props) {
   return (
     <div className="font-ui text-[14px] leading-relaxed text-text-primary">
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkCitations]}
+        remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: false }], remarkCitations]}
+        rehypePlugins={[rehypeKatex]}
         components={COMPONENTS}
       >
-        {text}
+        {normalizeMath(text)}
       </ReactMarkdown>
     </div>
   );
