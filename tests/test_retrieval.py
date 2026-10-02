@@ -244,3 +244,15 @@ def test_a_rate_limited_embedding_key_rests_and_the_next_key_is_used(monkeypatch
     monkeypatch.setattr(time, "sleep", lambda s: (_ for _ in ()).throw(AssertionError("slept")))
     assert len(e._embed_batch(["a", "b"], "RETRIEVAL_DOCUMENT", 0)) == 2
     assert used == ["k1", "k2"] and e._resting["k1"] > time.time() + 30
+
+
+def test_distinct_values_use_facets_and_fall_back_to_reading_points(monkeypatch):
+    from finagent import vectorstore as V
+    monkeypatch.setattr(V, "facet_values", lambda *a: {"u1", "u2"})
+    assert V.distinct_values("c", "source_url", "ticker", "AES") == {"u1", "u2"}
+
+    def no_index(*a):
+        raise RuntimeError("field not indexed")
+    monkeypatch.setattr(V, "facet_values", no_index)
+    monkeypatch.setattr(V, "scroll_payloads", lambda *a, **kw: iter([{"source_url": "u3"}]))
+    assert V.distinct_values("c", "source_url", "ticker", "AES") == {"u3"}

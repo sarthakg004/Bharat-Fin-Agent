@@ -420,7 +420,16 @@ def exists_where(collection_name: str, field: str, value: str) -> bool:
 
 def distinct_values(collection_name: str, field: str, where_field: Optional[str] = None,
                     where_value: Optional[str] = None, limit: int = 5000) -> set[str]:
-    """Distinct metadata values for `field`, optionally scoped by another field."""
+    """Distinct metadata values for `field`, optionally scoped by another field.
+
+    Qdrant's facet call answers this from the payload index in one request. A
+    field without an index falls back to reading every matching point, capped
+    at `limit` points."""
+    try:
+        return {str(v) for v in facet_values(collection_name, field, where_field,
+                                             where_value or None, limit)}
+    except Exception:
+        pass
     qfilter = _match(where_field, where_value) if where_field and where_value else None
     return {str(m.get(field, "")) for m in
             scroll_payloads(collection_name, qfilter, limit=limit, select=(field,))}
