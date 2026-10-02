@@ -68,16 +68,24 @@ const remarkCitations: Plugin<[], Root> = () => (tree) => {
 /**
  * Math in an answer. A single `$` is money here ("$604 million"), so only
  * `$$...$$` counts as math (remark-math with singleDollarTextMath off).
- * Before parsing: `\\(...\\)` and `\\[...\\]` become `$$...$$`; a lone
- * `$...$` that holds a LaTeX command becomes `$$...$$`; and a money amount
- * wrapped as math (`$\\$10,069$`) goes back to plain text.
+ * Text already inside `$$...$$` is left alone; elsewhere, before parsing:
+ * `\\(...\\)` and `\\[...\\]` become `$$...$$`, a lone `$...$` holding a LaTeX
+ * command becomes `$$...$$`, and a money amount wrapped as math (`$\\$10,069$`)
+ * goes back to text. An escaped `\\$` is never a delimiter.
  */
 export function normalizeMath(text: string): string {
   return text
-    .replace(/\$\\\$([^$\n]+?)\$/g, (_, amount) => "$" + amount)
+    .split(/(\$\$[\s\S]+?\$\$)/)
+    .map((part, i) => (i % 2 ? part : normalizeOutsideMath(part)))
+    .join("");
+}
+
+function normalizeOutsideMath(text: string): string {
+  return text
+    .replace(/(^|[^$\\])\$\\\$([^$\n\\]+?)\$(?!\$)/g, (_, pre, amount) => `${pre}$${amount}`)
     .replace(/\\\[([\s\S]+?)\\\]/g, (_, m) => `\n$$\n${m.trim()}\n$$\n`)
     .replace(/\\\(([\s\S]+?)\\\)/g, (_, m) => `$$${m.trim()}$$`)
-    .replace(/(^|[^$])\$([^$\n]*\\[a-zA-Z]+[^$\n]*)\$(?!\$)/g, (_, pre, m) => `${pre}$$${m}$$`);
+    .replace(/(^|[^$\\])\$([^$\n]*\\[a-zA-Z]+[^$\n]*?)(?<!\\)\$(?!\$)/g, (_, pre, m) => `${pre}$$${m}$$`);
 }
 
 interface AProps extends ComponentPropsWithoutRef<"a"> {
