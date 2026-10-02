@@ -152,7 +152,8 @@ python -m finagent.evaluation.answers score --output results/v7/answers.json
 
 Retrieval reports pool recall, evidence coverage and hit rate at 5 and 8, figure
 recall, mean reciprocal rank and retention. Answers are scored with six RAGAS
-metrics plus a judge-free check that the gold figure appears in the answer.
+metrics, a yes/no `verdict` (does the answer reach the gold answer, whatever its
+length) and a judge-free check that the gold figure appears in the answer.
 
 Both steps resume where they stopped. Add `--sample 10` for a quick run; a
 sample run writes to its own files. The eval corpus is kept on a local Qdrant
@@ -184,14 +185,56 @@ With Cohere, by question type: numeric 57 of 60, narrative 22 of 27, comparison
 `results/retrieval_eval.md`; `results/RETRIEVAL_EXPERIMENTS.md` records every
 earlier experiment, including the ones that lost.
 
-Two things to know when reading RAGAS scores for this project:
+### Answer quality
 
-- `answer_correctness` counts every extra true statement against a one-line
-  gold answer. In the last full run, answers that contained the correct figure
-  still averaged 0.40.
-- `groundedness` and `faithfulness` stay high when the answer honestly says the
-  evidence does not cover the question. A third of the questions in that run had
-  weak retrieval, scored 0.98 on groundedness and 0.18 on correctness.
+The last full run (`results/v7/`) answered all 127 questions with the production
+agent, with Claude Haiku as the writer and critic (production uses Gemini for
+both), and scored them with Claude Sonnet 5 as the judge.
+
+The numbers below leave out 15 questions whose filing is not in the eval index:
+the match from FinanceBench to SEC documents picked the wrong period for 8
+filings (for example the Q3 10-Q for a Q2 question). Those questions cannot be
+answered from the index. The list is `FILING_NOT_INDEXED` in
+`finagent/evaluation/answers.py`; `results/v7/answers_report.md` has every
+question too.
+
+| Metric (112 questions) | Score |
+|---|---|
+| **verdict: answer is correct** | **0.85** |
+| numeric questions correct | 58 of 69 |
+| comparison questions correct | 12 of 13 |
+| narrative questions correct | 25 of 30 |
+| groundedness | 0.97 |
+| answer_relevancy | 0.82 |
+| context_recall | 0.79 |
+| faithfulness | 0.77 |
+| answer_correctness | 0.49 |
+| context_precision | 0.38 |
+| errors / refusals | 0 / 0 |
+| latency median / p95 | 55 s / 236 s |
+
+The verdict and the judge-free figure check agree on 55 of 65 numeric
+questions. Of the 10 disagreements, the judge was right in 6, too strict about
+rounding in 3 (8.74 against a gold of 8.70) and too lenient in 1.
+
+Why three of the scores are low:
+
+- **faithfulness (0.77)** checks every statement against the passages. A figure
+  from the SEC's structured data reaches the writer as a fact line such as
+  `capital expenditure (FY2018) = $1,577,000,000 (...)`, which does not name the
+  company. The judge cannot confirm the "3M's" in "3M's FY2018 capital
+  expenditure was $1,577 million", so exactly right answers score 0.
+  Groundedness, which grades the answer as a whole, is 0.97.
+- **context_precision (0.38)** asks whether each passage given to the writer
+  was needed for the gold answer. The writer gets a median of 8 pieces of
+  evidence (up to 20 when a question has several parts), and a one-figure
+  question needs one of them, so most count as noise. Structured facts also do not look like filing text
+  to it, so answers built only from them often score 0.
+- **answer_correctness (0.49)** is mostly F1 over statements against a
+  one-line gold answer. Every extra true statement (the inputs of a ratio, a
+  driver of a change) counts as a false positive, so a correct answer of three
+  sentences scores about 0.4. The verdict was added to measure correctness
+  without that length penalty.
 
 ## Run it locally
 
