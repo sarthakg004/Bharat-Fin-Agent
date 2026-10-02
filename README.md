@@ -13,41 +13,74 @@ The models decide what to look up and how to explain it.
 
 | Capability | Source |
 |---|---|
-| Answers grounded in filing text, with `[N]` citations | 10-K filings in Qdrant, hybrid search + rerank |
+| Answers grounded in filing text, with `[N]` citations | 10-K and 10-Q filings in Qdrant, hybrid search + rerank |
 | Exact reported figures | SEC XBRL company-facts API |
 | Margins, ratios, growth, CAGR, working-capital days | A Python calculator over the XBRL figures |
-| Companies that are not indexed yet | Their 10-K is fetched from EDGAR and indexed on the spot |
+| Companies or periods that are not indexed yet | The 10-K for the year asked, or the 10-Q for a named quarter, is fetched from EDGAR and indexed on the spot |
 | Price, volume, charts | Yahoo Finance |
 | "Which companies disclosed X?" | EDGAR full-text search |
-| News and events after the latest filing | Tavily web search |
+| News and events after the latest filing | Tavily web search, also the fallback when the filings have nothing |
 
 ## How a question is answered
 
 ```mermaid
 flowchart TD
-    Q([Question]) --> P[plan<br/>split into parts, tag each part,<br/>write one search query]
-    P -->|a part needs filing text| F[fetch filing<br/>company missing? download its 10-K]
-    F --> R[retrieve<br/>hybrid search, rerank, keep best 8]
-    P -->|numbers, market or web only| X
-    R --> X[XBRL<br/>exact filed figures]
-    X --> C[calculator<br/>ratios computed in Python]
-    C --> M[market data]
-    C --> W[web search]
-    C --> E[EDGAR search]
-    M --> G[gather]
-    W --> G
-    E --> G
-    G --> S[write<br/>cited answer]
+    Q([Question]) --> P[planner<br/>split into parts, route each]
+    P -->|a part needs filing text| FF
+    P -->|figures only| X
+
+    subgraph filings [Filings]
+        FF[fetch_filing<br/>10-K or 10-Q, if missing] --> R[retrieve<br/>hybrid search, rerank, top 8]
+    end
+
+    subgraph figures [Figures]
+        X[xbrl<br/>exact filed figures] --> C[calculator<br/>ratios in Python]
+    end
+
+    subgraph sources [Other sources, side by side]
+        M[market_data]
+        WS[web_search]
+        E[edgar_search]
+    end
+
+    R --> X
+    C --> M & WS & E
+    M & WS & E --> G[gather]
+    G -.->|figures came back empty| FF
+    G --> S[synthesize<br/>write the cited answer]
     S --> K{critic<br/>is every claim<br/>in the evidence?}
     K -->|yes| A([Answer])
-    K -->|draft overstated| S
-    K -->|evidence missing| R2[retrieve again<br/>on the failed claims] --> S
-    K -->|draft admits it cannot answer| W2[web search] --> S
-    K -->|still under half supported<br/>after the one retry| X2([Refuse])
+    K -.->|no, once| REC[[recovery<br/>rewrite, search filings again,<br/>fetch filings, or web search]]
+    REC -.-> S
+    K -->|still under half<br/>supported| RF([Refuse])
 ```
 
-The critic gets exactly one recovery per question. It chooses which one: rewrite
-the draft, search again for the claims that failed, or go to the web.
+Solid arrows are the first pass. Dotted arrows are fallbacks, and each runs at
+most once: the filing search when the figure lookups come back empty, and the
+critic's single recovery (the table below lists its four options). A second
+search skips the figure steps and goes straight to `synthesize`.
+
+Each box is one step, named as in `finagent/agent/agent.py`, which wires them;
+the steps themselves are plain functions in `finagent/agent/`.
+
+**Routing.** The planner tags each part of the question: *numeric* (one reported
+figure or ratio), *narrative* (needs filing text), *market* (prices),
+*cross_document* (an EDGAR search across many companies) or *external* (the web). A
+judgement question ("is the margin improving?") gets a numeric part and a
+narrative part. Filing search runs only when some part is narrative.
+
+**Recovery.** The fact-check (critic) gets exactly one recovery per question and
+picks it from what it found:
+
+| The critic finds | Recovery |
+|---|---|
+| The draft overstates the evidence | Rewrite, with the flagged claims listed |
+| Claims with no evidence behind them | Search the filings again for those claims, then rewrite |
+| A figures-only draft that admits a figure is missing | Search the filings (fetching them if needed), then rewrite |
+| A draft that admits it cannot answer, with no web results yet | Web search, then rewrite |
+
+If less than half of the answer is supported after that, the app refuses instead
+of answering.
 
 ### Which model does which step
 
@@ -61,8 +94,10 @@ the draft, search again for the claims that failed, or go to the web.
 | Rerank | Cohere `rerank-v4.0-pro` | Falls back to a local `bge-reranker-v2-m3` if Cohere is down |
 
 This table lives in one place, `finagent/runtime.py`. The frontend reads it from
-`GET /api/config`. Only the writer can be changed from the UI; OpenAI and
-Anthropic models need your own API key, which stays in your browser.
+`GET /api/config`. Only the writer can be changed from the UI (Gemini 3.5 to 3.8
+Flash, Qwen, or OpenAI and Anthropic models with your own API key, which stays in
+your browser). The fact-checker is fixed and is never the writer's model: when
+the writer is `gemini-3.6-flash`, the check runs on `gemini-3.5-flash`.
 
 ### Inside retrieval
 
@@ -87,6 +122,27 @@ flowchart LR
 Search matches on small chunks, because a short chunk matches a query precisely.
 The model is then given the larger parent passage, because it needs the context.
 
+The company and year filter reads the question: a company name matches in any
+case, a ticker only in capitals ("COST" is Costco, "cost of sales" is not). The
+years kept are the year named and the one after, because a filing is labelled
+by the year it was filed; for a quarter, the year before too, since a company
+whose fiscal year ends early in the calendar files its first quarters the year
+before.
+
+### Fetching a filing that is not indexed
+
+`fetch_filing` (`finagent/agent/retrieve.py`) decides what the question needs
+and downloads it from EDGAR when the index lacks it:
+
+| The question names | Filing fetched | How the right one is found |
+|---|---|---|
+| A quarter (Q1 to Q3) and a year | That quarter's 10-Q | The filing the company itself labelled with that fiscal year and quarter, from its XBRL tags. Best Buy's "Q2 FY2024" is its July 2023 10-Q, with no date arithmetic |
+| A year, or Q4 | That year's 10-K | The 10-K whose report period covers the year. A 52/53-week year that ends in the first week of January counts as the year before (J&J's fiscal 2022 ended on 1 January 2023) |
+| No year | The latest 10-K | |
+
+A quarter no filing is labelled with falls back to the year's 10-K. The fetched
+filing is chunked and embedded like the rest of the index and stays in it.
+
 ## Project layout
 
 ```
@@ -100,7 +156,7 @@ finagent/
     state.py           the shared state and structured-output schemas
     prompts.py         every prompt
     plan.py            planner and search-query rewrite
-    retrieve.py        10-K fetch gate, search, the 8-passage cap
+    retrieve.py        fetch gate (10-K by year, 10-Q by quarter), search, the 8-passage cap
     numeric.py         XBRL and calculator steps
     external.py        market data, web search, EDGAR search steps
     answer.py          write, fact-check, refuse
@@ -135,6 +191,14 @@ providers reuse one status for different problems.
 A step that fails on its own (for example the fact-check) does not lose the
 answer. The answer is built from what was gathered and a notice says what was
 skipped.
+
+## The interface
+
+The React app streams each step as it runs, then the answer with `[N]` chips
+that jump to the matching source card. Source cards render markdown, so a filing
+table shows as a table; a computed metric shows its formula in words and its
+inputs as a table. Formulas in an answer render as LaTeX when written inside
+`$$...$$` or `\(...\)`; a single `$` stays money.
 
 ## Evaluation
 
@@ -314,6 +378,13 @@ Pushing to `main` runs `.github/workflows/deploy.yml`: tests, then the backend
 to Cloud Run (one image serving the API and the built frontend, scaling to zero)
 and the frontend to Firebase Hosting. Auth to Google Cloud is keyless through
 Workload Identity Federation.
+
+The image holds code and two models but no data: the filings live in Qdrant.
+The models are the local fallback reranker and the BM25 tokenizer, which turns a
+question into keyword vectors. Both are baked in because the container runs
+offline (`HF_HUB_OFFLINE=1`). The build fails if BM25 cannot load: a fastembed
+release once refused its own cache, and every filing search failed in
+production until it was caught.
 
 The app runs on free tiers, which sets its limits: about 20 writer requests per
 Gemini key per day, 1,000 embedded texts per key per day (one live 10-K fetch
