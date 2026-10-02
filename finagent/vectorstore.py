@@ -77,12 +77,14 @@ class GeminiEmbeddings(Embeddings):
     Questions are embedded as RETRIEVAL_QUERY and chunks as RETRIEVAL_DOCUMENT;
     the model is trained on that pairing.
 
-    The cache (sqlite, one row per text) makes a re-run free. Free-tier quota is
-    spent per request, including failed ones, so a rate limit is waited out
-    rather than retried on another key.
+    The cache (sqlite, one row per text) makes a re-run free. A key that hits
+    its per-minute limit (100 texts a minute on the free tier) rests until the
+    reset the API names, and the batch moves to the next key; it sleeps only when
+    every key is resting. A 10-K is about 1,000 texts, so one key alone needs
+    ten minutes and the whole pool about two.
     """
 
-    MAX_WAITS = 4               # sleeps on a per-minute limit before giving up
+    MAX_WAITS = 12              # sleeps with every key resting before giving up
     DEAD_COOLDOWN_S = 900       # how long a key sits out after a daily-quota error
 
     def __init__(self, model: str = DEFAULT_EMBED_MODEL, dim: int = GEMINI_EMBED_DIM,
@@ -94,7 +96,8 @@ class GeminiEmbeddings(Embeddings):
         if not self.keys:
             raise RuntimeError("No Gemini API key found. Set GEMINI_API_KEYS or "
                                "GEMINI_API_KEY to embed.")
-        self._dead: dict[str, float] = {}       # key -> time it may be tried again
+        self._dead: dict[str, float] = {}       # key -> time it may be tried again (daily)
+        self._resting: dict[str, float] = {}    # key -> end of its per-minute limit
         self._local = threading.local()         # one sqlite connection per thread
 
     def _post(self, key: str, texts: list[str], task: str) -> list[list[float]]:
@@ -127,14 +130,22 @@ class GeminiEmbeddings(Embeddings):
         """Embed one batch. Raises instead of dropping texts."""
         last: Optional[Exception] = None
         waits = attempt = 0
-        while waits < self.MAX_WAITS:
-            live = [k for k in self.keys if self._dead.get(k, 0) <= time.time()]
+        while True:
+            now = time.time()
+            live = [k for k in self.keys if self._dead.get(k, 0) <= now]
             if not live:
                 raise EmbeddingQuotaExhausted(
                     f"All {len(self.keys)} Gemini keys are out of embedding quota "
                     f"for today. Vectors already embedded are cached, so the next "
                     f"run resumes.") from last
-            key = live[(key_idx + attempt) % len(live)]
+            ready = [k for k in live if self._resting.get(k, 0) <= now]
+            if not ready:                                # every key is resting
+                if waits >= self.MAX_WAITS:
+                    break
+                time.sleep(min(self._resting[k] for k in live) - now + 0.5)
+                waits += 1
+                continue
+            key = ready[(key_idx + attempt) % len(ready)]
             attempt += 1
             try:
                 got = self._post(key, texts, task)
@@ -150,10 +161,9 @@ class GeminiEmbeddings(Embeddings):
                     raise
                 elif "PerDay" in e.body:                 # daily quota: bench the key
                     self._dead[key] = time.time() + self.DEAD_COOLDOWN_S
-                else:                                    # per-minute: wait as told
+                else:                                    # per-minute: rest this key
                     m = re.search(r"retryDelay['\"]?:\s*['\"](\d+(?:\.\d+)?)s", e.body)
-                    time.sleep(float(m.group(1)) + 1 if m else 30)
-                    waits += 1
+                    self._resting[key] = time.time() + (float(m.group(1)) + 1 if m else 30)
         raise RuntimeError(f"Gemini embeddings still rate-limited after "
                            f"{self.MAX_WAITS} waits ({last})") from last
 

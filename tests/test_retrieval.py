@@ -171,3 +171,22 @@ def test_a_quarter_question_also_searches_the_year_before():
     assert parse_quarter("second quarter 2023") == "Q2" and parse_quarter("FY2022 revenue") is None
     assert infer_filter("Best Buy stores in Q2 FY2024", vocab, years)["years"] == ["2023", "2024", "2025"]
     assert infer_filter("Best Buy revenue FY2024", vocab, years)["years"] == ["2024", "2025"]
+
+
+def test_a_rate_limited_embedding_key_rests_and_the_next_key_is_used(monkeypatch):
+    import time
+    from finagent import vectorstore as V
+    e = V.GeminiEmbeddings.__new__(V.GeminiEmbeddings)
+    e.model, e.keys, e._dead, e._resting = "m", ["k1", "k2"], {}, {}
+    used = []
+
+    def post(key, texts, task):
+        used.append(key)
+        if key == "k1":
+            raise V._HttpError(429, '{"retryDelay": "40s"}')
+        return [[1.0, 0.0] for _ in texts]
+
+    e._post = post
+    monkeypatch.setattr(time, "sleep", lambda s: (_ for _ in ()).throw(AssertionError("slept")))
+    assert len(e._embed_batch(["a", "b"], "RETRIEVAL_DOCUMENT", 0)) == 2
+    assert used == ["k1", "k2"] and e._resting["k1"] > time.time() + 30

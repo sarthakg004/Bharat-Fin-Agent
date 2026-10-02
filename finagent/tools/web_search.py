@@ -229,14 +229,24 @@ class WebSearcher:
         return hits[:k]
 
     @staticmethod
-    def _normalize_tavily(r: dict, tier: str) -> dict:
+    def _tidy(text: str) -> str:
+        """Scraped filing tables arrive as runs of empty cells ("| | | | 2022 | |
+        | $ | 733 |"). Collapse each run to one separator, so the writer and the
+        source card see "| 2022 | $ | 733 |" and the 1,500 characters kept hold
+        more content than pipes."""
+        text = re.sub(r"\|(?:[ \t]*\|)+", "|", text or "")
+        text = re.sub(r"(?m)^[ \t|]+$\n?", "", text)          # rows of nothing but pipes
+        return re.sub(r"[ \t]{2,}", " ", text).strip()
+
+    @classmethod
+    def _normalize_tavily(cls, r: dict, tier: str) -> dict:
         # Tavily's `published_date` for news topic is ISO-8601; first 10 chars
         # are the YYYY-MM-DD we want to surface to the synthesizer.
         pub = (r.get("published_date") or "")[:10]
         return {
             "title": (r.get("title") or "")[:240],
             "url": r.get("url") or "",
-            "content": (r.get("content") or "")[:1500],
+            "content": cls._tidy(r.get("content") or "")[:1500],
             "score": float(r.get("score") or 0.0),
             "source": "tavily",
             "tier": tier,
