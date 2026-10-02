@@ -26,7 +26,8 @@ ROLES: dict[str, tuple[str, str]] = {
 
 # Models the picker offers for the writer. The first one is the provider's default.
 WRITER_MODELS: dict[str, list[str]] = {
-    "gemini": ["gemini-3.5-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite"],
+    "gemini": ["gemini-3.5-flash", "gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.8-flash",
+               "gemini-3.5-flash-lite"],
     "groq": ["qwen/qwen3.8-27b"],
     "openai": ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini"],
     "anthropic": ["claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-4-5-20251001"],
