@@ -286,11 +286,8 @@ def _agent_for(arm: str):
 
 def _pool_texts(agent, q: Question) -> list[str]:
     """The candidate parents for a question's two searches, before reranking."""
-    from finagent.retrieval.expansion import expand_query
-
     texts = []
     for query in dict.fromkeys([q.retrieval_query or q.text, q.text]):
-        query = expand_query(query)
         flt = agent.retriever.infer_filter(query)
         pool = agent.retriever.get_pool(query, flt)
         if not pool and flt and (flt.get("years") or flt.get("items")):

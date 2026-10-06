@@ -10,55 +10,55 @@
     {
       "reranker": "none",
       "n": 99,
-      "pool_recall": 0.9596,
-      "cov@5": 0.5787,
-      "cov@8": 0.7172,
-      "hit@5": 0.6061,
-      "hit@8": 0.7879,
-      "num@8": 0.8178,
-      "mrr": 0.4489,
-      "retention": 0.8211,
-      "ms_per_question": 22,
+      "pool_recall": 0.9697,
+      "cov@5": 0.5829,
+      "cov@8": 0.7048,
+      "hit@5": 0.6162,
+      "hit@8": 0.7778,
+      "num@8": 0.8082,
+      "mrr": 0.4413,
+      "retention": 0.8021,
+      "ms_per_question": 19,
       "hit@8_by_type": {
-        "comparison": "10/12",
+        "comparison": "8/12",
         "narrative": "20/27",
-        "numeric": "48/60"
+        "numeric": "49/60"
       }
     },
     {
       "reranker": "cohere:rerank-v4.0-pro",
       "n": 99,
-      "pool_recall": 0.9596,
-      "cov@5": 0.7778,
-      "cov@8": 0.8129,
-      "hit@5": 0.8283,
-      "hit@8": 0.899,
-      "num@8": 0.886,
-      "mrr": 0.6273,
-      "retention": 0.9368,
-      "ms_per_question": 2499,
+      "pool_recall": 0.9697,
+      "cov@5": 0.7867,
+      "cov@8": 0.825,
+      "hit@5": 0.8384,
+      "hit@8": 0.9091,
+      "num@8": 0.8937,
+      "mrr": 0.6462,
+      "retention": 0.9375,
+      "ms_per_question": 2541,
       "hit@8_by_type": {
         "comparison": "10/12",
-        "narrative": "22/27",
+        "narrative": "23/27",
         "numeric": "57/60"
       }
     },
     {
       "reranker": "BAAI/bge-reranker-v2-m3",
       "n": 99,
-      "pool_recall": 0.9596,
-      "cov@5": 0.6757,
-      "cov@8": 0.7659,
-      "hit@5": 0.7273,
-      "hit@8": 0.8283,
-      "num@8": 0.8661,
-      "mrr": 0.5295,
-      "retention": 0.8632,
-      "ms_per_question": 7901,
+      "pool_recall": 0.9697,
+      "cov@5": 0.6527,
+      "cov@8": 0.7522,
+      "hit@5": 0.6869,
+      "hit@8": 0.8081,
+      "num@8": 0.8622,
+      "mrr": 0.5012,
+      "retention": 0.8333,
+      "ms_per_question": 8401,
       "hit@8_by_type": {
         "comparison": "8/12",
-        "narrative": "21/27",
-        "numeric": "53/60"
+        "narrative": "20/27",
+        "numeric": "52/60"
       }
     }
   ]

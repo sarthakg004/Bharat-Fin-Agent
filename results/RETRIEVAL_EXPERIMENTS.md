@@ -1371,3 +1371,55 @@ Two traps worth recording for anyone using this API:
    count against the batch it answered.
 2. **The SDK reports a 429 as "Cannot send a request, as the client has been
    closed"**, which reads like a local bug. Raw HTTP shows the real quota error.
+
+## 17. Query modes and ratio handling on the current stack — October 2026
+
+Re-measured on the current stack (Gemini embeddings, Qwen 3.8 rewriter, Cohere
+`rerank-v4.0-pro`), same 99 questions and 8-passage budget. Only what is
+searched changes. Every arm runs the production `retrieve._search` or its cap.
+
+### 17a. What to search on
+
+| searched | searches/q | pool | hit@5 | hit@8 | MRR | numeric | narrative | comparison |
+|---|---|---|---|---|---|---|---|---|
+| sub-queries only (5 each) | 2.2 | 90 | 79 | 83 | 0.582 | 55 | 20 | 8 |
+| raw question only | 1 | 91 | 82 | 87 | 0.639 | 54 | 24 | 9 |
+| rewrite only | 1 | 87 | 79 | 83 | 0.644 | 55 | 19 | 9 |
+| **rewrite + raw question** | 2 | **95** | 82 | **89** | 0.627 | **57** | 22 | **10** |
+
+The two searches find different evidence (pool 95 against 87-91): the rewrite
+carries the numeric questions, the raw question the narrative ones.
+Decomposition is worst on every measure, as it was on the old stack (§14).
+
+### 17b. Who translates "quick ratio" into line items
+
+Filings print a ratio's inputs, not its name (§13a). Four ways of doing that
+translation, all with the raw question searched too:
+
+| design | pool | hit@5 | hit@8 | MRR |
+|---|---|---|---|---|
+| rewriter writes the inputs; dictionary appends inputs to the raw question (previous) | 95 | 82 | 89 | 0.627 |
+| **rewriter writes the inputs; raw question searched as asked (shipped)** | 95 | 82 | 88 | 0.639 |
+| rewriter keeps the ratio name; dictionary appends the inputs | 94 | 81 | 88 | 0.634 |
+| rewriter keeps the name; dictionary puts the inputs in brackets after it | 95 | 81 | 87 | 0.641 |
+| dictionary expands the question first; rewriter copies the brackets and adds its own for unknown ratios | 94 | 79 | 84 | 0.617 |
+
+**The dictionary (`expansion.py`) was removed.** On this stack it changed the
+raw-question search for 59 of 99 questions and moved hit@8 by one, with a lower
+MRR: the rewrite already searches with the inputs, and the embeddings and Cohere
+match "quick ratio" to balance-sheet text without help. Its §13 gain (pool
+74 -> 79) was measured when sub-queries were searched and nothing else
+translated ratio names. The rewriter keeps the job because it handles any
+ratio, not only the ones a dictionary lists.
+
+Expand-first lost on query length: the rewriter copied 20-word brackets,
+often two per query, and Cohere ranks a long keyword list worse (retention 0.89,
+the lowest arm). Its fallback did work: unknown ratios got sensible inputs
+("operating cash flow ratio (net cash provided by operating activities total
+current liabilities)").
+
+Noise: regenerating the rewrites with an unchanged prompt changed 5 of 99, so a
+one-question difference between the rows above is within noise. The official
+numbers for the shipped design are in `results/retrieval_eval.md`: with the
+dictionary gone from every search (the rows above removed it from the raw
+question only), Cohere hit@8 90, hit@5 83, pool 96, MRR 0.646.

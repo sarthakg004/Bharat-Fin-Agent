@@ -1,1 +1,1 @@
-"""Hybrid retrieval: filter, expand, search, rerank. See `hybrid.py`."""
+"""Hybrid retrieval: filter, search, rerank. See `hybrid.py`."""

@@ -13,7 +13,6 @@ import pytest
 from finagent.agent import FinAgent
 from finagent.agent import retrieve as R
 from finagent.retrieval import reranker
-from finagent.retrieval.expansion import expand_query
 from finagent.retrieval.filters import infer_filter, parse_years
 from finagent.retrieval.hybrid import HybridRetriever
 
@@ -62,11 +61,6 @@ def test_filter_picks_the_company_and_the_right_years():
     assert infer_filter("How did ServiceNow's margin change year-over-year?",
                         vocab, years)["years"] == ["2025", "2026"]
     assert infer_filter("What is the weather?", vocab, years) is None
-
-
-def test_a_derived_metric_gains_its_line_items():
-    assert "total current liabilities" in expand_query("Verizon quick ratio FY2022")
-    assert expand_query("3M total revenue 2022") == "3M total revenue 2022"
 
 
 class StubRetriever:

@@ -1,8 +1,7 @@
 """`HybridRetriever`: search a Qdrant collection by meaning and by exact words,
 then rerank.
 
-    query -> add line items for derived metrics (expansion.py)
-          -> company/year filter inferred from the query (filters.py)
+    query -> company/year filter inferred from the query (filters.py)
           -> Qdrant hybrid search: dense + BM25, fused by Reciprocal Rank Fusion
           -> swap each small child chunk for its larger parent passage
           -> rerank the parents, keep the top k
@@ -39,9 +38,6 @@ class HybridRetriever:
 
     def search(self, query: str, top_k: Optional[int] = None) -> list[tuple[str, dict]]:
         """Up to `top_k` (text, metadata) pairs for `query`."""
-        from finagent.retrieval.expansion import expand_query
-
-        query = expand_query(query)
         top_k = self.final_top_k if top_k is None else top_k
         flt = self.infer_filter(query)
         hits = self.retrieve(query, top_k, flt)

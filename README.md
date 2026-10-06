@@ -109,8 +109,7 @@ flowchart LR
         CH --> V[(Qdrant<br/>dense vector + BM25 vector)]
     end
     subgraph search [Answering, online]
-        Q2[rewritten query<br/>+ the raw question] --> EX[add line items for<br/>derived metrics]
-        EX --> FI[company and year filter]
+        Q2[rewritten query<br/>+ the raw question] --> FI[company and year filter]
         FI --> HY[hybrid search<br/>48 candidates]
         HY --> PR[swap children<br/>for their parents]
         PR --> RR[rerank]
@@ -165,7 +164,7 @@ finagent/
     numeric.py         XBRL and calculator steps
     external.py        market data, web search, EDGAR search steps
     answer.py          write, fact-check, refuse
-  retrieval/           hybrid.py  filters.py  expansion.py  reranker.py
+  retrieval/           hybrid.py  filters.py  reranker.py
   tools/               xbrl.py  calculator.py  sec_fetch.py  resolver.py
                        market.py  web_search.py  edgar_search.py
   ingestion/ingest.py  SEC HTML -> chunks -> Qdrant
@@ -244,13 +243,16 @@ questions:
 
 | Reranker | Evidence found by search | In the top 5 | In the top 8 | MRR | Seconds per question |
 |---|---|---|---|---|---|
-| None | 95 | 60 | 78 | 0.45 | 0.02 |
-| Cohere `rerank-v4.0-pro` (served) | 95 | 82 | **89** | 0.63 | 2.5 |
-| Local `bge-reranker-v2-m3` (fallback) | 95 | 72 | 82 | 0.53 | 7.9 |
+| None | 96 | 61 | 77 | 0.44 | 0.02 |
+| Cohere `rerank-v4.0-pro` (served) | 96 | 83 | **90** | 0.65 | 2.5 |
+| Local `bge-reranker-v2-m3` (fallback) | 96 | 68 | 80 | 0.50 | 8.4 |
 
-With Cohere, by question type: numeric 57 of 60, narrative 22 of 27, comparison
+With Cohere, by question type: numeric 57 of 60, narrative 23 of 27, comparison
 10 of 12. The embedder, the reranker and the rewrite model all changed between
-79 and 89, so the gain is not attributed to any one of them. Full output is in
+79 and 90, so the gain is not attributed to any one of them. Searching on the
+rewrite and the raw question together beats either alone (87 and 83) and the
+sub-queries (83); a dictionary that added line items to ratio names was removed
+after it stopped helping (`results/RETRIEVAL_EXPERIMENTS.md` §17). Full output is in
 `results/retrieval_eval.md`; `results/RETRIEVAL_EXPERIMENTS.md` records every
 earlier experiment, including the ones that lost.
 
