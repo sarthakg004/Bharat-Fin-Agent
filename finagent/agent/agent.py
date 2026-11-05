@@ -31,6 +31,7 @@ _REASONS = {
     "rate_limit": "the model provider is rate limiting requests",
     "quota": "today's free quota for that model is used up",
     "busy": "the model provider is busy",
+    "overloaded": "the model is overloaded right now",
     "too_large": "the request was too large for that model",
     "auth": "the API key was rejected",
     "not_found": "that model is no longer available",

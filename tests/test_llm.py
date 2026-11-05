@@ -28,7 +28,8 @@ class FakeHTTPError(Exception):
     (429, "Rate limit reached on tokens per day (TPD). Please try again in 7m12s.", "quota"),
     # Groq labels an over-sized prompt as a rate limit. It is not one.
     (413, "Request too large. code: rate_limit_exceeded", "too_large"),
-    (503, "The model is overloaded. Please try again later.", "busy"),
+    (503, "This model is currently experiencing high demand.", "overloaded"),
+    (529, "Overloaded", "overloaded"),
     (500, "Internal server error", "busy"),
     (401, "Invalid API Key", "auth"),
     (404, "The model `qwen/qwen3.6-27b` does not exist", "not_found"),
@@ -94,6 +95,21 @@ def test_a_daily_quota_fails_fast_and_says_so(monkeypatch):
         model._generate([])
     assert err.value.kind == "quota" and err.value.provider == "groq"
     assert sleeps == []                       # waiting cannot fix a daily limit
+
+
+def test_an_overloaded_model_fails_at_once_without_trying_other_keys(monkeypatch):
+    """A 503 is the model's, not the key's; on 2026-11-05 rotating cost 11 minutes."""
+    model, sleeps = _rotating(monkeypatch, {
+        "k1": [FakeHTTPError(503, "experiencing high demand")], "k2": ["never reached"]})
+    with pytest.raises(L.ProviderError) as err:
+        model._generate([])
+    assert err.value.kind == "overloaded" and sleeps == []
+
+
+def test_a_timeout_counts_as_overloaded():
+    class ReadTimeout(Exception):
+        pass
+    assert L.classify_error(ReadTimeout("timed out")).kind == "overloaded"
 
 
 def test_a_missing_model_is_not_retried(monkeypatch):

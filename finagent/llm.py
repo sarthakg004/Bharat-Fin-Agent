@@ -73,8 +73,10 @@ class ErrorInfo:
     """What went wrong with a provider call.
 
     kind: rate_limit (per-minute, clears in seconds) | quota (daily, clears
-    tomorrow) | busy (provider overloaded or unreachable) | too_large (prompt
-    over the model's limit) | auth (bad key) | not_found (model gone) | other.
+    tomorrow) | overloaded (the model is turning requests away: 503, 529, or no
+    reply before the timeout) | busy (other server error or a dropped connection)
+    | too_large (prompt over the model's limit) | auth (bad key) | not_found
+    (model gone) | other.
     """
     kind: str
     retry_after: Optional[float] = None
@@ -191,6 +193,11 @@ def classify_error(exc: BaseException) -> ErrorInfo:
 
     if status == 413 or has(_TOO_LARGE_HINTS):
         return ErrorInfo("too_large", status=status)
+    # Overload is the model's, not the key's: every key gets the same answer, so
+    # rotation would only repeat the wait (7 keys x 2 passes x ~50 s on
+    # 2026-11-05). Not retried automatically: the user picks another model or key.
+    if status in (503, 529) or "timeout" in names:
+        return ErrorInfo("overloaded", status=status)
     if (status == 429 or "ratelimit" in names or "resourceexhausted" in names
             or has(_RATE_HINTS) or re.search(r"\b429\b", text)):
         if has(_DAILY_HINTS):

@@ -117,6 +117,11 @@ def error_event(e: Exception, own_key: bool = False) -> dict:
         "rate_limit": f"{label} is rate limiting requests. "
                       + (f"Retrying in {format_wait(wait)}." if wait else "Retrying shortly."),
         "busy": f"{label} is busy right now. Retrying shortly.",
+        "overloaded": (f"{label} is overloaded right now, even on your key. Switch the "
+                       f"writer model, or try again in a few minutes." if own_key else
+                       f"{label} is overloaded right now and is turning away the shared "
+                       f"free-tier keys. For an immediate answer, add your own API key "
+                       f"in the model picker, or switch the writer model."),
         "quota": f"{whose} {label} key has used up today's free quota. It resets at "
                  f"midnight Pacific time. You can also switch the writer model or add "
                  f"your own API key in the model picker.",

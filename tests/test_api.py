@@ -30,7 +30,7 @@ def test_a_writer_the_server_has_no_key_for_is_rejected_up_front(monkeypatch):
 
 
 @pytest.mark.parametrize("kind,retryable", [
-    ("rate_limit", True), ("busy", True), ("quota", False),
+    ("rate_limit", True), ("busy", True), ("overloaded", False), ("quota", False),
     ("too_large", False), ("auth", False), ("not_found", False)])
 def test_every_provider_failure_gets_its_own_message(kind, retryable):
     event = main.error_event(ProviderError("x", kind, "gemini", retry_after=8.0))

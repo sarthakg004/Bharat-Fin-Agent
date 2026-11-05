@@ -186,7 +186,8 @@ providers reuse one status for different problems.
 |---|---|---|
 | Per-minute rate limit | 429 with a short reset | Tries the next key, waits if all are limited, then the UI retries with a countdown |
 | Daily quota used up | 429 naming a per-day quota | Stops at once and says when it resets |
-| Provider overloaded | 500, 502, 503, 529 | Retries |
+| Model overloaded | 503, 529, or no reply within 180 s (Gemini) | Stops at once, no key rotation; asks you to add your own key or switch the writer |
+| Other server error | 500, 502, a dropped connection | Tries the next key, then the UI retries |
 | Prompt too large | 413 | Tells you to pick another writer or start a new chat |
 | Key rejected | 401, 403 | Drops that key from the pool, or asks for a valid one |
 | Model removed | 404 | Says so |

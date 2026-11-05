@@ -98,6 +98,7 @@ export interface QueryRequest {
 
 export type ErrorCode =
   | "rate_limit" | "busy"                       // transient: retried automatically
+  | "overloaded"                                 // the model turns requests away: user picks another model or key
   | "quota" | "too_large" | "auth" | "not_found" | "error";
 
 export type SSEEvent =

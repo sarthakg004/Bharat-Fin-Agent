@@ -45,6 +45,13 @@ FREE_GROQ_EVIDENCE_CHARS = 14_000
 # compare if answer quality matters more than latency.
 GEMINI_THINKING = "low"
 
+# Seconds before a Gemini call is abandoned. Without it an overloaded model held
+# one call for 11 minutes. Successful writer calls in Langfuse (Oct 2026) took
+# 7, 15, 97 and 119 s, so this is 1.5x the slowest. A 503 arrives on its own
+# (52 s on 2026-11-05); the timeout only catches a call that never answers.
+# ponytail: set from 4 writer calls; raise it if healthy answers start timing out.
+GEMINI_TIMEOUT_S = 180
+
 # Qwen on Groq does not reason unless asked. With "low" the extractors think
 # before filling the form. Measured on 14 extraction cases x 4 runs: 56 of 56
 # correct, against 50 of 56 without. The planned formula gained most (unadjusted
@@ -89,7 +96,7 @@ def create_llm(ctx: RuntimeContext, role: str):
     provider, model, key = ctx.resolve(role)
     extra = {}
     if provider == "gemini":
-        extra = {"thinking_level": GEMINI_THINKING}
+        extra = {"thinking_level": GEMINI_THINKING, "timeout": GEMINI_TIMEOUT_S}
     elif role == "extractor":
         extra = {"reasoning_effort": EXTRACTOR_REASONING}
     return build_llm(provider, model, key, temperature=ctx.temperature, **extra)
