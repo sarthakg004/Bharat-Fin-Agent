@@ -210,3 +210,20 @@ def test_a_packed_numeric_sub_query_looks_up_every_line_item_and_year():
     assert calls == [("capital expenditures", "FY2021"), ("capital expenditures", "FY2022"),
                      ("depreciation and amortization", "FY2021"),
                      ("depreciation and amortization", "FY2022")]
+
+
+def test_the_search_query_rewrite_is_told_todays_date():
+    """Without the date, a question naming no year got a year copied from the
+    few-shot examples ("Oracle 2023 2022" in November 2026)."""
+    from datetime import date
+
+    from finagent.agent import plan
+
+    sent = []
+    model = type("M", (), {"invoke": lambda self, msgs: sent.append(msgs) or
+                           "ORACLE latest Item 1A Risk Factors stock price volatility"})()
+    agent = FinAgent(collection="stub")
+    agent.llm = lambda role: model
+    out = plan.retrieval_query(agent, {"log": []}, "Why is Oracle stock falling?", ["narrative"])
+    assert out.startswith("ORACLE latest")
+    assert f"Today's date: {date.today().isoformat()}" in sent[0][-1].content

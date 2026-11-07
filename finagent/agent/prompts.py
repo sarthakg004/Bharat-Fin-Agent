@@ -125,7 +125,11 @@ strongest signal you have.
 
 Write the query as keywords in the filing's own vocabulary:
 
-1. Company name, and the fiscal year(s) the question needs.
+1. Company name, and the fiscal year(s) the question needs. Write a year ONLY
+when the question names one, or names a relative period ("last year", "FY
+before last") that you resolve against today's date. When it names no period,
+or says "latest", "current", "recent" or "now", write the word "latest" in place
+of a year. Never take a year from the examples or from memory: they are stale.
 2. The financial-statement caption or note/item heading the answer sits under
 ("consolidated balance sheets", "consolidated statements of cash flows",
 "segment information", "Item 1A. Risk Factors").

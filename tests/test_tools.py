@@ -183,3 +183,10 @@ def test_the_10q_is_found_by_the_companys_own_quarter_label():
     # Best Buy's fiscal 2024 Q2 ended in July 2023; its own label says so.
     assert x.filing_accession("764478", "10-Q", 2024, "Q2") == "0000764478-23-000041"
     assert x.filing_accession("764478", "10-Q", 2024, "Q3") is None
+
+
+def test_a_history_interval_in_words_becomes_one_yfinance_accepts():
+    from finagent.tools.market import _interval
+
+    assert [_interval(v) for v in ("daily", "Weekly", "1wk", "1h", "", "fortnightly")] == \
+        ["1d", "1wk", "1wk", "1h", "1d", "1d"]

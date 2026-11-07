@@ -68,6 +68,19 @@ def get_quote(symbol: str) -> dict:
     return _ok(out)
 
 
+_INTERVALS = {"1m", "5m", "15m", "30m", "1h", "1d", "1wk", "1mo"}
+_INTERVAL_WORDS = {"daily": "1d", "day": "1d", "weekly": "1wk", "week": "1wk",
+                   "monthly": "1mo", "month": "1mo", "hourly": "1h", "hour": "1h"}
+
+
+def _interval(value: str) -> str:
+    """A yfinance interval. The model writes "daily" as often as "1d", and
+    yfinance answers an unknown interval with no data at all."""
+    v = (value or "").strip().lower()
+    v = _INTERVAL_WORDS.get(v, v)
+    return v if v in _INTERVALS else "1d"
+
+
 def get_history(symbol: str, period: str = "1y", interval: str = "1d") -> dict:
     """Historical OHLCV + a frontend-ready chart spec.
 
@@ -77,6 +90,7 @@ def get_history(symbol: str, period: str = "1y", interval: str = "1d") -> dict:
     import yfinance as yf
 
     sym = normalise_ticker(symbol)
+    interval = _interval(interval)
     try:
         df = yf.Ticker(sym).history(period=period, interval=interval)
     except Exception as e:

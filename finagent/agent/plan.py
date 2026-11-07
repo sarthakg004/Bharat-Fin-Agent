@@ -79,7 +79,9 @@ def retrieval_query(agent, state: AgentState, question: str, routes: list[str],
     # Qwen returned an empty reply for most questions.
     examples = "\n\n".join(f"Question: {q}\nQuery: {a}" for q, a in RETRIEVAL_QUERY_SHOTS)
     msgs = [SystemMessage(content=RETRIEVAL_QUERY_SYSTEM),
-            HumanMessage(content=f"Examples:\n\n{examples}\n\n{context}Question: {question}\nQuery:")]
+            HumanMessage(content=f"Examples:\n\n{examples}\n\n{context}"
+                                 f"Today's date: {date.today().isoformat()}\n"
+                                 f"Question: {question}\nQuery:")]
     try:
         out = _first_line(text_of(agent.llm("planner").invoke(msgs)))
     except Exception as e:
