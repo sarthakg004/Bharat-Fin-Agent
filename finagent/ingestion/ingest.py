@@ -53,6 +53,17 @@ _NOT_A_CAPTION = re.compile(r"^(table of contents|page\s*\d+|\d{1,4}|[ivxlc]+|\W
 _CAPTION_MAX_CHARS = 90
 _CAPTION_LINES = 3
 
+# Inline XBRL (required in 10-Ks and 10-Qs since 2019-2021) wraps figures and
+# whole notes in `ix:` tags. unstructured skips the contents of any tag it does
+# not know, so those notes never reached the index. The tags are unwrapped and
+# their text kept; the hidden `ix:header` holds machine-only facts and is dropped.
+_IX_HEADER = re.compile(r"<ix:header\b.*?</ix:header\s*>", re.S | re.I)
+_IX_TAG = re.compile(r"</?ix:[^>]*>", re.I)
+
+
+def _unwrap_inline_xbrl(html_text: str) -> str:
+    return _IX_TAG.sub("", _IX_HEADER.sub("", html_text))
+
 
 def _element_captions(elements) -> list[str]:
     """For each element, the recent short lines that name its section.
@@ -160,7 +171,12 @@ class CorpusIngester:
         from unstructured.partition.html import partition_html
 
         base_meta = self._base_meta(record, file_path)
-        elements = partition_html(filename=str(file_path))
+        raw = file_path.read_text(encoding="utf-8", errors="replace")
+        if _IX_TAG.search(raw):
+            elements = partition_html(text=_unwrap_inline_xbrl(raw))
+        else:
+            # A filing without inline XBRL is parsed exactly as the index was built.
+            elements = partition_html(filename=str(file_path))
         chunks = chunk_by_title(
             elements, max_characters=PARENT_CHARS, new_after_n_chars=PARENT_NEW_AFTER,
             combine_text_under_n_chars=PARENT_COMBINE_UNDER, overlap=PARENT_OVERLAP)

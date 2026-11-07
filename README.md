@@ -351,6 +351,11 @@ Filings are chunked with parent-document retrieval (`finagent/ingestion/ingest.p
 | Table | kept whole | Its own parent and child, so rows stay together |
 | Context header | `<company> <year> · <section caption>` | Prefixed to every chunk |
 
+Inline XBRL tags (`ix:`, in every 10-K and 10-Q since 2021) are unwrapped
+before parsing, because the HTML parser drops the contents of tags it does not
+know, and the notes to the financial statements sit inside them. Filings
+indexed before 2026-11-07 were parsed without this.
+
 Small children match a query precisely; the larger parent gives the model the
 context around the match. The header exists because the chunker separates a
 statement's heading from the table below it, which left the table with no

@@ -199,6 +199,27 @@ def test_chunker_output_matches_the_recorded_digest():
     assert docs[0].page_content.startswith("ACME 2022")        # the context header
 
 
+def test_inline_xbrl_text_is_kept_and_its_hidden_header_dropped(tmp_path):
+    """unstructured skips the contents of unknown tags, so notes wrapped in
+    `ix:` tags used to vanish (AMCOR's acquisitions note, Verizon's pensions)."""
+    pytest.importorskip("unstructured")
+    from finagent.ingestion.ingest import CorpusIngester
+
+    path = tmp_path / "ix.htm"
+    path.write_text(
+        "<html><body><div style='display:none'><ix:header><ix:hidden>"
+        "<ix:nonNumeric name='dei:AmendmentFlag'>false</ix:nonNumeric></ix:hidden></ix:header></div>"
+        "<div>Note 5 - <ix:nonNumeric name='x'>Acquisitions and Divestitures</ix:nonNumeric></div>"
+        "<ix:continuation id='c'><div>On August 1, 2022, the Company completed the acquisition "
+        "of <ix:nonFraction name='y'>100</ix:nonFraction>% of a flexible packaging plant.</div>"
+        "</ix:continuation></body></html>")
+    text = " ".join(d.page_content for d in CorpusIngester("unused", "gemini-embedding-2")
+                    .documents(path, {"company": "ACME", "year": "2023", "source_url": "t://ix"}))
+    assert "Acquisitions and Divestitures" in text
+    assert "acquisition of 100% of a flexible packaging plant" in text
+    assert "false" not in text
+
+
 def test_a_ticker_matches_only_in_capitals():
     from finagent.retrieval.filters import build_company_vocab
     vocab, years = build_company_vocab([
